@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, time
 
 from planespotter.adsb import FlightInfo
 from planespotter.digest import build_forecast, build_recap
@@ -41,25 +41,41 @@ class DigestTests(unittest.TestCase):
     def test_forecast_is_learning_without_history(self):
         self.assertTrue(build_forecast(self.store, self.cfg, date(2026, 11, 6)).learning)
 
-    def test_recap_stats(self):
+    def test_recap_covers_the_24_hours_before_the_report(self):
+        # The report goes out at 07:00 on the 6th, so it covers 07:00 on the 5th to 07:00 on the 6th.
+        seed(self.store, "a0", "TOOEARLY", ts(2026, 11, 5, 6, 59))
         seed(self.store, "a1", "LOW1", ts(2026, 11, 5, 9), miles=2.5, alt=900)
         seed(self.store, "a2", "NEAR1", ts(2026, 11, 5, 17, 5), miles=0.3, alt=4000)
         seed(self.store, "a3", "BUSY1", ts(2026, 11, 5, 17, 40), miles=1.5, alt=5000)
-        seed(self.store, "a4", "TODAY1", ts(2026, 11, 6, 1))  # not yesterday
-        recap = build_recap(self.store, self.cfg, date(2026, 11, 5))
-        self.assertEqual(len(recap.passes), 3)
+        seed(self.store, "a4", "NIGHT1", ts(2026, 11, 6, 1))
+        seed(self.store, "a5", "TOOLATE", ts(2026, 11, 6, 7, 0))
+        recap = build_recap(self.store, self.cfg, date(2026, 11, 6))
+        self.assertEqual([p["callsign"] for p in recap.passes], ["LOW1", "NEAR1", "BUSY1", "NIGHT1"])
         self.assertEqual(recap.busiest_hour, (17, 2))
         self.assertEqual(recap.lowest["callsign"], "LOW1")
         self.assertEqual(recap.closest["callsign"], "NEAR1")
-        self.assertEqual(recap.top_airlines, [("Test Air", 3)])
+        self.assertEqual(recap.top_airlines, [("Test Air", 4)])
+        self.assertEqual(recap.quiet_count, 0)  # quiet hours are off in this config
+
+    def test_quiet_hours_planes_are_marked_in_the_report(self):
+        cfg = make_config(quiet_hours=(time(22), time(7)))
+        seed(self.store, "a1", "DAY1", ts(2026, 11, 5, 12))
+        seed(self.store, "a2", "NIGHT1", ts(2026, 11, 5, 23, 30))
+        seed(self.store, "a3", "NIGHT2", ts(2026, 11, 6, 2))
+        recap = build_recap(self.store, cfg, date(2026, 11, 6))
+        self.assertEqual(recap.quiet_count, 2)
+        email = digest_email(recap, build_forecast(self.store, cfg, date(2026, 11, 6)), cfg)
+        self.assertIn("2 planes came over during quiet hours (22:00–07:00)", email.text)
+        self.assertIn("23:30 🌙", email.text)
+        self.assertIn("Fri 6 Nov", email.html)  # divider row at midnight
 
     def test_emails_render(self):
         for day in (3, 4, 5):
             seed(self.store, f"a{day}", "BAW117", ts(2026, 11, day, 8))
-        recap = build_recap(self.store, self.cfg, date(2026, 11, 5))
+        recap = build_recap(self.store, self.cfg, date(2026, 11, 6))
         forecast = build_forecast(self.store, self.cfg, date(2026, 11, 6))
         email = digest_email(recap, forecast, self.cfg)
-        self.assertIn("1 plane yesterday, 1 expected today", email.subject)
+        self.assertIn("1 plane in the last day, 1 expected today", email.subject)
         self.assertIn("BAW117", email.html)
         self.assertIn("~08:00", email.text)
 

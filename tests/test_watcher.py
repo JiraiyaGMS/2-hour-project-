@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, time
 
 from planespotter.adsb import FlightInfo
 from planespotter.store import Store
@@ -85,6 +85,29 @@ class AlertTests(unittest.TestCase):
         feed.planes = [plane("ccc333", callsign="CCC3")]
         watcher.send_alerts(watcher.poll(t0 + 3700), t0 + 3700)
         self.assertEqual(len(mailer.sent), 2)
+
+    def test_quiet_hours_overnight(self):
+        watcher, feed, mailer = make_watcher(quiet_hours=(time(22), time(7)))
+        for hour, hex_code in [(23, "aaa001"), (3, "aaa002"), (6, "aaa003")]:
+            t = ts(2026, 11, 2 if hour < 12 else 1, hour, 30)
+            feed.planes = [plane(hex_code, callsign=hex_code.upper())]
+            self.assertFalse(watcher.send_alerts(watcher.poll(t), t))
+        self.assertEqual(mailer.sent, [])
+        # The planes were still recorded, so they appear in the morning report.
+        night = watcher.store.passes_between(ts(2026, 11, 1, 22), ts(2026, 11, 2, 7))
+        self.assertEqual(len(night), 3)
+        self.assertTrue(all(p["alerted"] == 0 for p in night))
+        # 07:00 sharp: quiet hours are over.
+        t = ts(2026, 11, 2, 7, 0)
+        feed.planes = [plane("bbb001", callsign="MORNING1")]
+        self.assertTrue(watcher.send_alerts(watcher.poll(t), t))
+        self.assertEqual(len(mailer.sent), 1)
+
+    def test_quiet_hours_within_one_day(self):
+        watcher, feed, mailer = make_watcher(quiet_hours=(time(13), time(15)))
+        self.assertTrue(watcher.cfg.in_quiet_hours(ts(2026, 11, 1, 14)))
+        self.assertFalse(watcher.cfg.in_quiet_hours(ts(2026, 11, 1, 15)))
+        self.assertFalse(watcher.cfg.in_quiet_hours(ts(2026, 11, 1, 2)))
 
     def test_alerts_can_be_turned_off(self):
         watcher, feed, mailer = make_watcher(alerts_enabled=False)

@@ -1,4 +1,4 @@
-"""Command line: python -m planespotter {check,watch,digest,test-email}"""
+"""Command line: python3 -m planespotter {setup,check,watch,digest,test-email}"""
 
 from __future__ import annotations
 
@@ -7,14 +7,16 @@ import logging
 import sys
 import time
 from datetime import date
+from pathlib import Path
 
 from .adsb import LiveFeed, Lookup
-from .config import Config, ConfigError
+from .config import DEFAULT_ENV, Config, ConfigError, fmt_clock_range
 from .emails import fmt_alt, test_email
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
+from .wizard import Cancelled, Wizard
 
 
 def build(cfg: Config) -> Watcher:
@@ -22,6 +24,36 @@ def build(cfg: Config) -> Watcher:
     return Watcher(
         cfg, store, LiveFeed(cfg.adsb_api), Lookup(store, cfg.adsbdb_api), Mailer(cfg)
     )
+
+
+def cmd_setup(env_path: Path, args) -> int:
+    wizard = Wizard(env_path)
+    try:
+        values = wizard.run()
+    except (Cancelled, KeyboardInterrupt):
+        print("\n\nSetup cancelled. Nothing was changed.")
+        return 1
+    wizard.save(values)
+    print(f"\n✔ Saved your settings to {env_path}\n")
+
+    try:
+        cfg = Config.load(env_path)
+    except ConfigError as exc:  # shouldn't happen, the wizard validates everything
+        print(f"Something's off with the settings: {exc}", file=sys.stderr)
+        return 2
+    try:
+        if wizard.yes("Look for planes near you right now?"):
+            print()
+            cmd_check(cfg, args)
+            print()
+        if not cfg.dry_run and wizard.yes(f"Send a test email to {cfg.email_to}?"):
+            cmd_test_email(cfg, args)
+    except (Cancelled, KeyboardInterrupt):
+        pass
+    except FETCH_ERRORS as exc:
+        explain_fetch_error(exc)
+    print("\nAll set. To start watching, run:\n\n    python3 -m planespotter watch\n")
+    return 0
 
 
 def cmd_check(cfg: Config, args) -> int:
@@ -34,29 +66,33 @@ def cmd_check(cfg: Config, args) -> int:
         if d <= look:
             rows.append((d, ac))
     rows.sort(key=lambda r: r[0])
-    print(f"{len(rows)} airborne within {look:g} mi of {cfg.home_name} "
-          f"(your zone is {cfg.radius_miles:g} mi{f', below {cfg.max_altitude_ft:,} ft' if cfg.max_altitude_ft else ''}):\n")
+    ceiling = f", below {cfg.max_altitude_ft:,} ft" if cfg.max_altitude_ft else ""
+    print(f"{len(rows)} planes in the air within {look:g} mi of {cfg.home_name} "
+          f"(your zone is {cfg.radius_miles:g} mi{ceiling}):\n")
     for d, ac in rows:
         too_high = cfg.max_altitude_ft is not None and ac.alt_ft is not None and ac.alt_ft > cfg.max_altitude_ft
         mark = "✈ IN ZONE" if d <= cfg.radius_miles and not too_high else ""
         direction = compass(bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon))
         print(f"  {ac.label:<9} {ac.type_code:<5} {d:5.1f} mi {direction:<2}  {fmt_alt(ac.alt_ft):>10}  {mark}")
     if not rows:
-        print("  (nothing right now — try a bigger RADIUS_MILES to sanity-check your location)")
+        print("  (nothing right now. Try again in a few minutes, or check your coordinates.)")
+    if cfg.quiet_hours and cfg.in_quiet_hours(time.time()):
+        print(f"\n  🌙 It's quiet hours ({fmt_clock_range(cfg.quiet_hours)}), so `watch` won't email alerts right now.")
     return 0
 
 
 def cmd_watch(cfg: Config, args) -> int:
     watcher = build(cfg)
+    print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
     try:
         watcher.run()
     except KeyboardInterrupt:
-        print("\nstopped.")
+        print("\nStopped.")
     return 0
 
 
 def cmd_digest(cfg: Config, args) -> int:
-    """Send the daily digest right now (yesterday's recap + today's forecast)."""
+    """Send the daily report right now (last 24 hours + today's forecast)."""
     watcher = build(cfg)
     today = date.fromisoformat(args.date) if args.date else cfg.local(time.time()).date()
     return 0 if watcher.send_digest(today) else 1
@@ -64,45 +100,70 @@ def cmd_digest(cfg: Config, args) -> int:
 
 def cmd_test_email(cfg: Config, args) -> int:
     if cfg.dry_run:
-        print("No email login set (EMAIL_TO, SMTP_USER, SMTP_PASSWORD), so this goes to outbox/.")
+        print("No email login is set up yet, so the test email is saved as a file instead.")
     try:
-        Mailer(cfg).send(test_email(cfg))
+        path = Mailer(cfg).send(test_email(cfg))
     except SEND_ERRORS as exc:
         print(f"Sending failed: {exc}", file=sys.stderr)
+        if "Username and Password not accepted" in str(exc) or "535" in str(exc):
+            print("That usually means the app password is wrong. Make a new one and run setup again.",
+                  file=sys.stderr)
         return 1
-    if not cfg.dry_run:
-        print(f"Sent a test email to {cfg.email_to}.")
+    if path:
+        print(f"Saved: {path}")
+    else:
+        print(f"✔ Sent a test email to {cfg.email_to}. Check your inbox (and spam folder).")
     return 0
+
+
+def explain_fetch_error(exc: Exception) -> None:
+    print(f"Couldn't reach the flight data website: {exc}", file=sys.stderr)
+    if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+        print(
+            "\nOn a Mac this is a one-time fix: open Finder → Applications → the Python 3 folder,\n"
+            "double-click “Install Certificates.command”, then try again.",
+            file=sys.stderr,
+        )
+    else:
+        print("Check your internet connection and try again.", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="planespotter", description="Email alerts for planes over your house.")
-    parser.add_argument("--env", default=".env", help="settings file (default: .env)")
+    parser.add_argument("--env", help=f"settings file (default: {DEFAULT_ENV})")
     parser.add_argument("-v", "--verbose", action="store_true")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", metavar="command")
+    sub.add_parser("setup", help="answer a few questions to create your settings")
     sub.add_parser("check", help="list planes near home right now")
-    sub.add_parser("watch", help="run forever: alerts + daily digest")
-    p_digest = sub.add_parser("digest", help="send the daily digest now")
+    sub.add_parser("watch", help="run forever: alerts + daily report")
+    p_digest = sub.add_parser("digest", help="send the daily report now")
     p_digest.add_argument("--date", help="pretend today is YYYY-MM-DD")
     sub.add_parser("test-email", help="send a test email")
     args = parser.parse_args(argv)
+    if not args.command:
+        parser.print_help()
+        return 0
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(message)s",
+        format="%(asctime)s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    env_path = Path(args.env).expanduser() if args.env else DEFAULT_ENV
+    if args.command == "setup":
+        return cmd_setup(env_path, args)
+
     try:
-        cfg = Config.load(args.env)
+        cfg = Config.load(env_path)
     except ConfigError as exc:
-        print(f"Config problem: {exc}", file=sys.stderr)
+        print(f"Settings problem: {exc}", file=sys.stderr)
         return 2
 
     commands = {"check": cmd_check, "watch": cmd_watch, "digest": cmd_digest, "test-email": cmd_test_email}
     try:
         return commands[args.command](cfg, args)
     except FETCH_ERRORS as exc:
-        print(f"Couldn't reach the flight data API: {exc}", file=sys.stderr)
+        explain_fetch_error(exc)
         return 1
 
 

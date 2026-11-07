@@ -21,12 +21,16 @@ from .store import Store
 
 @dataclass
 class Recap:
-    day: date
+    """The 24 hours leading up to this morning's report (so overnight planes are included)."""
+
+    start: float
+    end: float
     passes: list[sqlite3.Row]
     busiest_hour: tuple[int, int] | None = None  # (hour, count)
     lowest: sqlite3.Row | None = None
     closest: sqlite3.Row | None = None
     top_airlines: list[tuple[str, int]] = field(default_factory=list)
+    quiet_count: int = 0  # planes that arrived during quiet hours
 
 
 @dataclass
@@ -60,11 +64,16 @@ class Forecast:
         return self.days_of_history < 2
 
 
-def build_recap(store: Store, cfg: Config, day: date) -> Recap:
-    passes = store.passes_between(cfg.day_start(day), cfg.day_start(day + timedelta(days=1)))
-    recap = Recap(day=day, passes=passes)
+def build_recap(store: Store, cfg: Config, today: date) -> Recap:
+    """Everything from yesterday's report time up to today's report time."""
+    start = cfg.at(today - timedelta(days=1), cfg.digest_time)
+    end = cfg.at(today, cfg.digest_time)
+    passes = store.passes_between(start, end)
+    recap = Recap(start=start, end=end, passes=passes)
     if not passes:
         return recap
+
+    recap.quiet_count = sum(1 for p in passes if cfg.in_quiet_hours(p["first_seen"]))
 
     hours = Counter(cfg.local(p["first_seen"]).hour for p in passes)
     recap.busiest_hour = max(hours.items(), key=lambda kv: (kv[1], -kv[0]))

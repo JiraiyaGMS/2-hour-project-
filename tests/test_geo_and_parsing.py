@@ -1,9 +1,10 @@
 import unittest
+from datetime import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from planespotter.adsb import parse_aircraft, route_is_plausible
-from planespotter.config import Config, ConfigError, load_dotenv
+from planespotter.config import Config, ConfigError, load_dotenv, parse_clock, parse_quiet_hours
 from planespotter.geo import bearing_deg, compass, distance_miles, segment_min_distance_miles
 
 from helpers import plane
@@ -81,9 +82,39 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_bad_values(self):
         base = {"HOME_LAT": "51.5", "HOME_LON": "-0.1"}
         for key, value in [("HOME_LAT", "123"), ("RADIUS_MILES", "0"), ("POLL_SECONDS", "2"),
-                           ("DIGEST_TIME", "7am"), ("TIMEZONE", "Mars/Olympus")]:
+                           ("DIGEST_TIME", "breakfast"), ("TIMEZONE", "Mars/Olympus")]:
             with self.subTest(key=key), self.assertRaises(ConfigError):
                 Config.from_mapping({**base, key: value})
+
+    def test_clock_and_quiet_hours_parsing(self):
+        self.assertEqual(parse_clock("07:00"), time(7))
+        self.assertEqual(parse_clock("7"), time(7))
+        self.assertEqual(parse_clock("7:30"), time(7, 30))
+        self.assertEqual(parse_clock("10pm"), time(22))
+        self.assertEqual(parse_clock("12am"), time(0))
+        self.assertEqual(parse_clock("12pm"), time(12))
+        for bad in ("25:00", "7:75", "13pm", "noon", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_clock(bad)
+
+        self.assertEqual(parse_quiet_hours("22:00-07:00"), (time(22), time(7)))
+        self.assertEqual(parse_quiet_hours("10pm to 7am"), (time(22), time(7)))
+        self.assertEqual(parse_quiet_hours("23 – 6"), (time(23), time(6)))
+        self.assertIsNone(parse_quiet_hours(""))
+        self.assertIsNone(parse_quiet_hours("none"))
+        for bad in ("22:00", "22-22", "late-early"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_quiet_hours(bad)
+
+        cfg = Config.from_mapping({"HOME_LAT": "51.5", "HOME_LON": "-0.1", "QUIET_HOURS": "22:00-07:00"})
+        self.assertEqual(cfg.quiet_hours, (time(22), time(7)))
+        with self.assertRaises(ConfigError):
+            Config.from_mapping({"HOME_LAT": "51.5", "HOME_LON": "-0.1", "QUIET_HOURS": "nights"})
+
+    def test_relative_paths_follow_the_settings_file(self):
+        cfg = Config.from_mapping({"HOME_LAT": "51.5", "HOME_LON": "-0.1"}, base_dir=Path("/x/y"))
+        self.assertEqual(cfg.db_path, Path("/x/y/planespotter.db"))
+        self.assertEqual(cfg.outbox_dir, Path("/x/y/outbox"))
 
     def test_defaults_and_dry_run(self):
         cfg = Config.from_mapping({"HOME_LAT": "51.5", "HOME_LON": "-0.1"})

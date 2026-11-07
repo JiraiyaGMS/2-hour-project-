@@ -6,11 +6,11 @@ import logging
 import smtplib
 import time
 import urllib.error
-from datetime import date, timedelta
+from datetime import date
 from typing import Callable
 
 from .adsb import Aircraft, LiveFeed, Lookup
-from .config import Config
+from .config import Config, fmt_clock_range
 from .digest import build_forecast, build_recap
 from .emails import alert_email, digest_email, fmt_alt, fmt_dist
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, segment_min_distance_miles
@@ -93,6 +93,10 @@ class Watcher:
     def send_alerts(self, pass_ids: list[int], now: float) -> bool:
         if not pass_ids or not self.cfg.alerts_enabled:
             return False
+        if self.cfg.in_quiet_hours(now):
+            log.info("quiet hours: no alert for %d plane(s), they'll be in the morning report",
+                     len(pass_ids))
+            return False
         if self.store.alert_emails_since(now - 3600) >= self.cfg.max_alerts_per_hour:
             log.warning("hit MAX_ALERTS_PER_HOUR; %d plane(s) will only appear in the digest",
                         len(pass_ids))
@@ -127,7 +131,7 @@ class Watcher:
         return today
 
     def send_digest(self, today: date) -> bool:
-        recap = build_recap(self.store, self.cfg, today - timedelta(days=1))
+        recap = build_recap(self.store, self.cfg, today)
         forecast = build_forecast(self.store, self.cfg, today)
         try:
             self.mailer.send(digest_email(recap, forecast, self.cfg))
@@ -147,8 +151,12 @@ class Watcher:
         log.info(
             "watching %.1f mi around %s (%.4f, %.4f), every %ds%s",
             cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon, cfg.poll_seconds,
-            " — no email login set, emails go to outbox/" if cfg.dry_run else f", emailing {cfg.email_to}",
+            f" — no email login set, emails are saved in {cfg.outbox_dir}" if cfg.dry_run
+            else f", emailing {cfg.email_to}",
         )
+        if cfg.quiet_hours:
+            log.info("quiet hours %s: no alerts then, planes go in the %s report",
+                     fmt_clock_range(cfg.quiet_hours), cfg.digest_time.strftime("%H:%M"))
         failures = 0
         while True:
             started = time.monotonic()
@@ -160,6 +168,9 @@ class Watcher:
             except FETCH_ERRORS as exc:
                 failures += 1
                 log.warning("couldn't fetch planes (attempt %d): %s", failures, exc)
+                if failures == 1 and "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                    log.error("On a Mac, fix this by double-clicking “Install Certificates.command” "
+                              "in Applications → Python 3.x, then start again.")
                 self.last_positions = {}
 
             today = self.digest_due(now)

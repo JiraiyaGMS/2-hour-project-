@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from html import escape
 
-from .config import Config
+from .config import Config, fmt_clock_range
 from .digest import Forecast, Recap
 from .geo import compass
 
@@ -174,7 +174,8 @@ def _h2(text: str, sub: str = "") -> str:
     return f'<h2 style="font-size:18px;margin:28px 0 10px">{escape(text)}{sub_html}</h2>'
 
 
-def _table(headers: list[str], rows: list[list[str]], right: set[int] = frozenset()) -> str:
+def _table(headers: list[str], rows: list, right: set[int] = frozenset()) -> str:
+    """Rows are lists of cell HTML; a plain string is a full-width divider (e.g. a date)."""
     def cell(i: int, html: str, tag: str = "td") -> str:
         align = "right" if i in right else "left"
         style = f"padding:7px 8px;border-bottom:1px solid {LINE};text-align:{align};vertical-align:top"
@@ -182,8 +183,17 @@ def _table(headers: list[str], rows: list[list[str]], right: set[int] = frozense
             style += f";font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:{MUTED};font-weight:600"
         return f'<{tag} style="{style}">{html}</{tag}>'
 
+    def row(r) -> str:
+        if isinstance(r, str):
+            return (
+                f'<tr><td colspan="{len(headers)}" style="padding:10px 8px 6px;background:{TINT};'
+                f'font-size:12px;font-weight:600;color:{MUTED};border-bottom:1px solid {LINE}">'
+                f"{escape(r)}</td></tr>"
+            )
+        return "<tr>" + "".join(cell(i, c) for i, c in enumerate(r)) + "</tr>"
+
     head = "<tr>" + "".join(cell(i, escape(h), "th") for i, h in enumerate(headers)) + "</tr>"
-    body = "".join("<tr>" + "".join(cell(i, c) for i, c in enumerate(r)) + "</tr>" for r in rows)
+    body = "".join(row(r) for r in rows)
     return (
         '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
         f'style="border-collapse:collapse;font-size:14px">{head}{body}</table>'
@@ -225,12 +235,13 @@ def _tile(name: str, value: str, note: str = "") -> str:
 
 
 def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
-    n_yesterday = len(recap.passes)
+    n_recent = len(recap.passes)
     n_expected = len(forecast.flights)
     today_label = _day(forecast.day)
-    yday_label = _day(recap.day)
+    since = cfg.local(recap.start)
+    since_label = f"since {since:%H:%M} {_day(since)}"
     subject = (
-        f"Sky report for {cfg.home_name}: {n_yesterday} plane{'s' if n_yesterday != 1 else ''} yesterday"
+        f"Sky report for {cfg.home_name}: {n_recent} plane{'s' if n_recent != 1 else ''} in the last day"
         + ("" if forecast.learning else f", {n_expected} expected today")
     )
 
@@ -278,13 +289,13 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
         )
     text.append("")
 
-    # Yesterday
-    html.append(_h2("Yesterday", yday_label))
-    text.append(f"YESTERDAY ({yday_label}): {n_yesterday} planes")
+    # The last 24 hours, overnight included
+    html.append(_h2("Last 24 hours", since_label))
+    text.append(f"LAST 24 HOURS ({since_label}): {n_recent} planes")
     if not recap.passes:
         html.append(f'<p style="font-size:14px;color:{MUTED}">No planes passed through the zone.</p>')
     else:
-        tiles = [_tile("Planes", str(n_yesterday))]
+        tiles = [_tile("Planes", str(n_recent))]
         if recap.busiest_hour:
             hour, count = recap.busiest_hour
             tiles.append(_tile("Busiest hour", f"{hour:02d}:00", f"{count} planes"))
@@ -302,21 +313,36 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
             html.append(f'<p style="font-size:14px;margin:0 0 12px"><strong>Top airlines:</strong> {escape(airlines)}</p>')
             text.append(f"Top airlines: {airlines}")
 
-        rows = []
+        if recap.quiet_count:
+            note = (
+                f"🌙 {recap.quiet_count} plane{'s' if recap.quiet_count != 1 else ''} came over during "
+                f"quiet hours ({fmt_clock_range(cfg.quiet_hours)}), so no alert was sent for "
+                f"{'them' if recap.quiet_count != 1 else 'it'}."
+            )
+            html.append(f'<p style="font-size:14px;margin:0 0 12px">{escape(note)}</p>')
+            text.append(note)
+
+        rows: list = []
+        current_day = cfg.local(recap.start).date()
         for p in recap.passes[:DIGEST_ROW_LIMIT]:
-            when = cfg.local(p["first_seen"]).strftime("%H:%M")
+            seen = cfg.local(p["first_seen"])
+            if seen.date() != current_day:
+                current_day = seen.date()
+                rows.append(_day(seen))  # a divider row at midnight
+                text.append(f"  -- {_day(seen)} --")
+            moon = " 🌙" if cfg.in_quiet_hours(p["first_seen"]) else ""
             rows.append([
-                when,
+                f'<span style="white-space:nowrap">{seen:%H:%M}{moon}</span>',
                 _flight_cell(label(p), short_route(p), p["airline"], aircraft(p), track_url(p["hex"])),
                 _two_line(fmt_alt(p["closest_alt_ft"]), fmt_dist(p["closest_miles"])),
             ])
             text.append(
-                f"  {when}  {label(p):<8} {short_route(p):<12} {fmt_alt(p['closest_alt_ft']):>10}  "
+                f"  {seen:%H:%M}{moon}  {label(p):<8} {short_route(p):<12} {fmt_alt(p['closest_alt_ft']):>10}  "
                 f"{fmt_dist(p['closest_miles'])}  {p['airline']}"
             )
         html.append(_table(["Time", "Flight", "Altitude"], rows, right={2}))
-        if n_yesterday > DIGEST_ROW_LIMIT:
-            more = f"…and {n_yesterday - DIGEST_ROW_LIMIT} more."
+        if n_recent > DIGEST_ROW_LIMIT:
+            more = f"…and {n_recent - DIGEST_ROW_LIMIT} more."
             html.append(f'<p style="font-size:13px;color:{MUTED}">{more}</p>')
             text.append(f"  {more}")
 
@@ -329,6 +355,8 @@ def test_email(cfg: Config) -> Email:
         f"Emails are working. You'll get an alert when a plane comes within "
         f"{cfg.radius_miles:g} miles of {cfg.home_name}, and a sky report every day at "
         f"{cfg.digest_time.strftime('%H:%M')}."
+        + (f" No alerts during quiet hours ({fmt_clock_range(cfg.quiet_hours)})."
+           if cfg.quiet_hours else "")
     )
     body = f'<h1 style="font-size:22px;margin:0 0 8px">It works ✈</h1><p style="font-size:15px">{escape(msg)}</p>'
     return Email(subject=subject, text=msg, html=_page(subject, body))
