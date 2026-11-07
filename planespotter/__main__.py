@@ -162,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     commands = {"check": cmd_check, "watch": cmd_watch, "digest": cmd_digest, "test-email": cmd_test_email}
     try:
         return commands[args.command](cfg, args)
+    except BrokenPipeError:  # output piped into e.g. `head`; not a network problem
+        return 0
     except FETCH_ERRORS as exc:
         explain_fetch_error(exc)
         return 1
