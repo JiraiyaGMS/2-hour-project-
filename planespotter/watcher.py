@@ -40,8 +40,10 @@ class Watcher:
         self.lookup = lookup
         self.mailer = mailer
         self.clock = clock
-        # Last known position of every plane near the zone: hex -> (lat, lon, time)
-        self.last_positions: dict[str, tuple[float, float, float]] = {}
+        # Last known position of every plane near the zone: hex -> (lat, lon, time, alt_ft)
+        self.last_positions: dict[str, tuple] = {}
+        # Planes whose pass is still being drawn: hex -> pass id
+        self.open_paths: dict[str, int] = {}
         self.digest_retry_at = 0.0
 
     # --- polling ------------------------------------------------------------
@@ -73,11 +75,19 @@ class Watcher:
         positions = {}
         for ac in planes:
             hit = self.in_zone(ac, now)
-            positions[ac.hex] = (ac.lat, ac.lon, now)
+            prev = self.last_positions.get(ac.hex)
+            positions[ac.hex] = (ac.lat, ac.lon, now, ac.alt_ft)
+            point = [ac.lat, ac.lon, ac.alt_ft, now]
             if hit is None:
+                # Keep drawing the path of a plane that just left the zone.
+                if ac.hex in self.open_paths:
+                    self.store.append_path(self.open_paths[ac.hex], [point])
                 continue
             pass_id, is_new = self.store.record_sighting(
                 ac, hit[0], hit[1], now, gap=cfg.pass_gap_minutes * 60)
+            path = [[prev[0], prev[1], prev[3], prev[2]], point] if is_new and prev else [point]
+            self.store.append_path(pass_id, path)
+            self.open_paths[ac.hex] = pass_id
             if is_new:
                 info = self.lookup.info(ac, now)
                 self.store.set_info(pass_id, info)
@@ -86,6 +96,7 @@ class Watcher:
                 log.info("overhead: %s %s %s, %s%s", ac.label, fmt_dist(hit[0]),
                          compass(hit[1]), fmt_alt(ac.alt_ft), route)
         self.last_positions = positions
+        self.open_paths = {h: pid for h, pid in self.open_paths.items() if h in positions}
         return new_passes
 
     # --- alerts -------------------------------------------------------------
@@ -172,6 +183,7 @@ class Watcher:
                     log.error("On a Mac, fix this by double-clicking “Install Certificates.command” "
                               "in Applications → Python 3.x, then start again.")
                 self.last_positions = {}
+                self.open_paths = {}
 
             today = self.digest_due(now)
             if today is not None:

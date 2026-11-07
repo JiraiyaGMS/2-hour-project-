@@ -97,6 +97,14 @@ class Config:
     outbox_dir: Path = PROJECT_DIR / "outbox"
     adsb_api: str = "https://api.adsb.lol"
     adsbdb_api: str = "https://api.adsbdb.com"
+    map_enabled: bool = True  # `watch` also serves the live map
+    map_port: int = 8765
+    map_lan: bool = True  # let phones on the same Wi-Fi open the map
+
+    @property
+    def view_radius_miles(self) -> float:
+        """How far out the live map shows planes."""
+        return min(115.0, max(self.radius_miles * 4, 15.0))
 
     @property
     def dry_run(self) -> bool:
@@ -232,6 +240,9 @@ class Config:
             outbox_dir=path("OUTBOX_DIR", "outbox"),
             adsb_api=get("ADSB_API", "https://api.adsb.lol").rstrip("/"),
             adsbdb_api=get("ADSBDB_API", "https://api.adsbdb.com").rstrip("/"),
+            map_enabled=flag("MAP_ENABLED", True),
+            map_port=number("MAP_PORT", "8765", int),
+            map_lan=flag("MAP_LAN", True),
         )
 
 
@@ -240,5 +251,5 @@ KNOWN_KEYS = {
     "POLL_SECONDS", "PASS_GAP_MINUTES", "MAX_ALERTS_PER_HOUR", "ALERTS_ENABLED",
     "QUIET_HOURS", "DIGEST_ENABLED", "DIGEST_TIME", "TIMEZONE", "EMAIL_TO",
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
-    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API",
+    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN",
 }

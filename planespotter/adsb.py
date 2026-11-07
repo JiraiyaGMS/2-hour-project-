@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -39,6 +41,7 @@ class Aircraft:
     speed_kt: float | None
     track: float | None
     squawk: str = ""
+    seen_pos: float = 0.0  # seconds since the position was received
 
     @property
     def label(self) -> str:
@@ -78,6 +81,7 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
         speed_kt=num("gs"),
         track=num("track") if num("track") is not None else num("true_heading"),
         squawk=str(raw.get("squawk") or ""),
+        seen_pos=float(raw.get("seen_pos") or 0),
     )
 
 
@@ -94,6 +98,47 @@ class LiveFeed:
         data = get_json(url, self.timeout)
         found = (parse_aircraft(raw) for raw in data.get("ac") or [])
         return [ac for ac in found if ac and ac.hex]
+
+
+class SharedFeed:
+    """One request to adsb.lol serves both the watcher and the live map.
+
+    Results are reused for ``ttl`` seconds, and if adsb.lol says we're asking
+    too often (HTTP 429), we back off and keep showing the last answer for a bit.
+    """
+
+    def __init__(self, feed: LiveFeed, min_radius_nm: float = 0, ttl: float = 8.0, clock=None):
+        self.feed = feed
+        self.min_radius_nm = min_radius_nm
+        self.ttl = ttl
+        self.clock = clock or time.time
+        self.lock = threading.Lock()
+        self.data: list[Aircraft] | None = None
+        self.radius = 0.0
+        self.fetched_at = 0.0
+        self.blocked_until = 0.0
+
+    def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
+        with self.lock:
+            now = self.clock()
+            fresh = self.data is not None and now - self.fetched_at < self.ttl and radius_nm <= self.radius
+            if fresh:
+                return self.data
+            if now < self.blocked_until:
+                if self.data is not None and now - self.fetched_at < 180:
+                    return self.data
+                raise urllib.error.URLError("adsb.lol asked us to slow down; trying again shortly")
+            radius = max(radius_nm, self.min_radius_nm)
+            try:
+                self.data = self.feed.aircraft_near(lat, lon, radius)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    self.blocked_until = now + 45
+                    log.info("adsb.lol rate limit hit; pausing live requests for 45s")
+                raise
+            self.radius = radius
+            self.fetched_at = now
+            return self.data
 
 
 @dataclass(frozen=True)

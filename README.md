@@ -2,7 +2,7 @@
 
 Get an email whenever a plane flies over your house, plus a sky report
 every morning with the last 24 hours of planes and the flights expected
-overhead today.
+overhead today, and a live 3D/2D map of the sky around you.
 
 - **Alerts:** callsign, airline, route (e.g. *Singapore (SIN) → Los Angeles (LAX)*),
   aircraft type, a photo, altitude, distance, and a link to follow it live.
@@ -11,6 +11,10 @@ overhead today.
 - **Daily report:** the last 24 hours of planes with stats (busiest hour,
   lowest, closest, top airlines), and a forecast of today's regular flights
   with their usual times.
+- **Live map:** a 3D map (tilt and spin it, with buildings) or a flat 2D
+  one, showing your zone, every plane nearby at its real altitude, and a
+  searchable list of everything that has flown over. It runs on your Mac,
+  so nothing is published, and your phone can open it too.
 - Free data and no API keys. Nothing extra to install besides Python.
 
 ---
@@ -107,6 +111,11 @@ Pick one:
 Leave that window open (you can minimise it). It checks the sky every
 20 seconds. To stop it, press **Control C** or close the window.
 
+The live map opens at **http://localhost:8765** (the .command file opens it
+for you). The first time, your Mac may ask *"Do you want the application
+Python to accept incoming network connections?"* Click **Allow** if you
+want to open the map on your phone too.
+
 **Keep the Mac awake.** planespotter only watches while the Mac is
 awake. *Start planespotter.command* stops the Mac from falling asleep
 while it runs. In Terminal, you can do the same with
@@ -121,6 +130,43 @@ click **+**, go to your home folder → **planespotter**, choose
 
 ---
 
+## The live map
+
+While planespotter is running, open **http://localhost:8765** in any
+browser on your Mac.
+
+- **3D / 2D** (top right): 3D tilts the map so you can see planes at
+  their real height above the ground, with drop lines to show where they
+  are over the map. To tilt and spin it, hold **Control** and drag (on a
+  phone, drag up or down with two fingers, or twist). 2D is a flat view from
+  straight above.
+- **⌂** flies back to your house.
+- **Your zone** is the orange circle. Planes inside it are orange, and the
+  others nearby are blue. Planes glide between updates and leave a short
+  trail.
+- **In the air** lists every plane nearby right now, closest first.
+  **Spotted** lists every plane that came through your zone. You can
+  filter by 24 hours, 7 days, 30 days or all, and sort by newest, closest
+  or lowest. 🌙 marks the ones that came during quiet hours.
+- **Search** works on both lists and the map: try a flight number, an
+  airline (*delta*), an airport code (*JFK*), a city, or an aircraft (*A380*).
+- **Click any flight** (in the list or on the map) to see its route, a
+  photo of the actual aircraft, its altitude and speed, and a link to
+  replay its whole flight on adsb.lol.
+
+**On your phone:** when planespotter starts, it prints a second address
+like `http://192.168.1.23:8765`. Open that on your phone while it's on
+the same Wi-Fi. Add it to your home screen to use it like an app.
+
+Flight paths are recorded from this version onwards. Flights spotted
+before that show as a dot where they came closest.
+
+**Just the map, no emails:** run `python3 -m planespotter map`. To turn the
+map off, or to keep it to this Mac only, see the *Live map* settings in
+[`.env.example`](.env.example).
+
+---
+
 ## If something goes wrong
 
 | What you see | What to do |
@@ -131,6 +177,8 @@ click **+**, go to your home folder → **planespotter**, choose
 | `Username and Password not accepted` | The app password is wrong. Make a new one (step 5) and run `setup` again. |
 | No emails arriving | Look in your spam folder, and run `python3 -m planespotter test-email`. |
 | Nothing ever shows up | Run `python3 -m planespotter check` to see what's flying nearby. Try a bigger radius, and check you pasted the coordinates of your house. |
+| The map page won't load | planespotter has to be running. Check the Terminal window is still open, then reload the page. |
+| The map won't open on my phone | The phone must be on the same Wi-Fi. Use the second address planespotter printed (not `localhost`). If your Mac asked about incoming connections and you clicked Deny, allow Python in **System Settings → Network → Firewall → Options**. |
 
 **Change a setting:** run `python3 -m planespotter setup` again. Your
 current answers show in [brackets], so just press Return on the ones you
@@ -152,7 +200,8 @@ Run these from inside the planespotter folder.
 | --- | --- |
 | `python3 -m planespotter setup` | Asks a few questions and saves your settings. |
 | `python3 -m planespotter check` | Lists the planes near you right now. Sends nothing. |
-| `python3 -m planespotter watch` | Runs until you stop it: alerts plus the daily report. |
+| `python3 -m planespotter watch` | Runs until you stop it: alerts, the daily report and the live map. Add `--open` to open the map in your browser. |
+| `python3 -m planespotter map` | Just the live map, without any emails. |
 | `python3 -m planespotter digest` | Sends the daily report right now. |
 | `python3 -m planespotter test-email` | Sends a test email. |
 
@@ -194,7 +243,13 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
 ## How it works
 
 - **Live positions** come from [adsb.lol](https://adsb.lol), a free
-  community network of ADS-B receivers (data under ODbL).
+  community network of ADS-B receivers (data under ODbL). The watcher and
+  the map share one request, at most every 8 seconds, so we stay well
+  within adsb.lol's limits.
+- **The map** uses [MapLibre](https://maplibre.org) with free
+  [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
+  to draw planes in 3D. It's served only from your computer. It never
+  serves your settings file or anything else from disk.
   **Routes and aircraft details** come from [adsbdb.com](https://www.adsbdb.com).
   Lookups are cached in a local database file (`planespotter.db`).
 - **Catching fast planes.** A jet can cross a 3-mile zone in under a
@@ -235,4 +290,4 @@ python3 -m unittest discover -s tests
 - Push notifications (ntfy.sh, Telegram) alongside email.
 - Only alert for interesting planes: helicopters, military aircraft,
   A380s, emergency squawks (7700).
-- A small map in the daily report showing the day's tracks.
+- A heat map of the busiest flight paths over your house.

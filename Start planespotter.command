@@ -16,9 +16,9 @@ if [ ! -f .env ]; then
 fi
 
 echo
-echo "Watching the sky. Leave this window open (you can minimise it)."
-echo "Your Mac won't fall asleep while this runs. Close the window to stop."
+echo "Leave this window open (you can minimise it). Close it to stop."
+echo "Your Mac won't fall asleep while this runs. The map opens in your browser."
 echo
 # caffeinate stops the Mac from idling to sleep while planespotter runs.
-caffeinate -i python3 -m planespotter watch
+caffeinate -i python3 -m planespotter watch --open
 read -r -p "planespotter stopped. Press Enter to close."

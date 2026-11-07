@@ -59,5 +59,15 @@ def segment_min_distance_miles(
     return math.hypot(x1 + t * dx, y1 + t * dy)
 
 
+def offset(lat: float, lon: float, bearing: float, miles: float) -> tuple[float, float]:
+    """The point ``miles`` away from (lat, lon) in compass direction ``bearing``."""
+    d = miles / EARTH_RADIUS_MI
+    b = math.radians(bearing)
+    p1, l1 = math.radians(lat), math.radians(lon)
+    p2 = math.asin(math.sin(p1) * math.cos(d) + math.cos(p1) * math.sin(d) * math.cos(b))
+    l2 = l1 + math.atan2(math.sin(b) * math.sin(d) * math.cos(p1), math.cos(d) - math.sin(p1) * math.sin(p2))
+    return math.degrees(p2), (math.degrees(l2) + 540) % 360 - 180
+
+
 def miles_to_nm(miles: float) -> float:
     return miles * NM_PER_MILE

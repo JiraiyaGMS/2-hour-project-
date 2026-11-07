@@ -1,4 +1,4 @@
-"""Command line: python3 -m planespotter {setup,check,watch,digest,test-email}"""
+"""Command line: python3 -m planespotter {setup,check,watch,map,digest,test-email}"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 import time
+import webbrowser
 from datetime import date
 from pathlib import Path
 
@@ -16,14 +17,13 @@ from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
+from .webmap import MapServerError, shared_feed, start_map_server
 from .wizard import Cancelled, Wizard
 
 
 def build(cfg: Config) -> Watcher:
     store = Store(cfg.db_path)
-    return Watcher(
-        cfg, store, LiveFeed(cfg.adsb_api), Lookup(store, cfg.adsbdb_api), Mailer(cfg)
-    )
+    return Watcher(cfg, store, shared_feed(cfg), Lookup(store, cfg.adsbdb_api), Mailer(cfg))
 
 
 def cmd_setup(env_path: Path, args) -> int:
@@ -81,11 +81,46 @@ def cmd_check(cfg: Config, args) -> int:
     return 0
 
 
+def print_map_urls(urls: list[str]) -> None:
+    print(f"  Map on this computer:  {urls[0]}")
+    if len(urls) > 1:
+        print(f"  Map on your phone:     {urls[1]}   (same Wi-Fi)")
+
+
 def cmd_watch(cfg: Config, args) -> int:
     watcher = build(cfg)
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
+    if cfg.map_enabled:
+        try:
+            _, urls = start_map_server(cfg, feed=watcher.feed)
+            print_map_urls(urls)
+            print()
+            if args.open:
+                webbrowser.open(urls[0])
+        except MapServerError as exc:
+            print(f"  (No map: {exc})\n")
     try:
         watcher.run()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    return 0
+
+
+def cmd_map(cfg: Config, args) -> int:
+    """Just the live map, without email alerts."""
+    try:
+        _, urls = start_map_server(cfg)
+    except MapServerError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print("The live map is running. Press Ctrl+C to stop.\n")
+    print_map_urls(urls)
+    print("\nThe Spotted list fills up while `watch` is running.")
+    if not args.no_browser:
+        webbrowser.open(urls[0])
+    try:
+        while True:
+            time.sleep(3600)
     except KeyboardInterrupt:
         print("\nStopped.")
     return 0
@@ -135,7 +170,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", metavar="command")
     sub.add_parser("setup", help="answer a few questions to create your settings")
     sub.add_parser("check", help="list planes near home right now")
-    sub.add_parser("watch", help="run forever: alerts + daily report")
+    p_watch = sub.add_parser("watch", help="run forever: alerts, daily report and the live map")
+    p_watch.add_argument("--open", action="store_true", help="open the map in your browser")
+    p_map = sub.add_parser("map", help="just the live 3D/2D map, no emails")
+    p_map.add_argument("--no-browser", action="store_true", help="don't open a browser")
     p_digest = sub.add_parser("digest", help="send the daily report now")
     p_digest.add_argument("--date", help="pretend today is YYYY-MM-DD")
     sub.add_parser("test-email", help="send a test email")
@@ -159,7 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Settings problem: {exc}", file=sys.stderr)
         return 2
 
-    commands = {"check": cmd_check, "watch": cmd_watch, "digest": cmd_digest, "test-email": cmd_test_email}
+    commands = {"check": cmd_check, "watch": cmd_watch, "map": cmd_map, "digest": cmd_digest,
+                "test-email": cmd_test_email}
     try:
         return commands[args.command](cfg, args)
     except BrokenPipeError:  # output piped into e.g. `head`; not a network problem

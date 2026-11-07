@@ -52,11 +52,28 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
+MAX_PATH_POINTS = 240
+
+
 class Store:
+    """One connection per thread: the watcher and the map server each open their own."""
+
     def __init__(self, path: str | Path = "planespotter.db"):
-        self.db = sqlite3.connect(str(path))
+        self.db = sqlite3.connect(str(path), timeout=15)
         self.db.row_factory = sqlite3.Row
+        if str(path) != ":memory:":
+            # Lets the map read while the watcher writes.
+            self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring databases made by older versions up to date."""
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(passes)")}
+        if "path" not in columns:
+            # [[lat, lon, alt_ft, unix_time], ...] while the plane was near home
+            self.db.execute("ALTER TABLE passes ADD COLUMN path TEXT NOT NULL DEFAULT '[]'")
+            self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -116,6 +133,28 @@ class Store:
         marks = ",".join("?" * len(pass_ids))
         return self.db.execute(
             f"SELECT * FROM passes WHERE id IN ({marks}) ORDER BY closest_miles", pass_ids
+        ).fetchall()
+
+    def append_path(self, pass_id: int, points: list[list[float]]) -> None:
+        """Add positions to a pass's flight path (for drawing it on the map)."""
+        if not points:
+            return
+        row = self.db.execute("SELECT path FROM passes WHERE id = ?", (pass_id,)).fetchone()
+        if row is None:
+            return
+        path = json.loads(row["path"] or "[]")
+        for point in points:
+            if not path or path[-1][3] < point[3]:
+                path.append([round(point[0], 5), round(point[1], 5), point[2], round(point[3])])
+        self.db.execute("UPDATE passes SET path = ? WHERE id = ?",
+                        (json.dumps(path[-MAX_PATH_POINTS:]), pass_id))
+        self.db.commit()
+
+    def recent_passes(self, since: float, limit: int = 2000) -> list[sqlite3.Row]:
+        """Newest first, for the map's flight list."""
+        return self.db.execute(
+            "SELECT * FROM passes WHERE first_seen >= ? ORDER BY first_seen DESC LIMIT ?",
+            (since, limit),
         ).fetchall()
 
     def passes_between(self, start: float, end: float) -> list[sqlite3.Row]:
