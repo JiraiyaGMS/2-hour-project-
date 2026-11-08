@@ -79,17 +79,28 @@ class SharedFeedTests(unittest.TestCase):
         now[0] += 10
         self.assertEqual(feed.aircraft_near(0, 0, 5)[0].callsign, "CALL1")  # last answer, no new request
         self.assertEqual(upstream.calls, 2)
-        now[0] += 200  # the pause is over: it asks again, and is told to wait again
+        now[0] += 200  # the 45 s pause is over: it asks again, and is told to wait again
         with self.assertRaises(urllib.error.HTTPError):
             feed.aircraft_near(0, 0, 5)
         self.assertEqual(upstream.calls, 3)
+        self.assertEqual(feed.blocked_until - now[0], 90)  # twice as long this time
         now[0] += 10  # paused, and the last good answer is now too old to show
         with self.assertRaises(urllib.error.URLError):
             feed.aircraft_near(0, 0, 5)
         self.assertEqual(upstream.calls, 3)
-        now[0] += 60
+        now[0] += 85
         upstream.fail_with = None
         self.assertEqual(feed.aircraft_near(0, 0, 5)[0].callsign, "CALL4")
+        self.assertEqual(feed.backoff, 0)  # back to normal
+
+    def test_follows_retry_after(self):
+        now = [1000.0]
+        upstream = FlakyFeed()
+        upstream.fail_with = urllib.error.HTTPError("u", 429, "Too Many Requests", {"Retry-After": "120"}, None)
+        feed = SharedFeed(upstream, ttl=8, clock=lambda: now[0])
+        with self.assertRaises(urllib.error.HTTPError):
+            feed.aircraft_near(0, 0, 5)
+        self.assertEqual(feed.blocked_until, 1120)
 
 
 class MapServerTests(unittest.TestCase):
@@ -144,6 +155,10 @@ class MapServerTests(unittest.TestCase):
         self.assertEqual(len(flights), 1)
         self.assertEqual(flights[0]["callsign"], "BAW123")
         self.assertEqual(json.loads(self.get("/api/flights?days=1")[2])["flights"], [])  # too old
+
+        heat = json.loads(self.get("/api/heat?days=0")[2])
+        self.assertEqual(heat["max"], 1)  # built from the one flight already in the history
+        self.assertEqual(len(heat["cells"]), 1)
 
         info = json.loads(self.get("/api/info?hex=abc123&callsign=BAW123&lat=51.5&lon=-0.1")[2])
         self.assertEqual(info["origin"], "")  # lookup service unreachable: blank, not an error

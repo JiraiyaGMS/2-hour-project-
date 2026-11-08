@@ -20,6 +20,8 @@ from typing import Any, Callable
 from .adsb import Aircraft, LiveFeed, Lookup, SharedFeed
 from .config import Config
 from .geo import bearing_deg, distance_miles, miles_to_nm, offset
+from .heat import backfill as backfill_heat
+from .heat import heat_json
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -181,6 +183,9 @@ def make_handler(app: MapApp):
                     self.send_json(app.live.get())
                 elif url.path == "/api/flights":
                     self.send_json(app.flights_json(float(query.get("days", "7") or 7)))
+                elif url.path == "/api/heat":
+                    days = int(float(query.get("days", "7") or 7))
+                    self.send_json(heat_json(app.store(), app.cfg, app.clock(), days))
                 elif url.path == "/api/info":
                     self.send_json(app.info_json(query))
                 else:
@@ -211,6 +216,9 @@ def lan_address() -> str | None:
 def start_map_server(cfg: Config, feed=None, port: int | None = None):
     """Start serving the map in a background thread. Returns (server, list of URLs)."""
     host = "0.0.0.0" if cfg.map_lan else "127.0.0.1"
+    store = Store(cfg.db_path)
+    backfill_heat(store, cfg)  # first run only: build the heat map from existing history
+    store.close()
     port = cfg.map_port if port is None else port
     try:
         server = ThreadingHTTPServer((host, port), make_handler(MapApp(cfg, feed)))

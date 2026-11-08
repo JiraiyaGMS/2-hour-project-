@@ -100,6 +100,14 @@ class LiveFeed:
         return [ac for ac in found if ac and ac.hex]
 
 
+def retry_after_seconds(exc: urllib.error.HTTPError) -> float:
+    """The server's Retry-After header in seconds, if it sent one (capped at 15 minutes)."""
+    try:
+        return min(900.0, float((exc.headers or {}).get("Retry-After") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class SharedFeed:
     """One request to adsb.lol serves both the watcher and the live map.
 
@@ -107,7 +115,7 @@ class SharedFeed:
     too often (HTTP 429), we back off and keep showing the last answer for a bit.
     """
 
-    def __init__(self, feed: LiveFeed, min_radius_nm: float = 0, ttl: float = 8.0, clock=None):
+    def __init__(self, feed: LiveFeed, min_radius_nm: float = 0, ttl: float = 10.0, clock=None):
         self.feed = feed
         self.min_radius_nm = min_radius_nm
         self.ttl = ttl
@@ -117,6 +125,7 @@ class SharedFeed:
         self.radius = 0.0
         self.fetched_at = 0.0
         self.blocked_until = 0.0
+        self.backoff = 0.0
 
     def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
         with self.lock:
@@ -133,9 +142,13 @@ class SharedFeed:
                 self.data = self.feed.aircraft_near(lat, lon, radius)
             except urllib.error.HTTPError as exc:
                 if exc.code == 429:
-                    self.blocked_until = now + 45
-                    log.info("adsb.lol rate limit hit; pausing live requests for 45s")
+                    # Wait longer each time it happens in a row: 45 s, 90 s, ... up to 5 minutes.
+                    self.backoff = min(300.0, max(45.0, self.backoff * 2))
+                    wait = max(self.backoff, retry_after_seconds(exc))
+                    self.blocked_until = now + wait
+                    log.info("adsb.lol asked us to slow down; pausing live requests for %ds", wait)
                 raise
+            self.backoff = 0.0
             self.radius = radius
             self.fetched_at = now
             return self.data

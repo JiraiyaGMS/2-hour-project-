@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import sqlite3
 import time
 import urllib.error
 from datetime import date
@@ -13,6 +14,8 @@ from .adsb import Aircraft, LiveFeed, Lookup
 from .config import Config, fmt_clock_range
 from .digest import build_forecast, build_recap
 from .emails import alert_email, digest_email, fmt_alt, fmt_dist
+from .heat import HeatRecorder
+from .heat import backfill as backfill_heat
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, segment_min_distance_miles
 from .mailer import Mailer
 from .store import Store
@@ -44,6 +47,7 @@ class Watcher:
         self.last_positions: dict[str, tuple] = {}
         # Planes whose pass is still being drawn: hex -> pass id
         self.open_paths: dict[str, int] = {}
+        self.heat = HeatRecorder(store, cfg)
         self.digest_retry_at = 0.0
 
     # --- polling ------------------------------------------------------------
@@ -95,6 +99,10 @@ class Watcher:
                 route = f" ({info.origin}→{info.destination})" if info.origin or info.destination else ""
                 log.info("overhead: %s %s %s, %s%s", ac.label, fmt_dist(hit[0]),
                          compass(hit[1]), fmt_alt(ac.alt_ft), route)
+        try:
+            self.heat.record(planes, self.last_positions, now)
+        except sqlite3.Error as exc:  # the heat map is a nice-to-have; never let it stop alerts
+            log.warning("couldn't update the heat map: %s", exc)
         self.last_positions = positions
         self.open_paths = {h: pid for h, pid in self.open_paths.items() if h in positions}
         return new_passes
@@ -159,6 +167,7 @@ class Watcher:
         cfg = self.cfg
         if self.store.get_meta("watch_started") is None:
             self.store.set_meta("watch_started", str(self.clock()))
+        backfill_heat(self.store, cfg)
         log.info(
             "watching %.1f mi around %s (%.4f, %.4f), every %ds%s",
             cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon, cfg.poll_seconds,

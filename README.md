@@ -153,13 +153,21 @@ browser on your Mac.
 - **Click any flight** (in the list or on the map) to see its route, a
   photo of the actual aircraft, its altitude and speed, and a link to
   replay its whole flight on adsb.lol.
+- **🔥 Heat map** (top right) shows the busiest flight paths around you,
+  from blue (quiet) to red (busy). Choose today, 7 days, 30 days or all
+  time. It counts every plane within the map's range, not just the ones
+  over your zone, so approach and departure routes stand out. The panel
+  also lists the most common routes over your zone; click one to see
+  those flights.
 
 **On your phone:** when planespotter starts, it prints a second address
 like `http://192.168.1.23:8765`. Open that on your phone while it's on
 the same Wi-Fi. Add it to your home screen to use it like an app.
 
 Flight paths are recorded from this version onwards. Flights spotted
-before that show as a dot where they came closest.
+before that show as a dot where they came closest. The heat map starts
+from the flights already in your history and fills in as planespotter
+keeps running. Give it a few days and the regular routes become clear.
 
 **Just the map, no emails:** run `python3 -m planespotter map`. To turn the
 map off, or to keep it to this Mac only, see the *Live map* settings in
@@ -244,8 +252,13 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
 
 - **Live positions** come from [adsb.lol](https://adsb.lol), a free
   community network of ADS-B receivers (data under ODbL). The watcher and
-  the map share one request, at most every 8 seconds, so we stay well
-  within adsb.lol's limits.
+  the map share one request, at most every 10 seconds, and back off if
+  adsb.lol says we're asking too often.
+- **The heat map** splits the sky into squares about 280 m across. Each
+  time a plane flies through a square, that square's count for the day
+  goes up by one. Each plane counts once per square per trip, however
+  slowly it flies, and the gaps between position reports are filled in so
+  fast jets leave a continuous line.
 - **The map** uses [MapLibre](https://maplibre.org) with free
   [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
   to draw planes in 3D. It's served only from your computer. It never
@@ -290,4 +303,4 @@ python3 -m unittest discover -s tests
 - Push notifications (ntfy.sh, Telegram) alongside email.
 - Only alert for interesting planes: helicopters, military aircraft,
   A380s, emergency squawks (7700).
-- A heat map of the busiest flight paths over your house.
+- Busiest times of day: a chart of when planes come over.

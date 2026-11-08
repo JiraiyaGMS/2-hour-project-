@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -49,6 +50,15 @@ CREATE TABLE IF NOT EXISTS lookups (
 CREATE TABLE IF NOT EXISTS alert_emails (sent_at REAL NOT NULL);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+-- Heat map: how many planes flew through each grid cell, per local day.
+CREATE TABLE IF NOT EXISTS heat (
+    day TEXT    NOT NULL,
+    cx  INTEGER NOT NULL,
+    cy  INTEGER NOT NULL,
+    n   INTEGER NOT NULL,
+    PRIMARY KEY (day, cx, cy)
+);
 """
 
 
@@ -149,6 +159,37 @@ class Store:
         self.db.execute("UPDATE passes SET path = ? WHERE id = ?",
                         (json.dumps(path[-MAX_PATH_POINTS:]), pass_id))
         self.db.commit()
+
+    # --- heat map -------------------------------------------------------------
+
+    def add_heat(self, day: str, cells, commit: bool = True) -> None:
+        """Count one plane through each cell (a cell listed twice counts twice)."""
+        counts = Counter(cells)
+        if counts:
+            self.db.executemany("INSERT OR IGNORE INTO heat (day, cx, cy, n) VALUES (?, ?, ?, 0)",
+                                [(day, cx, cy) for cx, cy in counts])
+            self.db.executemany("UPDATE heat SET n = n + ? WHERE day = ? AND cx = ? AND cy = ?",
+                                [(n, day, cx, cy) for (cx, cy), n in counts.items()])
+        if commit:
+            self.db.commit()
+
+    def heat_cells(self, since_day: str = "") -> list[tuple[int, int, int]]:
+        """(cx, cy, total) for every cell with traffic on or after ``since_day`` (YYYY-MM-DD)."""
+        return [tuple(r) for r in self.db.execute(
+            "SELECT cx, cy, SUM(n) FROM heat WHERE day >= ? GROUP BY cx, cy", (since_day,))]
+
+    def first_heat_day(self) -> str | None:
+        return self.db.execute("SELECT MIN(day) FROM heat").fetchone()[0]
+
+    def top_routes(self, since: float, limit: int = 5) -> list[sqlite3.Row]:
+        """The most common origin → destination pairs among planes over the zone."""
+        return self.db.execute(
+            "SELECT origin, destination, MAX(origin_city) AS origin_city, "
+            "MAX(destination_city) AS destination_city, COUNT(*) AS n FROM passes "
+            "WHERE first_seen >= ? AND origin != '' AND destination != '' "
+            "GROUP BY origin, destination ORDER BY n DESC, origin LIMIT ?",
+            (since, limit),
+        ).fetchall()
 
     def recent_passes(self, since: float, limit: int = 2000) -> list[sqlite3.Row]:
         """Newest first, for the map's flight list."""

@@ -156,6 +156,38 @@ button { font: inherit; color: inherit; }
 }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
 
+.round[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+
+/* ---------- heat map panel ---------- */
+.heat-panel {
+  position: absolute; left: 12px; bottom: 28px; z-index: 2; width: 290px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 12px 14px;
+}
+.heat-panel[hidden] { display: none; }
+.heat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.heat-head select {
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  border-radius: 8px; padding: 3px 6px; font: inherit; font-size: 12.5px;
+}
+.heat-scale { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11.5px; color: var(--muted); }
+.heat-bar {
+  flex: 1; height: 8px; border-radius: 99px;
+  background: linear-gradient(90deg, #313695, #4575b4, #74add1, #fee090, #fc8d59, #d73027);
+}
+.heat-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.heat-routes h3 {
+  margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+}
+.heat-routes button {
+  display: flex; width: 100%; align-items: baseline; gap: 8px; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 8px; padding: 5px 6px; margin: 0 -6px; width: calc(100% + 12px);
+}
+.heat-routes button:hover { background: var(--panel-2); }
+.heat-routes .r { font-weight: 650; white-space: nowrap; }
+.heat-routes .c { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heat-routes .n { font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--muted); }
+
 /* ---------- detail card ---------- */
 .detail {
   position: absolute; z-index: 3; right: 12px; bottom: 28px; width: 340px; max-width: calc(100% - 24px);
@@ -201,7 +233,10 @@ button { font: inherit; color: inherit; }
   .stats > div:nth-child(n + 4) { display: none; }
   .stats .v { font-size: 13.5px; }
   .links { margin-top: 8px; }
-  .status { top: 8px; left: 8px; max-width: calc(100% - 160px); }
+  .status { top: 8px; left: 8px; max-width: calc(100% - 200px); }
+  .heat-panel { left: 8px; right: 8px; bottom: 8px; width: auto; padding: 10px 12px; }
+  .heat-routes, .heat-note { display: none; }
+  .detail:not([hidden]) ~ .heat-panel { display: none; }
   #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .map-controls { top: 8px; right: 8px; }
 }

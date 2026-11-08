@@ -7,6 +7,7 @@
   'use strict';
 
   const FT = 0.3048;              // metres per foot
+  const MPP_Z0 = 78271.517;       // metres per pixel at zoom 0 on the equator (MapLibre's 512 px tiles)
   const MI = 1609.344;            // metres per mile
   const KT = 0.514444;            // metres per second per knot
   const LIVE_EVERY_MS = 5000;
@@ -42,6 +43,9 @@
     ink: rgb(cssVar('--ink')), panel: rgb(cssVar('--panel')), muted: rgb(cssVar('--muted')),
   };
   const a = (color, alpha) => [...color, alpha];
+  // Flat things on the ground (zone, heat map) let each other show through instead of
+  // flickering, while 3D buildings still hide them.
+  const GROUND = { depthWriteEnabled: false, depthCompare: 'less-equal' };
 
   // ---------- state ----------
   const state = {
@@ -64,6 +68,9 @@
     infoQueue: [],
     infoBusy: 0,
     listLimit: LIST_PAGE,
+    heat: saved.get('heat', false),
+    heatDays: saved.get('heatDays', 7),
+    heatData: null,
   };
 
   // ---------- small helpers ----------
@@ -388,6 +395,65 @@
     el.hidden = false;
   }
 
+  // ---------- heat map of the busiest flight paths ----------
+  const HEAT_COLORS = [[49, 54, 149], [69, 117, 180], [116, 173, 209], [254, 224, 144], [252, 141, 89], [215, 48, 39]];
+
+  async function loadHeat() {
+    if (!state.heat) return;
+    try {
+      state.heatData = await getJSON(`api/heat?days=${state.heatDays}`);
+    } catch {
+      if (!state.heatData) state.heatData = { cells: [], routes: [], max: 0 };
+    }
+    renderHeatPanel();
+    render();
+  }
+
+  function renderHeatPanel() {
+    const panel = $('#heat-panel');
+    panel.hidden = !state.heat;
+    $('#legend').hidden = state.heat;
+    $('#btn-heat').setAttribute('aria-pressed', String(state.heat));
+    if (!state.heat) return;
+    $('#heat-days').value = String(state.heatDays);
+    const data = state.heatData;
+    const view = state.config ? Math.round(state.config.view_radius_miles) : 15;
+    if (!data) { $('#heat-note').textContent = 'Loading…'; $('#heat-routes').innerHTML = ''; return; }
+    if (!data.cells.length) {
+      $('#heat-note').textContent = 'No traffic recorded in this time yet. Keep planespotter running and the busy paths will light up.';
+    } else {
+      const since = data.first_day
+        ? new Date(`${data.first_day}T12:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
+      $('#heat-note').textContent = `Every plane within ${view} mi, counted once per spot it flew over.`
+        + ` The busiest spot had ${data.max.toLocaleString()} plane${data.max === 1 ? '' : 's'}.`
+        + (since ? ` Recording since ${since}.` : '');
+    }
+    const routes = data.routes || [];
+    $('#heat-routes').innerHTML = routes.length
+      ? '<h3>Most common routes over your zone</h3>' + routes.map((r) => `
+          <button data-route="${esc(`${r.origin} ${r.destination}`)}" title="Show these flights">
+            <span class="r">${esc(r.origin)} → ${esc(r.destination)}</span>
+            <span class="c">${esc([r.origin_city, r.destination_city].filter(Boolean).join(' → '))}</span>
+            <span class="n">${r.flights}</span>
+          </button>`).join('')
+      : '';
+  }
+
+  function setHeat(on) {
+    state.heat = on;
+    saved.set('heat', on);
+    renderHeatPanel();
+    if (on) loadHeat(); else render();
+  }
+
+  /** Heat spots are ~280 m across: keep them that size on screen as you zoom. */
+  function heatRadiusPixels() {
+    const lat = state.config.home.lat * Math.PI / 180;
+    const metresPerPixel = (MPP_Z0 * Math.cos(lat)) / 2 ** map.getZoom();
+    // Three squares wide, so neighbouring squares blend into one smooth path.
+    return Math.round(Math.min(160, Math.max(16, (280 / metresPerPixel) * 3)) / 4) * 4;
+  }
+
   // ---------- status pill ----------
   function updateStatus() {
     const el = $('#status');
@@ -413,12 +479,13 @@
     iconMapping: { plane: { x: 0, y: 0, width: 128, height: 128, mask: true } },
   };
 
+  /** A zoom that fits your zone nicely: ~75% of the map in 2D, a bit more in tilted 3D. */
   function zoomFor(miles) {
     const el = $('#map');
     const px = Math.max(240, Math.min(el.clientWidth, el.clientHeight) || 600);
-    const metresPerPixel = (2 * miles * MI * 1.5) / px;
-    const zoom = Math.log2((156543.03 * Math.cos(state.config.home.lat * Math.PI / 180)) / metresPerPixel);
-    return state.mode === '3d' ? zoom - 0.45 : zoom;
+    const fill = state.mode === '3d' ? 0.98 : 0.75;
+    const metresPerPixel = (2 * miles * MI) / (fill * px);
+    return Math.log2((MPP_Z0 * Math.cos(state.config.home.lat * Math.PI / 180)) / metresPerPixel);
   }
 
   function addBuildings() {
@@ -490,8 +557,13 @@
       new deck.PolygonLayer({
         id: 'zone', data: [{ polygon: state.zone }], getPolygon: (d) => d.polygon,
         filled: true, stroked: true, getFillColor: a(C.accent, dark ? 20 : 26), getLineColor: a(C.accent, 230),
-        lineWidthUnits: 'pixels', getLineWidth: 2,
+        lineWidthUnits: 'pixels', getLineWidth: 2, parameters: GROUND,
       }),
+      state.heat && state.heatData && state.heatData.cells.length ? new deck.HeatmapLayer({
+        id: 'heat', data: state.heatData.cells, getPosition: (c) => [c[0], c[1]], getWeight: (c) => c[2],
+        radiusPixels: heatRadiusPixels(), intensity: 1.3, threshold: 0.03, opacity: dark ? 0.8 : 0.65,
+        colorRange: HEAT_COLORS, aggregation: 'SUM', parameters: GROUND,
+      }) : null,
       is3d && ceiling ? new deck.PolygonLayer({
         id: 'zone-ceiling', data: [{ polygon: state.zone }], getPolygon: (d) => d.polygon,
         extruded: true, wireframe: true, getElevation: ceiling * FT, material: false,
@@ -630,6 +702,21 @@
     $('#btn-3d').addEventListener('click', () => setMode('3d'));
     $('#btn-2d').addEventListener('click', () => setMode('2d'));
     $('#btn-home').addEventListener('click', goHome);
+    $('#btn-heat').addEventListener('click', () => setHeat(!state.heat));
+    $('#heat-days').addEventListener('change', (e) => {
+      state.heatDays = Number(e.target.value);
+      saved.set('heatDays', state.heatDays);
+      state.heatData = null;
+      renderHeatPanel();
+      loadHeat();
+    });
+    $('#heat-routes').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-route]');
+      if (!btn) return;
+      $('#search').value = btn.dataset.route;
+      state.query = btn.dataset.route.toLowerCase();
+      setTab('history');
+    });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.selected) select(null); });
   }
 
@@ -671,6 +758,9 @@
     pollLive();
     if (state.tab !== 'history') loadFlights();
     setInterval(() => { if (!document.hidden) loadFlights(); }, HISTORY_EVERY_MS);
+    renderHeatPanel();
+    loadHeat();
+    setInterval(() => { if (!document.hidden) loadHeat(); }, HISTORY_EVERY_MS);
     requestAnimationFrame(animate);
   }
 
