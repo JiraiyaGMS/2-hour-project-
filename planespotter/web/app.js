@@ -71,6 +71,7 @@
     heat: saved.get('heat', false),
     heatDays: saved.get('heatDays', 7),
     heatData: null,
+    whole: null,                // the selected flight's whole path: { key, status, path, p3, p2 }
   };
 
   // ---------- small helpers ----------
@@ -324,6 +325,8 @@
       state.lastSelectedLive = plane || null;
       if (plane) queueInfo([plane], true);
     }
+    state.whole = null;
+    if (state.selected) loadWhole();
     renderList();
     renderDetail();
     if (fly && state.selected) flyToSelected();
@@ -338,6 +341,103 @@
     if (!thing) return;
     const center = thing.plane ? livePos(thing.plane, performance.now()) : [thing.flight.lon, thing.flight.lat];
     map.flyTo({ center, zoom: Math.max(map.getZoom(), 11.5), duration: 1100, essential: true });
+  }
+
+  // ---------- whole flights ----------
+  const selKeyOf = (sel) => (sel ? `${sel.kind}:${sel.key}` : '');
+
+  async function loadWhole() {
+    const sel = state.selected;
+    if (!sel) return;
+    const key = selKeyOf(sel);
+    let whole;
+    try {
+      if (sel.kind === 'history') {
+        const data = await getJSON(`api/flight?id=${encodeURIComponent(sel.key)}`);
+        whole = { status: data.whole_state, path: data.whole_path || [] };
+      } else {
+        const data = await getJSON(`api/trace?hex=${encodeURIComponent(sel.key)}`);
+        whole = { status: 'so-far', path: data.path || [] };
+      }
+    } catch {
+      whole = { status: 'error', path: [] };
+    }
+    if (selKeyOf(state.selected) !== key) return; // they picked something else meanwhile
+    whole.key = key;
+    whole.p3 = whole.path.map((p) => [p[1], p[0], (p[2] || 0) * FT]);
+    whole.p2 = whole.path.map((p) => [p[1], p[0], 0]);
+    state.whole = whole;
+    renderDetail();
+    render();
+  }
+
+  /** Zoom the map out (or in) to show a set of [lon, lat] points. */
+  function fitTo(coords) {
+    if (!coords.length) return;
+    let lons = coords.map((c) => c[0]);
+    if (Math.max(...lons) - Math.min(...lons) > 180) lons = lons.map((x) => (x < 0 ? x + 360 : x)); // across the Pacific
+    const lats = coords.map((c) => c[1]);
+    const sw = [Math.min(...lons), Math.min(...lats)];
+    const ne = [Math.max(...lons), Math.max(...lats)];
+    map.fitBounds([sw, ne], { padding: clearOfCards(sw, ne), maxZoom: 12.5, duration: 1300 });
+  }
+
+  /**
+   * Padding that keeps a route clear of the cards floating over the map: either beside
+   * them or above them, whichever leaves the route bigger on screen.
+   */
+  function clearOfCards(sw, ne) {
+    const box = $('#map').getBoundingClientRect();
+    const W = box.width, H = box.height, top = 70, edge = 40;
+    const cards = ['#detail', '#heat-panel']
+      .map((sel) => $(sel).getBoundingClientRect())
+      .filter((r) => r.height > 0);
+
+    let left = edge, right = edge, bottom = edge, sidewaysOk = true;
+    for (const r of cards) {
+      const x1 = r.left - box.left, x2 = r.right - box.left;
+      if (x2 < W * 0.6) left = Math.max(left, x2 + 16);            // a card on the left
+      else if (x1 > W * 0.4) right = Math.max(right, W - x1 + 16); // a card on the right
+      else sidewaysOk = false;                                      // a full-width card (phones)
+      bottom = Math.max(bottom, box.bottom - r.top + 16);
+    }
+    // How big the route would be with each choice (its shape at the current zoom is enough to compare).
+    const a = map.project(sw), b = map.project(ne);
+    const bw = Math.max(1, Math.abs(b.x - a.x)), bh = Math.max(1, Math.abs(b.y - a.y));
+    const beside = sidewaysOk ? Math.min((W - left - right) / bw, (H - top - edge) / bh) : -1;
+    const above = Math.min((W - 2 * edge) / bw, (H - top - bottom) / bh);
+    const padding = beside >= above
+      ? { top, bottom: edge, left, right }
+      : { top, bottom, left: edge, right: edge };
+    // Never ask for more padding than the map has room for.
+    if (padding.top + padding.bottom > H - 60 || padding.left + padding.right > W - 60) {
+      return { top: 40, bottom: 40, left: 30, right: 30 };
+    }
+    return padding;
+  }
+
+  function wholeNote() {
+    const w = state.whole;
+    const sel = state.selected;
+    if (!sel) return '';
+    if (!w) return '<div class="note">Getting its whole flight…</div>';
+    const n = w.path.length;
+    if (sel.kind === 'live') {
+      return n > 1 ? '<div class="note">The pink line shows where it has flown so far.</div>' : '';
+    }
+    if (w.status === 'done' && n > 1) return '';
+    if (w.status === 'waiting' && n > 1) return '<div class="note">It was still flying at the last check; the rest of its flight is added automatically.</div>';
+    if (w.status === 'waiting') return '<div class="note">Its whole flight is looked up from adsb.lol shortly after it lands.</div>';
+    if (w.status === 'unavailable') return '<div class="note">adsb.lol has no record of the rest of this flight.</div>';
+    return '';
+  }
+
+  function wholeButton() {
+    const w = state.whole;
+    if (!w || w.path.length < 2) return '';
+    const text = state.selected.kind === 'live' ? 'Show where it’s come from'
+      : w.status === 'done' ? 'Show its whole flight' : 'Show its flight so far';
+    return `<button class="linkbtn" data-action="fit-whole">${text}</button>`;
   }
 
   function stat(k, v) {
@@ -366,7 +466,8 @@
         </div>
         ${thing.lost ? '<div class="note">Out of range now, showing its last position.</div>'
           : p.in_zone ? '<div class="note"><span class="badge">Overhead</span> inside your zone right now</div>' : ''}
-        <div class="links"><a href="https://globe.adsb.lol/?icao=${esc(p.hex)}" target="_blank" rel="noopener">Follow it on adsb.lol ↗</a></div>
+        ${wholeNote()}
+        <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(p.hex)}" target="_blank" rel="noopener">Follow it on adsb.lol ↗</a></div>
       </div>`;
     } else {
       const f = thing.flight;
@@ -385,7 +486,8 @@
           ${stat(`Seen ${['Today', 'Yesterday'].includes(dayLabel(f.first_seen)) ? dayLabel(f.first_seen).toLowerCase() : dayLabel(f.first_seen)}`, fmtTime(f.first_seen))}${stat('Closest', `${fmtDist(f.closest_miles)} ${compass(f.bearing)}`)}${stat('Altitude', fmtAlt(f.closest_alt_ft))}
         </div>
         <div class="note">${esc(why)}</div>
-        <div class="links"><a href="https://globe.adsb.lol/?icao=${esc(f.hex)}&showTrace=${utcDay}" target="_blank" rel="noopener">Replay its flight on adsb.lol ↗</a></div>
+        ${wholeNote()}
+        <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(f.hex)}&showTrace=${utcDay}" target="_blank" rel="noopener">Replay on adsb.lol ↗</a></div>
       </div>`;
     }
     if (html !== lastDetailHtml) {
@@ -418,16 +520,29 @@
     $('#heat-days').value = String(state.heatDays);
     const data = state.heatData;
     const view = state.config ? Math.round(state.config.view_radius_miles) : 15;
-    if (!data) { $('#heat-note').textContent = 'Loading…'; $('#heat-routes').innerHTML = ''; return; }
+    if (!data) {
+      $('#heat-note').textContent = 'Loading…';
+      $('#heat-routes').innerHTML = '';
+      $('#heat-actions').innerHTML = '';
+      return;
+    }
     if (!data.cells.length) {
       $('#heat-note').textContent = 'No traffic recorded in this time yet. Keep planespotter running and the busy paths will light up.';
     } else {
       const since = data.first_day
         ? new Date(`${data.first_day}T12:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
-      $('#heat-note').textContent = `Every plane within ${view} mi, counted once per spot it flew over.`
-        + ` The busiest spot had ${data.max.toLocaleString()} plane${data.max === 1 ? '' : 's'}.`
+      const zone = state.config ? state.config.radius_miles : 3;
+      const whole = data.whole_flights || 0;
+      const waiting = data.whole_flights_waiting || 0;
+      $('#heat-note').textContent = `Within ${view} mi: every plane. Farther out: the whole flight of each plane`
+        + ` that crossed your ${zone} mi zone (${whole.toLocaleString()} so far`
+        + (waiting ? `, ${waiting.toLocaleString()} more being looked up)` : ')') + '.'
         + (since ? ` Recording since ${since}.` : '');
     }
+    $('#heat-actions').innerHTML = (data.route_cells || []).length
+      ? '<button class="linkbtn" data-action="fit-routes">See the whole routes ↗</button>'
+        + '<button class="linkbtn" data-action="fit-home">Back to home</button>'
+      : '';
     const routes = data.routes || [];
     $('#heat-routes').innerHTML = routes.length
       ? '<h3>Most common routes over your zone</h3>' + routes.map((r) => `
@@ -446,12 +561,12 @@
     if (on) loadHeat(); else render();
   }
 
-  /** Heat spots are ~280 m across: keep them that size on screen as you zoom. */
-  function heatRadiusPixels() {
+  /** Keep heat spots the size of their grid squares on screen as you zoom (~280 m near home, ~4.4 km far away). */
+  function heatRadiusPixels(cellMetres, min, max) {
     const lat = state.config.home.lat * Math.PI / 180;
     const metresPerPixel = (MPP_Z0 * Math.cos(lat)) / 2 ** map.getZoom();
     // Three squares wide, so neighbouring squares blend into one smooth path.
-    return Math.round(Math.min(160, Math.max(16, (280 / metresPerPixel) * 3)) / 4) * 4;
+    return Math.round(Math.min(max, Math.max(min, (cellMetres / metresPerPixel) * 3)) / 4) * 4;
   }
 
   // ---------- status pill ----------
@@ -552,6 +667,11 @@
     const history = showHistory ? state.historyView.slice(0, 1500) : [];
     const historyWithPaths = history.filter((f) => f.path.length > 1);
     const selFlight = sel && sel.kind === 'history' ? state.flights.find((f) => String(f.id) === sel.key) : null;
+    // The selected flight's whole path (for a live plane: from takeoff up to where it is now).
+    const whole = state.whole && state.whole.key === selKey && state.whole.path.length > 1 ? state.whole : null;
+    let wholePath = whole ? (is3d ? whole.p3 : whole.p2) : null;
+    const selPlane = whole && sel.kind === 'live' ? planes.find((d) => d.selected) : null;
+    if (wholePath && selPlane) wholePath = [...wholePath, [selPlane.lon, selPlane.lat, selPlane.z]];
 
     const layers = [
       new deck.PolygonLayer({
@@ -559,9 +679,14 @@
         filled: true, stroked: true, getFillColor: a(C.accent, dark ? 20 : 26), getLineColor: a(C.accent, 230),
         lineWidthUnits: 'pixels', getLineWidth: 2, parameters: GROUND,
       }),
+      state.heat && state.heatData && (state.heatData.route_cells || []).length ? new deck.HeatmapLayer({
+        id: 'heat-routes', data: state.heatData.route_cells, getPosition: (c) => [c[0], c[1]], getWeight: (c) => c[2],
+        radiusPixels: heatRadiusPixels(4440, 12, 140), intensity: 1.3, threshold: 0.03, opacity: dark ? 0.8 : 0.65,
+        colorRange: HEAT_COLORS, aggregation: 'SUM', parameters: GROUND,
+      }) : null,
       state.heat && state.heatData && state.heatData.cells.length ? new deck.HeatmapLayer({
         id: 'heat', data: state.heatData.cells, getPosition: (c) => [c[0], c[1]], getWeight: (c) => c[2],
-        radiusPixels: heatRadiusPixels(), intensity: 1.3, threshold: 0.03, opacity: dark ? 0.8 : 0.65,
+        radiusPixels: heatRadiusPixels(280, 16, 160), intensity: 1.3, threshold: 0.03, opacity: dark ? 0.8 : 0.65,
         colorRange: HEAT_COLORS, aggregation: 'SUM', parameters: GROUND,
       }) : null,
       is3d && ceiling ? new deck.PolygonLayer({
@@ -592,6 +717,10 @@
         stroked: true, getLineColor: a(C.panel, 255), lineWidthUnits: 'pixels', getLineWidth: 1,
         updateTriggers: { getPosition: is3d, getRadius: selKey, getFillColor: selKey },
       }),
+      wholePath ? new deck.PathLayer({
+        id: 'whole-flight', data: [{ path: wholePath }], getPath: (d) => d.path,
+        getColor: a(C.select, 220), getWidth: 3, widthUnits: 'pixels', capRounded: true, jointRounded: true,
+      }) : null,
       selFlight && is3d && selFlight.closest_alt_ft ? new deck.LineLayer({
         id: 'history-drop', data: [selFlight],
         getSourcePosition: (f) => [f.lon, f.lat, 0], getTargetPosition: (f) => [f.lon, f.lat, z(f.closest_alt_ft)],
@@ -698,7 +827,26 @@
       const item = e.target.closest('.item');
       if (item) select(item.dataset.kind, item.dataset.key);
     });
-    $('#detail').addEventListener('click', (e) => { if (e.target.closest('.close')) select(null); });
+    $('#detail').addEventListener('click', (e) => {
+      if (e.target.closest('.close')) select(null);
+      if (e.target.closest('[data-action="fit-whole"]') && state.whole) {
+        const coords = state.whole.p2.slice();
+        const plane = state.selected && state.selected.kind === 'live' && selectedThing();
+        if (plane && plane.plane) coords.push(livePos(plane.plane, performance.now()));
+        fitTo(coords);
+      }
+    });
+    $('#heat-actions').addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="fit-home"]')) { goHome(); return; }
+      if (!e.target.closest('[data-action="fit-routes"]') || !state.heatData) return;
+      // The middle 90% of the route heat, so one long-haul flight doesn't zoom out to the whole world.
+      const cells = state.heatData.route_cells;
+      const pick = (arr, q) => arr[Math.min(arr.length - 1, Math.floor(q * arr.length))];
+      const lons = cells.map((c) => c[0]).sort((x, y) => x - y);
+      const lats = cells.map((c) => c[1]).sort((x, y) => x - y);
+      const { home } = state.config;
+      fitTo([[pick(lons, 0.05), pick(lats, 0.05)], [pick(lons, 0.95), pick(lats, 0.95)], [home.lon, home.lat]]);
+    });
     $('#btn-3d').addEventListener('click', () => setMode('3d'));
     $('#btn-2d').addEventListener('click', () => setMode('2d'));
     $('#btn-home').addEventListener('click', goHome);
@@ -761,6 +909,8 @@
     renderHeatPanel();
     loadHeat();
     setInterval(() => { if (!document.hidden) loadHeat(); }, HISTORY_EVERY_MS);
+    // Keep the selected flight's whole path up to date (a live plane keeps flying).
+    setInterval(() => { if (!document.hidden && state.selected) loadWhole(); }, HISTORY_EVERY_MS);
     requestAnimationFrame(animate);
   }
 

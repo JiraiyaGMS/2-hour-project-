@@ -13,6 +13,7 @@ from pathlib import Path
 from .adsb import LiveFeed, Lookup
 from .config import DEFAULT_ENV, Config, ConfigError, fmt_clock_range
 from .emails import fmt_alt, test_email
+from .fullpath import start_full_path_worker
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
 from .store import Store
@@ -113,6 +114,8 @@ def cmd_map(cfg: Config, args) -> int:
     except MapServerError as exc:
         print(exc, file=sys.stderr)
         return 1
+    if cfg.whole_flights:
+        start_full_path_worker(cfg)
     print("The live map is running. Press Ctrl+C to stop.\n")
     print_map_urls(urls)
     print("\nThe Spotted list fills up while `watch` is running.")

@@ -100,6 +100,7 @@ class Config:
     map_enabled: bool = True  # `watch` also serves the live map
     map_port: int = 8765
     map_lan: bool = True  # let phones on the same Wi-Fi open the map
+    whole_flights: bool = True  # look up the complete flight of planes that crossed the zone
 
     @property
     def view_radius_miles(self) -> float:
@@ -243,6 +244,7 @@ class Config:
             map_enabled=flag("MAP_ENABLED", True),
             map_port=number("MAP_PORT", "8765", int),
             map_lan=flag("MAP_LAN", True),
+            whole_flights=flag("WHOLE_FLIGHTS", True),
         )
 
 
@@ -251,5 +253,5 @@ KNOWN_KEYS = {
     "POLL_SECONDS", "PASS_GAP_MINUTES", "MAX_ALERTS_PER_HOUR", "ALERTS_ENABLED",
     "QUIET_HOURS", "DIGEST_ENABLED", "DIGEST_TIME", "TIMEZONE", "EMAIL_TO",
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
-    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN",
+    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS",
 }

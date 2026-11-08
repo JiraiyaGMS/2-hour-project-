@@ -17,44 +17,59 @@ from typing import Iterable
 
 from .geo import distance_miles, offset
 
-DLAT = 0.0025  # cell height in degrees of latitude (about 280 m)
+DLAT = 0.0025         # fine cells near home: about 280 m
+ROUTE_DLAT = 0.04     # coarse cells for whole routes far from home: about 4.4 km
 
 
-def _dlon(cy: int) -> float:
+def _dlon(cy: int, dlat: float = DLAT) -> float:
     """Cell width in degrees of longitude, so cells stay roughly square."""
-    lat = (cy + 0.5) * DLAT
-    return DLAT / max(0.2, math.cos(math.radians(round(lat))))
+    lat = (cy + 0.5) * dlat
+    return dlat / max(0.2, math.cos(math.radians(round(lat))))
 
 
-def cell_of(lat: float, lon: float) -> tuple[int, int]:
-    cy = math.floor(lat / DLAT)
-    return math.floor(lon / _dlon(cy)), cy
+def cell_of(lat: float, lon: float, dlat: float = DLAT) -> tuple[int, int]:
+    cy = math.floor(lat / dlat)
+    return math.floor(lon / _dlon(cy, dlat)), cy
 
 
-def cell_center(cx: int, cy: int) -> tuple[float, float]:
+def cell_center(cx: int, cy: int, dlat: float = DLAT) -> tuple[float, float]:
     """(lat, lon) of the middle of a cell."""
-    return (cy + 0.5) * DLAT, (cx + 0.5) * _dlon(cy)
+    return (cy + 0.5) * dlat, (cx + 0.5) * _dlon(cy, dlat)
 
 
-def cells_along(lat1: float, lon1: float, lat2: float, lon2: float) -> set[tuple[int, int]]:
+def cells_along(lat1: float, lon1: float, lat2: float, lon2: float,
+                dlat: float = DLAT) -> set[tuple[int, int]]:
     """Every cell the straight line between two positions passes through."""
     metres = distance_miles(lat1, lon1, lat2, lon2) * 1609.344
-    steps = max(1, math.ceil(metres / 100))  # sample every ~100 m, finer than a cell
+    step = dlat * 111_000 / 2.5  # sample more finely than the cell size
+    steps = max(1, math.ceil(metres / step))
     return {
-        cell_of(lat1 + (lat2 - lat1) * i / steps, lon1 + (lon2 - lon1) * i / steps)
+        cell_of(lat1 + (lat2 - lat1) * i / steps, lon1 + (lon2 - lon1) * i / steps, dlat)
         for i in range(steps + 1)
     }
 
 
-def path_cells(path: list[list[float]]) -> set[tuple[int, int]]:
+def path_cells(path: list[list[float]], dlat: float = DLAT, max_gap: float = 120) -> set[tuple[int, int]]:
     """Cells covered by a recorded path of [lat, lon, alt, time] points."""
     cells: set[tuple[int, int]] = set()
     for a, b in zip(path, path[1:]):
-        if b[3] - a[3] <= 120:  # don't draw a line across a gap in coverage
-            cells |= cells_along(a[0], a[1], b[0], b[1])
+        if b[3] - a[3] <= max_gap:  # don't draw a line across a gap in coverage
+            cells |= cells_along(a[0], a[1], b[0], b[1], dlat)
     for p in path:
-        cells.add(cell_of(p[0], p[1]))
+        cells.add(cell_of(p[0], p[1], dlat))
     return cells
+
+
+def route_cells(cfg, full_path: list[list[float]]) -> set[tuple[int, int]]:
+    """Coarse cells along a whole flight, leaving out the area near home
+    (which the fine grid already covers with every plane)."""
+    # A simplified path is already a faithful outline of the flight, so draw every segment
+    # (straight lines between its points can be hours apart on a long, straight flight).
+    cells = path_cells(full_path, ROUTE_DLAT, max_gap=math.inf)
+    return {
+        c for c in cells
+        if distance_miles(cfg.home_lat, cfg.home_lon, *cell_center(*c, ROUTE_DLAT)) > cfg.view_radius_miles
+    }
 
 
 class HeatRecorder:
@@ -129,5 +144,12 @@ def heat_json(store, cfg, now: float, days: int) -> dict:
          "destination_city": r["destination_city"], "flights": r["n"]}
         for r in store.top_routes(since_ts, limit=5)
     ]
+    route_cells_out = []
+    for cx, cy, n in store.heat_cells(since_day.isoformat() if since_day else "", table="route_heat"):
+        lat, lon = cell_center(cx, cy, ROUTE_DLAT)
+        route_cells_out.append([round(lon, 4), round(lat, 4), n])
+    mapped, waiting = store.full_path_counts(since_ts)
     return {"cells": cells, "max": max((c[2] for c in cells), default=0), "routes": routes,
-            "first_day": store.first_heat_day()}
+            "first_day": store.first_heat_day(),
+            "route_cells": route_cells_out, "route_max": max((c[2] for c in route_cells_out), default=0),
+            "whole_flights": mapped, "whole_flights_waiting": waiting}

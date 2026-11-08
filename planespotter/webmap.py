@@ -22,6 +22,7 @@ from .config import Config
 from .geo import bearing_deg, distance_miles, miles_to_nm, offset
 from .heat import backfill as backfill_heat
 from .heat import heat_json
+from .fullpath import FlightLookup, as_path, simplify
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -113,10 +114,11 @@ class LiveCache:
 class MapApp:
     """Everything the request handler needs; one per server."""
 
-    def __init__(self, cfg: Config, feed=None, clock: Callable[[], float] = time.time):
+    def __init__(self, cfg: Config, feed=None, clock: Callable[[], float] = time.time, flight_lookup=None):
         self.cfg = cfg
         self.clock = clock
         self.live = LiveCache(cfg, feed or shared_feed(cfg), ttl=2.0, clock=clock)
+        self.flights = flight_lookup or FlightLookup(clock=clock)
         self._local = threading.local()
 
     def store(self) -> Store:
@@ -139,6 +141,27 @@ class MapApp:
         since = 0.0 if days <= 0 else self.clock() - days * 86400
         rows = self.store().recent_passes(since, limit=3000)
         return {"flights": [pass_json(self.cfg, r) for r in rows]}
+
+    def flight_json(self, pass_id: int) -> dict[str, Any]:
+        """One spotted flight, with its whole path when that's been looked up."""
+        row = self.store().get_pass(pass_id)
+        if row is None:
+            raise ValueError("no such flight")
+        whole = json.loads(row["full_path"] or "[]")
+        return {**pass_json(self.cfg, row), "whole_path": whole,
+                "whole_state": {0: "waiting", 1: "done", 2: "unavailable"}[row["full_state"]]}
+
+    def trace_json(self, hex_code: str) -> dict[str, Any]:
+        """The flight a live plane is on, from takeoff until now."""
+        hex_code = "".join(c for c in hex_code.lower() if c in "0123456789abcdef")[:6]
+        if len(hex_code) != 6:
+            return {"path": []}
+        try:
+            points = self.flights.current_flight(hex_code)
+        except (OSError, ValueError) as exc:
+            log.info("couldn't get the flight so far for %s: %s", hex_code, exc)
+            points = []
+        return {"path": as_path(simplify(points)) if points else []}
 
     def info_json(self, query: dict[str, str]) -> dict[str, Any]:
         try:
@@ -186,6 +209,10 @@ def make_handler(app: MapApp):
                 elif url.path == "/api/heat":
                     days = int(float(query.get("days", "7") or 7))
                     self.send_json(heat_json(app.store(), app.cfg, app.clock(), days))
+                elif url.path == "/api/flight":
+                    self.send_json(app.flight_json(int(query.get("id", "0") or 0)))
+                elif url.path == "/api/trace":
+                    self.send_json(app.trace_json(query.get("hex", "")))
                 elif url.path == "/api/info":
                     self.send_json(app.info_json(query))
                 else:
@@ -213,7 +240,7 @@ def lan_address() -> str | None:
         return None
 
 
-def start_map_server(cfg: Config, feed=None, port: int | None = None):
+def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_lookup=None):
     """Start serving the map in a background thread. Returns (server, list of URLs)."""
     host = "0.0.0.0" if cfg.map_lan else "127.0.0.1"
     store = Store(cfg.db_path)
@@ -221,7 +248,7 @@ def start_map_server(cfg: Config, feed=None, port: int | None = None):
     store.close()
     port = cfg.map_port if port is None else port
     try:
-        server = ThreadingHTTPServer((host, port), make_handler(MapApp(cfg, feed)))
+        server = ThreadingHTTPServer((host, port), make_handler(MapApp(cfg, feed, flight_lookup=flight_lookup)))
     except OSError as exc:
         raise MapServerError(
             f"Couldn't start the map on port {port} ({exc.strerror or exc}). "

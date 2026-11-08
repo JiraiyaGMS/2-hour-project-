@@ -14,6 +14,7 @@ from .adsb import Aircraft, LiveFeed, Lookup
 from .config import Config, fmt_clock_range
 from .digest import build_forecast, build_recap
 from .emails import alert_email, digest_email, fmt_alt, fmt_dist
+from .fullpath import start_full_path_worker
 from .heat import HeatRecorder
 from .heat import backfill as backfill_heat
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, segment_min_distance_miles
@@ -168,6 +169,8 @@ class Watcher:
         if self.store.get_meta("watch_started") is None:
             self.store.set_meta("watch_started", str(self.clock()))
         backfill_heat(self.store, cfg)
+        if cfg.whole_flights:
+            start_full_path_worker(cfg)  # looks up whole flights in the background
         log.info(
             "watching %.1f mi around %s (%.4f, %.4f), every %ds%s",
             cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon, cfg.poll_seconds,

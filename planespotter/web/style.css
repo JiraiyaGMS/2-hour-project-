@@ -210,7 +210,14 @@ button { font: inherit; color: inherit; }
 .stats .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .stats .v { font-weight: 650; font-variant-numeric: tabular-nums; }
 .links { display: flex; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
-.links a { color: var(--blue); font-weight: 600; text-decoration: none; font-size: 13.5px; }
+.links a, .linkbtn {
+  color: var(--blue); font-weight: 600; text-decoration: none; font-size: 13.5px;
+}
+.linkbtn { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.linkbtn:hover, .links a:hover { text-decoration: underline; }
+.heat-actions { display: flex; gap: 16px; margin-top: 8px; }
+.heat-actions:empty { display: none; }
+.heat-actions .linkbtn { font-size: 12.5px; }
 
 .maplibregl-ctrl-attrib { font-size: 11px; }
 

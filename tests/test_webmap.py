@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -7,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from planespotter.adsb import SharedFeed
+from planespotter.fullpath import FlightLookup, TraceNotFound
 from planespotter.store import Store
 from planespotter.webmap import pass_json, start_map_server
 
@@ -111,11 +113,18 @@ class MapServerTests(unittest.TestCase):
                           adsbdb_api="http://127.0.0.1:9")  # lookups fail fast, offline
         store = Store(cfg.db_path)
         pid, _ = store.record_sighting(plane(), 1.5, 45, ts(2026, 11, 1, 12), gap=1800)
+        store.update_full_path(pid, path=[[45.5, -122.6, 30000, 1], [51.5, -0.1, 3000, 2]], state=1)
+        cls.pass_id = pid
         store.close()
         feed = FakeFeed()
         feed.planes = [plane("near01", lat=HOME[0] + 0.01, callsign="NEAR1"),
                        plane("far001", lat=HOME[0] + 1.0, callsign="FAR1")]  # ~69 mi: off the map
-        cls.server, cls.urls = start_map_server(cfg, feed=feed, port=0)
+        # A live plane (hex abc456) that took off a minute ago; the lookup never touches the network.
+        now = time.time()
+        trace = {"timestamp": now - 60, "trace": [[0, 45.5, -122.6, "ground", 0, 0, 2], [30, 45.6, -122.6, 1000, 150, 0, 0],
+                                                  [60, 45.7, -122.6, 2000, 160, 0, 0]]}
+        fake = lambda url: trace if "abc456" in url else (_ for _ in ()).throw(TraceNotFound(url))  # noqa: E731
+        cls.server, cls.urls = start_map_server(cfg, feed=feed, port=0, flight_lookup=FlightLookup(fetch=fake))
         cls.base = cls.urls[0]
 
     @classmethod
@@ -159,6 +168,18 @@ class MapServerTests(unittest.TestCase):
         heat = json.loads(self.get("/api/heat?days=0")[2])
         self.assertEqual(heat["max"], 1)  # built from the one flight already in the history
         self.assertEqual(len(heat["cells"]), 1)
+
+        flight = json.loads(self.get(f"/api/flight?id={self.pass_id}")[2])
+        self.assertEqual(flight["callsign"], "BAW123")
+        self.assertEqual(flight["whole_state"], "done")
+        self.assertEqual(flight["whole_path"][0], [45.5, -122.6, 30000, 1])
+        with self.assertRaises(urllib.error.HTTPError):
+            self.get("/api/flight?id=999")
+
+        so_far = json.loads(self.get("/api/trace?hex=abc456")[2])["path"]
+        self.assertEqual([p[0] for p in so_far], [45.5, 45.7])  # takeoff to now, simplified
+        self.assertEqual(json.loads(self.get("/api/trace?hex=abc999")[2])["path"], [])
+        self.assertEqual(json.loads(self.get("/api/trace?hex=../../etc")[2])["path"], [])
 
         info = json.loads(self.get("/api/info?hex=abc123&callsign=BAW123&lat=51.5&lon=-0.1")[2])
         self.assertEqual(info["origin"], "")  # lookup service unreachable: blank, not an error

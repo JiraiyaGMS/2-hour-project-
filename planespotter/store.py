@@ -59,6 +59,15 @@ CREATE TABLE IF NOT EXISTS heat (
     n   INTEGER NOT NULL,
     PRIMARY KEY (day, cx, cy)
 );
+
+-- The same, on a coarser grid, for the whole flights of planes that crossed your zone.
+CREATE TABLE IF NOT EXISTS route_heat (
+    day TEXT    NOT NULL,
+    cx  INTEGER NOT NULL,
+    cy  INTEGER NOT NULL,
+    n   INTEGER NOT NULL,
+    PRIMARY KEY (day, cx, cy)
+);
 """
 
 
@@ -80,10 +89,19 @@ class Store:
     def _migrate(self) -> None:
         """Bring databases made by older versions up to date."""
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(passes)")}
-        if "path" not in columns:
+        added = {
             # [[lat, lon, alt_ft, unix_time], ...] while the plane was near home
-            self.db.execute("ALTER TABLE passes ADD COLUMN path TEXT NOT NULL DEFAULT '[]'")
-            self.db.commit()
+            "path": "TEXT NOT NULL DEFAULT '[]'",
+            # The whole flight, looked up afterwards (same format), and the lookup's progress.
+            "full_path": "TEXT NOT NULL DEFAULT '[]'",
+            "full_state": "INTEGER NOT NULL DEFAULT 0",  # 0 waiting, 1 done, 2 not available
+            "full_next": "REAL NOT NULL DEFAULT 0",
+            "full_tries": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, kind in added.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE passes ADD COLUMN {name} {kind}")
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -162,21 +180,67 @@ class Store:
 
     # --- heat map -------------------------------------------------------------
 
-    def add_heat(self, day: str, cells, commit: bool = True) -> None:
+    def add_heat(self, day: str, cells, commit: bool = True, table: str = "heat") -> None:
         """Count one plane through each cell (a cell listed twice counts twice)."""
+        assert table in ("heat", "route_heat")
         counts = Counter(cells)
         if counts:
-            self.db.executemany("INSERT OR IGNORE INTO heat (day, cx, cy, n) VALUES (?, ?, ?, 0)",
+            self.db.executemany(f"INSERT OR IGNORE INTO {table} (day, cx, cy, n) VALUES (?, ?, ?, 0)",
                                 [(day, cx, cy) for cx, cy in counts])
-            self.db.executemany("UPDATE heat SET n = n + ? WHERE day = ? AND cx = ? AND cy = ?",
+            self.db.executemany(f"UPDATE {table} SET n = n + ? WHERE day = ? AND cx = ? AND cy = ?",
                                 [(n, day, cx, cy) for (cx, cy), n in counts.items()])
         if commit:
             self.db.commit()
 
-    def heat_cells(self, since_day: str = "") -> list[tuple[int, int, int]]:
+    def heat_cells(self, since_day: str = "", table: str = "heat") -> list[tuple[int, int, int]]:
         """(cx, cy, total) for every cell with traffic on or after ``since_day`` (YYYY-MM-DD)."""
+        assert table in ("heat", "route_heat")
         return [tuple(r) for r in self.db.execute(
-            "SELECT cx, cy, SUM(n) FROM heat WHERE day >= ? GROUP BY cx, cy", (since_day,))]
+            f"SELECT cx, cy, SUM(n) FROM {table} WHERE day >= ? GROUP BY cx, cy", (since_day,))]
+
+    # --- whole flights ----------------------------------------------------------
+
+    def claim_full_path_job(self, now: float, settle: float, hold: float) -> sqlite3.Row | None:
+        """The newest pass whose whole flight is due a lookup, reserved so no one else takes it."""
+        while True:
+            row = self.db.execute(
+                "SELECT * FROM passes WHERE full_state = 0 AND full_next <= ? AND last_seen <= ? "
+                "ORDER BY first_seen DESC LIMIT 1", (now, now - settle)).fetchone()
+            if row is None:
+                return None
+            if row["hex"].startswith("~"):  # no real aircraft address: nothing to look up
+                self.db.execute("UPDATE passes SET full_state = 2 WHERE id = ?", (row["id"],))
+                self.db.commit()
+                continue
+            claimed = self.db.execute(
+                "UPDATE passes SET full_next = ? WHERE id = ? AND full_next = ?",
+                (now + hold, row["id"], row["full_next"])).rowcount
+            self.db.commit()
+            if claimed:
+                return row
+
+    def update_full_path(self, pass_id: int, path=None, state: int | None = None, tries: int | None = None,
+                         next_try: float | None = None, route_heat=None) -> None:
+        fields = {"full_path": None if path is None else json.dumps(path), "full_state": state,
+                  "full_tries": tries, "full_next": next_try}
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if fields:
+            self.db.execute(f"UPDATE passes SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                            (*fields.values(), pass_id))
+        if route_heat:
+            day, cells = route_heat
+            self.add_heat(day, cells, commit=False, table="route_heat")
+        self.db.commit()
+
+    def get_pass(self, pass_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM passes WHERE id = ?", (pass_id,)).fetchone()
+
+    def full_path_counts(self, since: float) -> tuple[int, int]:
+        """(whole flights mapped, still waiting) among passes since ``since``."""
+        row = self.db.execute(
+            "SELECT SUM(full_state = 1), SUM(full_state = 0) FROM passes WHERE first_seen >= ?",
+            (since,)).fetchone()
+        return int(row[0] or 0), int(row[1] or 0)
 
     def first_heat_day(self) -> str | None:
         return self.db.execute("SELECT MIN(day) FROM heat").fetchone()[0]

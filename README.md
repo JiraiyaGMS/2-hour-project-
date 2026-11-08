@@ -151,23 +151,30 @@ browser on your Mac.
 - **Search** works on both lists and the map: try a flight number, an
   airline (*delta*), an airport code (*JFK*), a city, or an aircraft (*A380*).
 - **Click any flight** (in the list or on the map) to see its route, a
-  photo of the actual aircraft, its altitude and speed, and a link to
-  replay its whole flight on adsb.lol.
-- **🔥 Heat map** (top right) shows the busiest flight paths around you,
-  from blue (quiet) to red (busy). Choose today, 7 days, 30 days or all
-  time. It counts every plane within the map's range, not just the ones
-  over your zone, so approach and departure routes stand out. The panel
-  also lists the most common routes over your zone; click one to see
-  those flights.
+  photo of the actual aircraft, its altitude and speed, and its **whole
+  flight** drawn in pink, from takeoff to landing. *Show its whole flight*
+  zooms out to fit it. For a plane in the air right now, you see where it
+  has flown so far (*Show where it's come from*).
+- **🔥 Heat map** (top right) shows the busiest flight paths, from blue
+  (quiet) to red (busy). Choose today, 7 days, 30 days or all time.
+  - Within about 15 miles it counts every plane, so approach and departure
+    routes near you stand out.
+  - Beyond that it shows the **complete flight** of every plane that
+    crossed your zone. A Portland → LA flight that passed over draws
+    a line all the way from Portland. *See the whole routes* zooms out to
+    show them all.
+  - The panel also lists the most common routes over your zone; click one
+    to see those flights.
 
 **On your phone:** when planespotter starts, it prints a second address
 like `http://192.168.1.23:8765`. Open that on your phone while it's on
 the same Wi-Fi. Add it to your home screen to use it like an app.
 
-Flight paths are recorded from this version onwards. Flights spotted
-before that show as a dot where they came closest. The heat map starts
-from the flights already in your history and fills in as planespotter
-keeps running. Give it a few days and the regular routes become clear.
+A plane's complete flight is looked up from adsb.lol about 10 minutes
+after it leaves your zone. If it's still in the air, it's checked again
+every 30 minutes until it lands, and then added to the heat map. Flights
+already in your history are looked up too, newest first, so give it a
+little while after updating.
 
 **Just the map, no emails:** run `python3 -m planespotter map`. To turn the
 map off, or to keep it to this Mac only, see the *Live map* settings in
@@ -259,6 +266,13 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   goes up by one. Each plane counts once per square per trip, however
   slowly it flies, and the gaps between position reports are filled in so
   fast jets leave a continuous line.
+- **Complete flights** come from adsb.lol's recorded positions for each
+  aircraft (the same free, open data as the live map). planespotter picks
+  out the one flight that passed over you (a plane can fly several a
+  day), joins it up if it crossed midnight UTC, and simplifies it to a few
+  hundred points. Far from home these go on a coarser grid of about 4 km
+  squares. The lookups run in the background, one at a time, every 10
+  seconds at most, so alerts are never held up.
 - **The map** uses [MapLibre](https://maplibre.org) with free
   [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
   to draw planes in 3D. It's served only from your computer. It never
