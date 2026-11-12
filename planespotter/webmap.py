@@ -6,6 +6,7 @@ on your computer, to browsers on the same computer or the same Wi-Fi.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import asdict
@@ -28,8 +29,13 @@ from .heat import backfill as backfill_heat
 from .heat import heat_json
 from .fullpath import WAITING, FlightLookup, Point, as_path, simplify
 from .logos import LogoCache
+from .noise import build_noise, loudness, noise_csv
+from .noise import settle as settle_noise
+from .records import build_records, busiest, plane_of_the_day, streak
+from .sky import SkyWatch
 from .specials import short_label, special_reasons
 from .store import Store
+from .tls import TLSServer, ensure_certificate
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +46,13 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/sky": ("sky.html", "text/html; charset=utf-8"),
+    "/sky.html": ("sky.html", "text/html; charset=utf-8"),
+    "/sky.js": ("sky.js", "text/javascript; charset=utf-8"),
 }
+MAX_UPLOAD = 16 * 1024 * 1024  # bytes: a photo (sent as text) or a batch of noise levels
+MAX_PHOTO = 8 * 1024 * 1024
+MAX_THUMB = 600 * 1024
 
 
 class MapServerError(Exception):
@@ -88,6 +100,7 @@ def pass_json(cfg: Config, row) -> dict[str, Any]:
         "aircraft": row["aircraft_desc"], "owner": row["owner"], "photo_url": row["photo_url"],
         "alerted": bool(row["alerted"]), "quiet": cfg.in_quiet_hours(row["first_seen"]),
         "route_checked": bool(row["route_checked"]),
+        "noise_db": loudness(row),  # how much louder than the background it was, if the noise meter was on
     }
 
 
@@ -160,8 +173,11 @@ class MapApp:
     """Everything the request handler needs; one per server."""
 
     def __init__(self, cfg: Config, feed=None, clock: Callable[[], float] = time.time, flight_lookup=None,
-                 position_lookup=None, logo_cache=None, budget=None):
+                 position_lookup=None, logo_cache=None, budget=None, sky=None):
         self.cfg = cfg
+        self.sky = sky if sky is not None else (SkyWatch(cfg) if cfg.weather else None)
+        self.photo_dir = Path(cfg.db_path).parent / "photos"
+        self.secure_url = ""  # the https address for phones, once it's running
         self.clock = clock
         self.budget = budget
         self.feed = feed or shared_feed(cfg, budget)
@@ -201,6 +217,7 @@ class MapApp:
             "max_altitude_ft": cfg.max_altitude_ft,
             "quiet_hours": [t.strftime("%H:%M") for t in cfg.quiet_hours] if cfg.quiet_hours else None,
             "home_elevation_ft": home_elevation_ft(cfg),
+            "secure_url": self.secure_url,
         }
 
     def flights_json(self, days: float) -> dict[str, Any]:
@@ -284,6 +301,115 @@ class MapApp:
             })
         return {"day": day, "start": start, "end": end, "flights": flights}
 
+    def sky_json(self) -> dict[str, Any]:
+        """Clouds at the nearest weather station, and where the sun is."""
+        if not self.sky:
+            from .sky import daylight, sun_position
+            alt, az = sun_position(self.cfg.home_lat, self.cfg.home_lon, self.clock())
+            return {"weather": None, "sun": {"altitude": round(alt, 1), "azimuth": round(az, 1),
+                                             "daylight": daylight(alt)}}
+        return self.sky.report()
+
+    def collection_json(self) -> dict[str, Any]:
+        """Your collection, records, plane of the day and "I saw it" streak."""
+        store, cfg, now = self.store(), self.cfg, self.clock()
+        data = build_collection(store, cfg)
+        rows = store.db.execute("SELECT * FROM passes").fetchall()
+        today = cfg.local(now).date()
+        todays = store.passes_between(cfg.day_start(today), now + 1)
+        star = plane_of_the_day(todays, store, cfg)
+        if star is None:  # nothing yet today: yesterday's
+            from datetime import timedelta
+            star = plane_of_the_day(store.passes_between(cfg.day_start(today - timedelta(days=1)),
+                                                         cfg.day_start(today)), store, cfg)
+            if star:
+                star["yesterday"] = True
+        return {**data, "records": build_records(rows), "busiest": busiest(rows, cfg), "star": star,
+                "streak": streak(store.eye_times(), cfg, today), "photos": len(store.photos())}
+
+    def yours_json(self) -> dict[str, Any]:
+        """Your photos and the planes you've seen with your own eyes (for marking them on the map)."""
+        store = self.store()
+        photos = [{"id": r["id"], "pass_id": r["pass_id"], "hex": r["hex"], "callsign": r["callsign"],
+                   "added_at": r["added_at"], "width": r["width"], "height": r["height"],
+                   "registration": r["registration"] or "", "airline": r["airline"] or "",
+                   "type": r["type_code"] or "", "origin": r["origin"] or "", "destination": r["destination"] or "",
+                   "first_seen": r["first_seen"]} for r in store.photos()]
+        since = self.clock() - 30 * 86400
+        eyes = [[r["hex"], r["at"]] for r in store.db.execute("SELECT hex, at FROM eyes WHERE at >= ?", (since,))]
+        return {"photos": photos, "eyes": eyes,
+                "streak": streak(store.eye_times(), self.cfg, self.cfg.local(self.clock()).date())}
+
+    def saw(self, body: dict) -> dict[str, Any]:
+        """You tapped "I saw it" (or took it back)."""
+        hex_code = clean_hex(body.get("hex", ""))
+        if not hex_code:
+            raise ValueError("which plane?")
+        store, now = self.store(), self.clock()
+        at = float(body.get("at") or now)
+        if not now - 7 * 86400 <= at <= now + 60:
+            raise ValueError("that's too long ago")
+        if body.get("undo"):
+            store.unsaw(hex_code, at)
+        else:
+            store.saw(hex_code, str(body.get("callsign", ""))[:10].upper(), at)
+        return self.yours_json()
+
+    def add_photo(self, body: dict) -> dict[str, Any]:
+        """A photo you took, already shrunk to a sensible size by the browser (JPEG, as text)."""
+        full, thumb = jpeg_from_data_url(body.get("full", ""), MAX_PHOTO), jpeg_from_data_url(body.get("thumb", ""), MAX_THUMB)
+        store, now = self.store(), self.clock()
+        pass_id = body.get("pass_id")
+        row = store.get_pass(int(pass_id)) if pass_id else None
+        hex_code = clean_hex(body.get("hex", "")) or (row["hex"] if row else "")
+        if not hex_code:
+            raise ValueError("which plane?")
+        if row is None:  # a live plane: the pass it's on now, if it's crossed your zone
+            row = store.latest_pass_for(hex_code, now - 6 * 3600)
+        callsign = (row["callsign"] if row and row["callsign"] else str(body.get("callsign", "")))[:10].upper()
+        photo_id = store.add_photo(row["id"] if row else None, hex_code, callsign, now,
+                                   int(body.get("width") or 0), int(body.get("height") or 0))
+        self.photo_dir.mkdir(exist_ok=True)
+        (self.photo_dir / f"{photo_id}.jpg").write_bytes(full)
+        (self.photo_dir / f"{photo_id}-thumb.jpg").write_bytes(thumb)
+        return {"id": photo_id, **self.yours_json()}
+
+    def delete_photo(self, body: dict) -> dict[str, Any]:
+        photo_id = int(body.get("photo") or 0)
+        if self.store().delete_photo(photo_id):
+            for name in (f"{photo_id}.jpg", f"{photo_id}-thumb.jpg"):
+                (self.photo_dir / name).unlink(missing_ok=True)
+        return self.yours_json()
+
+    def photo_file(self, name: str) -> bytes | None:
+        """photos/12.jpg or photos/12-thumb.jpg: only names like these, nothing else on disk."""
+        stem = name[:-len("-thumb")] if name.endswith("-thumb") else name
+        if not stem.isdigit():
+            return None
+        path = self.photo_dir / f"{name}.jpg"
+        return path.read_bytes() if path.is_file() else None
+
+    def add_noise(self, body: dict) -> dict[str, Any]:
+        """One level per second from the noise meter in the browser."""
+        now = self.clock()
+        samples = []
+        for item in (body.get("samples") or [])[:900]:
+            t, db = float(item[0]), float(item[1])
+            if abs(t - now) < 86400 and -160 <= db <= 20:
+                samples.append((t, db))
+        store = self.store()
+        store.add_noise_levels(samples)
+        measured = settle_noise(store, self.cfg, now)
+        return {"stored": len(samples), "measured": measured}
+
+    def noise_json(self, days: int) -> dict[str, Any]:
+        store = self.store()
+        settle_noise(store, self.cfg, self.clock())
+        return build_noise(store, self.cfg, self.clock(), max(1, min(days, 366)), home_elevation_ft(self.cfg))
+
+    def noise_csv(self, days: int) -> str:
+        return noise_csv(self.store(), self.cfg, self.clock(), days, home_elevation_ft(self.cfg))
+
     def trace_json(self, hex_code: str) -> dict[str, Any]:
         """The flight a live plane is on, from takeoff until now."""
         hex_code = "".join(c for c in hex_code.lower() if c in "0123456789abcdef")[:6]
@@ -309,6 +435,26 @@ class MapApp:
                       registration="", type_code="", lat=lat, lon=lon, alt_ft=None, speed_kt=None, track=None)
         info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, self.clock())
         return asdict(info)
+
+
+def clean_hex(text: str) -> str:
+    """A plane's ICAO address (6 hex digits), or '' if it isn't one."""
+    text = str(text).lower().strip()
+    return text if len(text) == 6 and all(c in "0123456789abcdef" for c in text) else ""
+
+
+def jpeg_from_data_url(data_url: str, limit: int) -> bytes:
+    """The picture in a data:image/jpeg;base64,... string (and nothing that isn't a JPEG)."""
+    prefix = "data:image/jpeg;base64,"
+    if not isinstance(data_url, str) or not data_url.startswith(prefix):
+        raise ValueError("expected a JPEG picture")
+    try:
+        data = base64.b64decode(data_url[len(prefix):], validate=True)
+    except ValueError:
+        raise ValueError("that picture is damaged") from None
+    if not data.startswith(b"\xff\xd8\xff") or len(data) > limit:
+        raise ValueError("expected a JPEG picture under %d MB" % (limit // 1024 // 1024 or 1))
+    return data
 
 
 def make_handler(app: MapApp):
@@ -355,7 +501,30 @@ def make_handler(app: MapApp):
                 elif url.path == "/api/replay":
                     self.send_json(app.replay_json(query.get("day", "")))
                 elif url.path == "/api/collection":
-                    self.send_json(build_collection(app.store(), app.cfg))
+                    self.send_json(app.collection_json())
+                elif url.path == "/api/sky":
+                    self.send_json(app.sky_json())
+                elif url.path == "/api/yours":
+                    self.send_json(app.yours_json())
+                elif url.path == "/api/noise":
+                    self.send_json(app.noise_json(int(float(query.get("days", "30") or 30))))
+                elif url.path == "/api/noise.csv":
+                    days = int(float(query.get("days", "30") or 30))
+                    body = app.noise_csv(days).encode("utf-8")
+                    stamp = app.cfg.local(app.clock()).strftime("%Y-%m-%d")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f'attachment; filename="planespotter-noise-log-{stamp}.csv"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif url.path.startswith("/photo/") and url.path.endswith(".jpg"):
+                    jpg = app.photo_file(url.path[len("/photo/"):-len(".jpg")])
+                    if jpg:
+                        self.send(200, jpg, "image/jpeg", cache="private, max-age=31536000, immutable")
+                    else:
+                        self.send_json({"error": "not found"}, 404)
                 elif url.path == "/api/whole":
                     self.send_json(app.whole_json(float(query.get("days", "1") or 1)))
                 elif url.path == "/api/flight":
@@ -375,6 +544,44 @@ def make_handler(app: MapApp):
                 except OSError:
                     pass
 
+        def same_site(self) -> bool:
+            """Only this map's own pages may send things (not some other website you have open)."""
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            return urllib.parse.urlsplit(origin).netloc == self.headers.get("Host", "")
+
+        def do_POST(self):
+            url = urllib.parse.urlsplit(self.path)
+            routes = {"/api/saw": app.saw, "/api/photo": app.add_photo, "/api/photo/delete": app.delete_photo,
+                      "/api/noise/levels": app.add_noise}
+            try:
+                if url.path not in routes:
+                    self.send_json({"error": "not found"}, 404)
+                    return
+                size = int(self.headers.get("Content-Length") or 0)
+                if not self.same_site():
+                    self.send_json({"error": "not allowed"}, 403)
+                    return
+                if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+                    self.send_json({"error": "expected JSON"}, 415)
+                    return
+                if not 0 < size <= MAX_UPLOAD:
+                    self.send_json({"error": "too big"}, 413)
+                    return
+                body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict):
+                    raise ValueError("expected an object")
+                self.send_json(routes[url.path](body))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                log.info("map upload %s failed: %s", url.path, exc)
+                try:
+                    self.send_json({"error": str(exc)}, 400)
+                except OSError:
+                    pass
+
     return Handler
 
 
@@ -390,8 +597,10 @@ def lan_address() -> str | None:
 
 
 def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_lookup=None,
-                     position_lookup=None, logo_cache=None, budget=None):
-    """Start serving the map in a background thread. Returns (server, list of URLs)."""
+                     position_lookup=None, logo_cache=None, budget=None, sky=None, https_port: int | None = None):
+    """Start serving the map in a background thread. Returns (server, list of URLs).
+
+    With MAP_LAN and MAP_HTTPS on, the last URL is a secure (https) one for phones."""
     host = "0.0.0.0" if cfg.map_lan else "127.0.0.1"
     store = Store(cfg.db_path)
     backfill_heat(store, cfg)  # first run only: build the heat map from existing history
@@ -399,7 +608,7 @@ def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_loo
     port = cfg.map_port if port is None else port
     try:
         app = MapApp(cfg, feed, flight_lookup=flight_lookup, position_lookup=position_lookup,
-                     logo_cache=logo_cache, budget=budget)
+                     logo_cache=logo_cache, budget=budget, sky=sky)
         server = ThreadingHTTPServer((host, port), make_handler(app))
     except OSError as exc:
         raise MapServerError(
@@ -410,6 +619,26 @@ def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_loo
     threading.Thread(target=server.serve_forever, name="map-server", daemon=True).start()
     port = server.server_address[1]
     urls = [f"http://localhost:{port}"]
-    if cfg.map_lan and (ip := lan_address()):
+    ip = lan_address() if cfg.map_lan else None
+    if ip:
         urls.append(f"http://{ip}:{port}")
+    if ip and cfg.map_https:
+        secure = start_https(cfg, app, host, ip, cfg.map_https_port if https_port is None else https_port)
+        if secure:
+            app.secure_url = secure
+            urls.append(secure)
     return server, urls
+
+
+def start_https(cfg: Config, app: MapApp, host: str, ip: str, port: int) -> str:
+    """The same map over https, for phones (camera, compass, microphone, share sheet). '' if it can't."""
+    files = ensure_certificate(Path(cfg.db_path).parent / "https-cert", [ip])
+    if not files:
+        return ""
+    try:
+        server = TLSServer((host, port), make_handler(app), *files)
+    except (OSError, ValueError) as exc:
+        log.info("no https address for phones (port %s): %s", port, exc)
+        return ""
+    threading.Thread(target=server.serve_forever, name="map-https", daemon=True).start()
+    return f"https://{ip}:{server.server_address[1]}"

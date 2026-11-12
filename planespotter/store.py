@@ -67,6 +67,25 @@ CREATE TABLE IF NOT EXISTS badges (key TEXT PRIMARY KEY, earned_at REAL NOT NULL
 CREATE TABLE IF NOT EXISTS special_seen (hex TEXT NOT NULL, reason TEXT NOT NULL, at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS special_seen_by_hex ON special_seen (hex, reason, at);
 
+-- Planes you tapped "I saw it" on (for streaks).
+CREATE TABLE IF NOT EXISTS eyes (hex TEXT NOT NULL, callsign TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS eyes_by_hex ON eyes (hex, at);
+
+-- Your own photos of planes. pass_id is NULL for a plane that never crossed your zone.
+CREATE TABLE IF NOT EXISTS photos (
+    id       INTEGER PRIMARY KEY,
+    pass_id  INTEGER,
+    hex      TEXT NOT NULL,
+    callsign TEXT NOT NULL DEFAULT '',
+    added_at REAL NOT NULL,
+    width    INTEGER NOT NULL DEFAULT 0,
+    height   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS photos_by_pass ON photos (pass_id);
+
+-- Microphone levels from the noise meter: the loudest moment of each second, in dB (full scale).
+CREATE TABLE IF NOT EXISTS noise_levels (t INTEGER PRIMARY KEY, db REAL NOT NULL);
+
 -- The same, on a coarser grid, for the whole flights of planes that crossed your zone.
 CREATE TABLE IF NOT EXISTS route_heat (
     day TEXT    NOT NULL,
@@ -108,6 +127,10 @@ class Store:
             "route_checked": "INTEGER NOT NULL DEFAULT 0",
             # e.g. ["First Qantas flight you've spotted"], shown in its alert
             "firsts": "TEXT NOT NULL DEFAULT '[]'",
+            # Noise meter: the loudest level as it passed, and the background level around then
+            "noise_peak": "REAL",
+            "noise_bg": "REAL",
+            "noise_state": "INTEGER NOT NULL DEFAULT 0",  # 0 not yet, 1 measured, 2 no recording
         }
         for name, kind in added.items():
             if name not in columns:
@@ -289,6 +312,69 @@ class Store:
 
     def set_firsts(self, pass_id: int, firsts: list[str]) -> None:
         self.db.execute("UPDATE passes SET firsts = ? WHERE id = ?", (json.dumps(firsts), pass_id))
+        self.db.commit()
+
+    def latest_pass_for(self, hex_code: str, since: float) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM passes WHERE hex = ? AND last_seen >= ? ORDER BY last_seen DESC LIMIT 1",
+                               (hex_code, since)).fetchone()
+
+    # --- "I saw it" ---------------------------------------------------------------
+
+    def saw(self, hex_code: str, callsign: str, at: float) -> None:
+        """Remember that you spotted this plane with your own eyes (once per plane per hour)."""
+        if not self.saw_recently(hex_code, at - 3600, at + 3600):
+            self.db.execute("INSERT INTO eyes (hex, callsign, at) VALUES (?, ?, ?)", (hex_code, callsign, at))
+            self.db.commit()
+
+    def unsaw(self, hex_code: str, around: float) -> None:
+        self.db.execute("DELETE FROM eyes WHERE hex = ? AND at BETWEEN ? AND ?", (hex_code, around - 3600, around + 3600))
+        self.db.commit()
+
+    def saw_recently(self, hex_code: str, start: float, end: float) -> bool:
+        return self.db.execute("SELECT 1 FROM eyes WHERE hex = ? AND at BETWEEN ? AND ?",
+                               (hex_code, start, end)).fetchone() is not None
+
+    def eye_times(self) -> list[float]:
+        return [r[0] for r in self.db.execute("SELECT at FROM eyes ORDER BY at")]
+
+    # --- your photos ----------------------------------------------------------------
+
+    def add_photo(self, pass_id: int | None, hex_code: str, callsign: str, at: float, width: int, height: int) -> int:
+        cur = self.db.execute("INSERT INTO photos (pass_id, hex, callsign, added_at, width, height) "
+                              "VALUES (?, ?, ?, ?, ?, ?)", (pass_id, hex_code, callsign, at, width, height))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def delete_photo(self, photo_id: int) -> bool:
+        gone = self.db.execute("DELETE FROM photos WHERE id = ?", (photo_id,)).rowcount
+        self.db.commit()
+        return bool(gone)
+
+    def photos(self, limit: int = 500) -> list[sqlite3.Row]:
+        """Newest first, with the flight each belongs to (when it crossed your zone)."""
+        return self.db.execute(
+            "SELECT photos.*, passes.registration, passes.type_code, passes.airline, passes.origin, "
+            "passes.destination, passes.first_seen FROM photos LEFT JOIN passes ON passes.id = photos.pass_id "
+            "ORDER BY photos.added_at DESC LIMIT ?", (limit,)).fetchall()
+
+    # --- noise meter ------------------------------------------------------------------
+
+    def add_noise_levels(self, samples, keep_seconds: float = 3 * 86400) -> None:
+        """[(unix second, dB), ...] from the microphone; older recordings are tidied away."""
+        rows = [(int(t), float(db)) for t, db in samples]
+        if not rows:
+            return
+        self.db.executemany("INSERT OR REPLACE INTO noise_levels (t, db) VALUES (?, ?)", rows)
+        self.db.execute("DELETE FROM noise_levels WHERE t < ?", (max(t for t, _ in rows) - keep_seconds,))
+        self.db.commit()
+
+    def noise_levels(self, start: float, end: float) -> list[tuple[int, float]]:
+        return [tuple(r) for r in self.db.execute(
+            "SELECT t, db FROM noise_levels WHERE t BETWEEN ? AND ? ORDER BY t", (start, end))]
+
+    def set_noise(self, pass_id: int, peak: float | None, background: float | None, state: int) -> None:
+        self.db.execute("UPDATE passes SET noise_peak = ?, noise_bg = ?, noise_state = ? WHERE id = ?",
+                        (peak, background, state, pass_id))
         self.db.commit()
 
     def get_pass(self, pass_id: int) -> sqlite3.Row | None:

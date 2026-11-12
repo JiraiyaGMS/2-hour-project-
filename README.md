@@ -13,8 +13,8 @@ overhead today, and a live 3D/2D map of the sky around you.
 - **Quiet hours:** no alerts overnight. Those planes show up in the
   morning report instead, marked 🌙.
 - **Daily report:** the last 24 hours of planes with stats (busiest hour,
-  lowest, closest, top airlines), and a forecast of today's regular flights
-  with their usual times.
+  lowest, closest, top airlines, the plane of the day), and a forecast of
+  today's regular flights with their usual times.
 - **Weekly email:** your week of planes, the rarest one, new additions to
   your collection, the busiest routes and airlines.
 - **Live map:** a 3D map (tilt and spin it, with buildings) or a flat 2D
@@ -23,9 +23,20 @@ overhead today, and a live 3D/2D map of the sky around you.
   so nothing is published, and your phone can open it too.
 - **Look up!** On the map, a card points to where in the sky to look for
   the plane coming over: which way to face and how high, with an optional
-  chime.
+  chime or a **voice** that reads out each plane. It also says when the
+  **clouds** or the dark will hide it, from the nearest airport's weather.
+- **Coming over next:** the next few planes heading for your zone, with
+  countdowns.
+- **Sky view (AR):** hold your phone up and every plane is labelled where
+  it is in the sky.
 - **Your collection** of airlines, aircraft types and countries, with
-  badges and charts, and a **replay** of any day's traffic as a time-lapse.
+  badges, charts, **records** (lowest, fastest, longest flight...), a
+  **plane of the day**, and a streak for planes you've spotted with your own
+  eyes. Add **your own photos** to flights, and make a **share card** of any
+  flight to text to friends. Plus a **replay** of any day as a time-lapse.
+- **Noise log:** low and late-night flights, a **noise meter** that uses
+  your Mac's microphone to rank the loudest planes, and a spreadsheet you
+  can download.
 - **Your own receiver** (optional): plug in a cheap ADS-B radio for
   unlimited, real-time data.
 - Free data and no API keys. Nothing extra to install besides Python.
@@ -207,16 +218,48 @@ browser on your Mac.
 - **Collection** (third tab) is everything you've ever spotted: totals,
   airlines with their logos, aircraft types, countries (from the planes'
   registrations), the times of day and days of the week planes come over,
-  and 17 badges to earn (*Superjumbo*, *Night owl*, *Thousand club*...).
+  and 20 badges to earn (*Superjumbo*, *Night owl*, *Thousand club*...).
 - **🕒 Replay** (top right) plays back a whole day of spotted flights as a
   time-lapse: pick the day and speed, drag the slider to any time.
 - **Routes with a ✓** have been checked against the plane's real flight:
   the airport it actually took off from (and landed at), not just what a
   route database guessed from the flight number.
+- **The weather line** under your house's name says what the sky is doing
+  (*☁️ Overcast at 1,800 ft*, *🌙 Clear night*), from the nearest airport's
+  weather report. When a plane will be above the clouds, the Look up! card
+  (and the alert) says *Above the overcast at 1,800 ft: listen for it*.
+  After dark it says to look for its lights, and it warns you if the plane
+  is near the sun.
+- **Coming over next** (top of *In the air*) lists the next few planes
+  heading for your zone with a countdown, if they keep flying straight.
+- **🗣️ Voice** (next to Chime) reads out each plane about 45 seconds before
+  it comes over: *"Delta flight 573 from Fort Lauderdale, coming over in
+  about 30 seconds. Look north-east, 25 degrees up."* It stays quiet during
+  quiet hours.
+- **👀 I saw it:** tap it on the Look up! card (or a flight's card) when you
+  actually spot the plane in the sky. Do it every day to build a **streak**.
+- **📷 Add photo** on any flight's card keeps your own picture with it (taken
+  on your phone, or picked from your photos). It's shrunk to a sensible
+  size, saved on your Mac in the `photos` folder, and shown in the flight's
+  card and in *Collection → Your photos*. Tap a photo to see it big,
+  download it or delete it.
+- **↗ Share** makes a picture of the flight (its route drawn out, airline,
+  aircraft, when you saw it, and your photo if you added one) to text to
+  friends. On a phone it opens the share sheet (with the secure address,
+  see *Sky view* below); elsewhere, save the picture and send it. The
+  card never shows where you live.
+- **Collection** also shows the **plane of the day** (the rarest or most
+  special plane today, like *"Only the 2nd Boeing 747-8 you've spotted"*;
+  it's in the morning email too), your streak, and your **records**:
+  lowest, closest, fastest, highest, longest flight, the plane you see most
+  (your *old friend*), and the busiest day and hour. Tap one to see it.
+- **Noise** (fourth tab): see *Noise log* below.
 
 **On your phone:** when planespotter starts, it prints a second address
 like `http://192.168.1.23:8765`. Open that on your phone while it's on
-the same Wi-Fi. Add it to your home screen to use it like an app.
+the same Wi-Fi. Add it to your home screen to use it like an app. It also
+prints a secure address like `https://192.168.1.23:8766` for the sky view,
+the share sheet and the microphone (see below).
 
 A plane's whole flight is first looked up while it's over your zone,
 which shows where it came from. It's checked again 20 minutes, 1 hour, 3
@@ -227,6 +270,94 @@ more than a day before you updated can't be filled in.
 **Just the map, no emails:** run `python3 -m planespotter map`. To turn the
 map off, or to keep it to this Mac only, see the *Live map* settings in
 [`.env.example`](.env.example).
+
+---
+
+## Sky view (AR) on your phone
+
+Hold your phone up to the sky and every plane is labelled right where it
+is, with its flight number, route, height and distance. Planes over your
+zone are orange; arrows at the edge point to ones you're not facing. Tap a
+label for details and *I saw it*.
+
+Phones only let a web page use the camera and compass over a secure
+(https) connection, so planespotter runs a secure copy of the map too. It
+makes its own certificate on your Mac. Nobody vouches for a home-made
+certificate, so your phone warns you **the first time**:
+
+1. Start planespotter. It prints a line like
+   `AR sky view (phone):   https://192.168.1.23:8766/sky`.
+2. On your phone (on the same Wi-Fi), open that address. Or open the map and
+   tap the **phone-with-a-star button** (top right).
+3. **iPhone (Safari):** you'll see *This Connection Is Not Private*. Tap
+   **Show Details**, then **visit this website**, then **Visit Website**.
+   **Android (Chrome):** you'll see *Your connection is not private*. Tap
+   **Advanced**, then **Proceed to 192.168.1.23 (unsafe)**.
+   This is safe here: the certificate was made by planespotter on your own
+   Mac, and the connection never leaves your Wi-Fi.
+4. Tap **Start**, then **Allow** for the camera, and **Allow** for motion
+   and orientation.
+5. Hold the phone up (upright, like taking a photo) and look around.
+
+Tips:
+
+- **Labels a bit to one side?** Phone compasses are often off by 10° or
+  so, especially near metal or a car. Drag sideways to line the labels up
+  with a plane you can see. It remembers.
+- **Labels too spread out or bunched up?** Use **+** and **−**. Phones'
+  cameras differ.
+- On an iPhone, check **Settings → Privacy & Security → Location Services
+  → System Services → Compass Calibration** is on.
+- It assumes you're at home (it uses your house's location). It works a
+  few streets away too.
+- On a computer there's no compass or camera, so it shows the sky as a
+  chart you can drag around. Handy for a look.
+
+This view is **experimental**: it depends on your phone's compass and
+camera, and how well it lines up varies from phone to phone.
+
+To turn the secure address off, set `MAP_HTTPS=false` in `.env`.
+
+## Noise log
+
+The **Noise** tab on the map tracks low and late-night flights:
+
+- How many planes came over your zone, how many were **low** (under
+  2,000 ft above you), and how many came **at night** (your quiet hours,
+  or 11 pm–7 am if you don't have any), for the last 7, 30 or 90 days.
+- A chart of planes per night, and lists of the lowest planes and the latest
+  night ones. Tap any of them to see the flight.
+- **Download a spreadsheet** of every plane over your zone: date, time,
+  flight, airline, aircraft, route, how close and how low it came, low/night,
+  and measured loudness. It opens in Numbers, Excel or Google Sheets. Handy
+  if you want to send a complaint to an airport or your council.
+
+### The noise meter
+
+The noise meter uses your Mac's microphone to measure how loud each plane
+is as it flies over, and ranks the loudest.
+
+1. On the Mac running planespotter, open **http://localhost:8765** (Chrome
+   works best).
+2. Click the **Noise** tab, then **Start listening**.
+3. Click **Allow** when the browser asks to use the microphone. If macOS
+   asks too, allow it, or turn the browser on under **System Settings →
+   Privacy & Security → Microphone**.
+4. Leave that tab open. It can be behind other windows, but the Mac needs
+   to stay awake. The status line says *🎙️ listening*.
+
+About 3 minutes after a plane goes over your zone, it gets a loudness
+reading: how many decibels louder it was than the usual background noise
+just before and after. It appears in *Loudest planes*, in the flight's
+card (*🎙️ +18 dB louder than the background*) and in the spreadsheet.
+Microphones aren't calibrated, so this is a fair comparison between
+planes, not an official noise level. A barking dog at the same moment
+counts too.
+
+Nothing is recorded: the page measures the level once a second, and only
+that number is sent to planespotter, which keeps it for 3 days. The noise
+meter only works on the Mac itself (or on the secure https address);
+browsers block the microphone on plain addresses.
 
 ---
 
@@ -382,6 +513,13 @@ carries on by itself once adsb.lol allows more requests.
 | No phone notifications | Run `python3 -m planespotter test-push`. Check the topic in the ntfy app matches `NTFY_TOPIC` in `.env` exactly, and that notifications are allowed for ntfy in your phone's settings. |
 | Tapping a notification doesn't open the map | It opens the map's home-Wi-Fi address, so your phone must be on your home Wi-Fi and planespotter running. |
 | No chime | Click **🔔 Chime** on the map first (browsers only play sound after a click), and keep the map open; check your volume. |
+| No voice | Turn on **🗣️ Voice**, then click anywhere on the map once (browsers only speak after a click). It's silent during quiet hours. On an iPhone, turn off silent mode. |
+| *This Connection Is Not Private* on the sky view | Expected the first time: see *Sky view* above (Show Details → visit this website). |
+| Sky view says *drag to look around* on a phone | It didn't get the compass. Open it from the **https** address, tap **Start** and allow motion and orientation. On an iPhone, if you tapped Don't Allow, close the tab and open the address again. |
+| The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
+| The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
+| *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
+| No weather line | The nearest airport weather station may be far away or not reporting; it tries again every 10 minutes. `WEATHER=false` turns it off. |
 | *Your receiver isn't answering* | Open the receiver's address in a browser to check it's on, and check the address in setup. planespotter uses adsb.lol meanwhile. |
 | The map says *adsb.lol's daily limit reached* | The free allowance is used up for now; it carries on by itself. A free key doubles it (see above). |
 | Nothing ever shows up | Run `python3 -m planespotter check` to see what's flying nearby. Try a bigger radius, and check you pasted the coordinates of your house. |
@@ -499,6 +637,20 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   airport list (about 12,000 airports, from the public-domain
   [OurAirports](https://ourairports.com/data/)) comes with planespotter;
   `python3 scripts/update_airports.py` refreshes it.
+- **Clouds and daylight.** The weather comes from the latest report
+  (METAR) of the airport weather station nearest your house, from the US
+  National Weather Service's free [aviationweather.gov](https://aviationweather.gov)
+  (it covers airports worldwide). It's checked at most every 15 minutes. If
+  a plane is higher above the ground than a broken or overcast cloud layer,
+  you won't see it. The sun's position is worked out on your Mac.
+- **The noise meter** sends one number a second (the loudest moment of that
+  second, in decibels). For each plane over your zone, planespotter finds
+  when it was closest (from its path), takes the loudest second within 75
+  seconds of that, and compares it with the quieter moments in the 10
+  minutes around it.
+- **The secure address** uses a certificate planespotter makes once with
+  `openssl` (kept in the `https-cert` folder; remade if your Mac's network
+  address changes).
 - **Today's forecast is learned.** Exact flight paths aren't published
   anywhere for free. But airlines fly the same flight number at about the
   same time every day, so any flight that has passed over on at least 2 of
@@ -519,6 +671,6 @@ python3 -m unittest discover -s tests
 
 ## Ideas for next time
 
-- Point your phone at the sky: an augmented-reality view of the planes.
 - A tiny e-ink or LED display by the window showing the next plane over.
-- Sound: hear each plane's flight number read out as it comes over.
+- Smart lights (Philips Hue, Home Assistant) that flash when a plane is
+  about to come over.

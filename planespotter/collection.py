@@ -26,6 +26,9 @@ BADGES = [
     ("military", "🎖️", "Top brass", "A military aircraft nearby"),
     ("helicopter", "🚁", "Chopper", "A helicopter over your zone"),
     ("emergency", "🚨", "Mayday", "A plane squawking an emergency nearby"),
+    ("eyes1", "👀", "Eyes on the sky", "Tap “I saw it” on a plane you spotted"),
+    ("streak7", "🔥", "On a roll", "Spot a plane with your own eyes 7 days running"),
+    ("photo1", "📸", "Shutterbug", "Add your own photo of a plane"),
 ]
 
 
@@ -100,6 +103,23 @@ def build_collection(store, cfg) -> dict:
         row = store.db.execute("SELECT MIN(at) FROM special_seen WHERE reason = ?", (reason,)).fetchone()
         if row[0]:
             earn(key, row[0])
+
+    eyes = [r[0] for r in store.db.execute("SELECT at FROM eyes ORDER BY at")]
+    if eyes:
+        earn("eyes1", eyes[0])
+        run, prev = 0, None
+        for t in eyes:
+            day = cfg.local(t).date()
+            if day == prev:
+                continue
+            run = run + 1 if prev and (day - prev).days == 1 else 1
+            prev = day
+            if run >= 7:
+                earn("streak7", t)
+                break
+    first_photo = store.db.execute("SELECT MIN(added_at) FROM photos").fetchone()[0]
+    if first_photo:
+        earn("photo1", first_photo)
 
     # Remember badges for good (special-plane records are tidied away after a month).
     store.db.executemany("INSERT OR IGNORE INTO badges (key, earned_at) VALUES (?, ?)", earned.items())

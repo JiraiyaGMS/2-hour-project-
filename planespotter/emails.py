@@ -359,6 +359,20 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
             '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
             f'style="border-collapse:separate;margin:0 0 12px"><tr>{spacer.join(tiles)}</tr></table>'
         )
+        if recap.star:
+            star = recap.star
+            what = " · ".join(x for x in (star["airline"], star["aircraft"], star["route"]) if x)
+            html.append(
+                f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
+                f'style="border-collapse:separate;margin:0 0 12px;background:{TINT};border-radius:8px">'
+                f'<tr><td style="padding:12px 14px">'
+                f'<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:{MUTED}">'
+                f'⭐ Plane of the day</div>'
+                f'<div style="font-size:17px;font-weight:700;margin-top:2px">{escape(star["label"])}</div>'
+                f'<div style="font-size:13px;color:{MUTED}">{escape(what)}</div>'
+                f'<div style="font-size:14px;margin-top:4px">{escape(star["why"])}</div></td></tr></table>'
+            )
+            text.append(f"Plane of the day: {star['label']} ({what}). {star['why']}")
         if recap.top_airlines:
             airlines = ", ".join(f"{name} ({n})" for name, n in recap.top_airlines)
             html.append(f'<p style="font-size:14px;margin:0 0 12px"><strong>Top airlines:</strong> {escape(airlines)}</p>')

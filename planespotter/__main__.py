@@ -17,9 +17,11 @@ from .fullpath import FlightLookup, start_full_path_worker
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
 from .notify import PushNotifier
+from .sky import SkyWatch
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
-from .webmap import MapServerError, make_budget, shared_feed, start_feed_poller, start_map_server
+from .webmap import (MapServerError, home_elevation_ft, make_budget, shared_feed, start_feed_poller,
+                     start_map_server)
 from .wizard import Cancelled, Wizard
 
 
@@ -29,7 +31,9 @@ def build(cfg: Config) -> Watcher:
     flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
                if cfg.whole_flights else None)
     return Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
-                   budget=budget, flights=flights, notifier=PushNotifier(cfg))
+                   budget=budget, flights=flights, notifier=PushNotifier(cfg),
+                   sky=SkyWatch(cfg) if cfg.weather else None,
+                   ground_ft=home_elevation_ft(cfg))
 
 
 def cmd_setup(env_path: Path, args) -> int:
@@ -92,10 +96,18 @@ def cmd_check(cfg: Config, args) -> int:
     return 0
 
 
+def phone_url(urls: list[str]) -> str:
+    """The plain address for phones on the Wi-Fi (or this computer's, if phones can't reach it)."""
+    return next((u for u in urls[1:] if u.startswith("http://")), urls[0])
+
+
 def print_map_urls(urls: list[str]) -> None:
     print(f"  Map on this computer:  {urls[0]}")
-    if len(urls) > 1:
-        print(f"  Map on your phone:     {urls[1]}   (same Wi-Fi)")
+    if phone_url(urls) != urls[0]:
+        print(f"  Map on your phone:     {phone_url(urls)}   (same Wi-Fi)")
+    secure = next((u for u in urls if u.startswith("https://")), "")
+    if secure:
+        print(f"  AR sky view (phone):   {secure}/sky   (secure address: the README explains the warning)")
 
 
 def cmd_watch(cfg: Config, args) -> int:
@@ -103,9 +115,9 @@ def cmd_watch(cfg: Config, args) -> int:
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
     if cfg.map_enabled:
         try:
-            _, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget)
+            _, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget, sky=watcher.sky)
             print_map_urls(urls)
-            watcher.notifier.map_url = urls[-1]  # tapping a phone notification opens the map (home Wi-Fi)
+            watcher.notifier.map_url = phone_url(urls)  # tapping a phone notification opens the map (home Wi-Fi)
             print()
             if args.open:
                 webbrowser.open(urls[0])

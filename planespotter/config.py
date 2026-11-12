@@ -123,6 +123,9 @@ class Config:
     weekly_report: bool = True   # a summary email once a week
     weekly_day: int = 6          # 0 = Monday ... 6 = Sunday
     receiver_url: str = ""       # your own ADS-B receiver's aircraft.json (blank = adsb.lol only)
+    map_https: bool = True       # also serve the map over https (phones need it for AR, mic, sharing)
+    map_https_port: int = 8766
+    weather: bool = True         # check the clouds at the nearest airport (aviationweather.gov)
 
     @property
     def view_radius_miles(self) -> float:
@@ -280,6 +283,9 @@ class Config:
             weekly_report=flag("WEEKLY_REPORT", True),
             weekly_day=weekday(get("WEEKLY_DAY", "sun")),
             receiver_url=get("RECEIVER_URL"),
+            map_https=flag("MAP_HTTPS", True),
+            map_https_port=number("MAP_HTTPS_PORT", str(number("MAP_PORT", "8765", int) + 1), int),
+            weather=flag("WEATHER", True),
         )
 
 
@@ -290,4 +296,5 @@ KNOWN_KEYS = {
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
     "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
+    "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER",
 }

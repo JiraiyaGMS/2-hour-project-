@@ -40,6 +40,7 @@ class Airport(NamedTuple):
 class Airports:
     def __init__(self, path: Path = DATA):
         self.by_cell: dict[tuple[int, int], list[Airport]] = {}
+        self.by_code: dict[str, Airport] = {}
         with open(path, encoding="utf-8") as fh:
             lines = (line for line in fh if not line.startswith("#"))
             for r in csv.DictReader(lines):
@@ -49,6 +50,13 @@ class Airports:
                 except (KeyError, ValueError):
                     continue
                 self.by_cell.setdefault((math.floor(a.lat), math.floor(a.lon)), []).append(a)
+                for code in (a.code, a.icao):
+                    if code and (code not in self.by_code or a.kind < self.by_code[code].kind):
+                        self.by_code[code] = a  # "L" < "M" < "S": the bigger airport wins a shared code
+
+    def get(self, code: str) -> Airport | None:
+        """An airport by its IATA (LAX) or ICAO (KLAX) code."""
+        return self.by_code.get((code or "").upper())
 
     def nearest(self, lat: float, lon: float, max_km: float = NEAR_KM) -> Airport | None:
         best, best_score = None, max_km

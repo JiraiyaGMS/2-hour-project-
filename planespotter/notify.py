@@ -77,7 +77,7 @@ class PushNotifier:
 
     def plane_over_home(self, passes, cfg) -> bool:
         """One notification for the plane(s) that just came over."""
-        from .emails import fmt_alt, fmt_dist, highlights, label, route  # avoid a circular import
+        from .emails import field, fmt_alt, fmt_dist, highlights, label, route  # avoid a circular import
         from .geo import compass
 
         first = passes[0]
@@ -91,8 +91,8 @@ class PushNotifier:
             where = f"{fmt_dist(p['closest_miles'])} {compass(p['closest_bearing'])}, {fmt_alt(p['closest_alt_ft'])}"
             lines.append(" · ".join(b for b in bits if b) + f"\n{where}")
             lines.extend(highlights(p))
-        if any(highlights(p) for p in passes):
-            title = "✨" + title[1:]
+        if any(json.loads(field(p, "firsts", "[]") or "[]") for p in passes):
+            title = "✨" + title[1:]  # a first: an airline or aircraft type you've never spotted
         code = airline_code(first["callsign"])
         return self.send(
             title, "\n".join(lines),

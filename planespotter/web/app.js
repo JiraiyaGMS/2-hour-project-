@@ -78,6 +78,12 @@
     wholeAll: { flights: [], byId: new Map(), version: 0 },  // every spotted flight's whole path
     logoOK: new Set(),          // airline codes whose logo loaded
     logoBad: new Set(),         // ...and ones that have no logo
+    voice: saved.get('voice', false),
+    spoken: new Map(),          // hex -> when we last announced it
+    sky: null,                  // clouds near home + where the sun is (api/sky)
+    yours: { photos: [], eyes: [], streak: null },  // your photos and "I saw it" planes
+    noise: null,                // the noise tab (api/noise)
+    noiseDays: saved.get('noiseDays', 30),
   };
 
   // ---------- small helpers ----------
@@ -339,11 +345,15 @@
       return rows.slice(0, limit).map(row).join('')
         + (rows.length > limit ? `<button class="chip more" data-show-all="${key}">Show all ${rows.length}</button>` : '');
     };
+    const extra = extrasHtml(c);
     return `<div class="collection">
       <p class="csub">Everything you've spotted since ${esc(since)}.</p>
+      ${extra.top}
       <div class="ctiles">${tile('Planes', t.planes)}${tile('Airlines', t.airlines)}${tile('Aircraft types', t.types)}${tile('Countries', t.countries)}</div>
       <h3>Badges <span>${earned} of ${c.badges.length}</span></h3>
       <div class="cbadges">${c.badges.map(badge).join('')}</div>
+      ${extra.records}
+      ${extra.photos}
       <h3>Planes by time of day</h3>
       ${columnChart(c.hours, hourTips, [[0, '00:00'], [6, '06:00'], [12, '12:00'], [18, '18:00']])}
       <h3>Planes by day of the week</h3>
@@ -421,8 +431,8 @@
   function renderList() {
     const el = $('#list');
     $('#live-count').textContent = state.live.length;
-    if (state.tab === 'collection') {
-      el.innerHTML = collectionHtml();
+    if (state.tab === 'collection' || state.tab === 'noise') {
+      el.innerHTML = state.tab === 'collection' ? collectionHtml() : noiseHtml();
       render();
       return;
     }
@@ -666,6 +676,25 @@
     return `<div><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
   }
 
+  /** Your own photo if you've added one (tap it to see it big), otherwise one from the aircraft database. */
+  function photoHtml(thing, fallbackUrl) {
+    const mine = photosOf(thing);
+    if (!mine.length) return fallbackUrl ? `<img class="photo" src="${esc(fallbackUrl)}" alt="">` : '';
+    const more = mine.length > 1 ? `<span class="photo-count">📸 ${mine.length}</span>` : '<span class="photo-count">📸 yours</span>';
+    return `<button class="photo-btn" data-view-photo="${mine[0].id}"><img class="photo" src="photo/${mine[0].id}-thumb.jpg" alt="Your photo">${more}</button>`;
+  }
+
+  function actionsHtml(thing) {
+    const hex = thing.plane ? thing.plane.hex : thing.flight.hex;
+    const at = thing.plane ? Date.now() / 1000 : thing.flight.first_seen;
+    const recent = Date.now() / 1000 - at < 7 * 86400;
+    const seen = sawIt(hex, at);
+    return `<div class="actions">
+      ${recent ? `<button class="act${seen ? ' done' : ''}" data-action="saw" data-at="${at}">${seen ? '✓ You saw it' : '👀 I saw it'}</button>` : ''}
+      <button class="act" data-action="add-photo">📷 Add photo</button>
+      <button class="act" data-action="share">↗ Share</button></div>`;
+  }
+
   let lastDetailHtml = '';
   function renderDetail() {
     const el = $('#detail');
@@ -676,8 +705,7 @@
     if (thing.plane) {
       const p = thing.plane;
       const info = infoFor(p) || {};
-      const photo = info.photo_url ? `<img class="photo" src="${esc(info.photo_url)}" alt="">` : '';
-      html = `${photo}<button class="close" aria-label="Close">×</button><div class="body">
+      html = `${photoHtml(thing, info.photo_url)}<button class="close" aria-label="Close">×</button><div class="body">
         <div class="title-row">${logo(p.callsign, true)}<div><h2>${esc(label(p))}</h2>
         <div class="airline">${esc(info.airline || info.owner || '')}</div></div></div>
         ${routeLong({ ...info, ...(checkedRoute(p.hex) || {}) }) ? `<div class="route-big">${esc(routeLong({ ...info, ...(checkedRoute(p.hex) || {}) }))}</div>` : ''}
@@ -690,17 +718,17 @@
         ${thing.lost ? '<div class="note">Out of range now, showing its last position.</div>'
           : p.in_zone ? '<div class="note"><span class="badge">Overhead</span> inside your zone right now</div>' : ''}
         ${wholeNote()}
+        ${actionsHtml(thing)}
         <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(p.hex)}" target="_blank" rel="noopener">Follow it on adsb.lol ↗</a></div>
       </div>`;
     } else {
       const f = thing.flight;
       const when = new Date(f.first_seen * 1000);
       const utcDay = when.toISOString().slice(0, 10);
-      const photo = f.photo_url ? `<img class="photo" src="${esc(f.photo_url)}" alt="">` : '';
       const why = f.alerted ? 'You got an email about this one.'
         : f.quiet ? '🌙 Came over during quiet hours, so it went in the morning report.'
           : 'No alert was emailed for this one.';
-      html = `${photo}<button class="close" aria-label="Close">×</button><div class="body">
+      html = `${photoHtml(thing, f.photo_url)}<button class="close" aria-label="Close">×</button><div class="body">
         <div class="title-row">${logo(f.callsign, true)}<div><h2>${esc(label(f))}</h2>
         <div class="airline">${esc(f.airline || f.owner || '')}</div></div></div>
         ${routeLong(f) ? `<div class="route-big">${esc(routeLong(f))}${f.route_checked ? ' <span class="checked" title="Checked against its actual flight path">✓</span>' : ''}</div>` : ''}
@@ -709,7 +737,9 @@
           ${stat(`Seen ${['Today', 'Yesterday'].includes(dayLabel(f.first_seen)) ? dayLabel(f.first_seen).toLowerCase() : dayLabel(f.first_seen)}`, fmtTime(f.first_seen))}${stat('Closest', `${fmtDist(f.closest_miles)} ${compass(f.bearing)}`)}${stat('Altitude', fmtAlt(f.closest_alt_ft))}
         </div>
         <div class="note">${esc(why)}</div>
+        ${f.noise_db != null ? `<div class="note">🎙️ ${esc(`+${f.noise_db} dB louder than the background`)}</div>` : ''}
         ${wholeNote()}
+        ${actionsHtml(thing)}
         <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(f.hex)}&showTrace=${utcDay}" target="_blank" rel="noopener">Replay on adsb.lol ↗</a></div>
       </div>`;
     }
@@ -809,6 +839,7 @@
       const every = state.liveMeta ? state.liveMeta.interval : 0;
       if (every > 45) text += ` · updates every ${every >= 90 ? `${Math.round(every / 60)} min` : `${every} s`}`;
       if (state.quietNow) { text += ' · 🌙 quiet hours'; cls = 'quiet'; }
+      if (meter.on) text += ' · 🎙️ listening';
     }
     el.className = `status ${cls}`;
     $('#status-text').textContent = text;
@@ -879,33 +910,35 @@
 
   // ---------- look up! ----------
   /**
-   * The plane to look for now: one over your zone, or else the next one about to cross it
-   * (flying straight on, within 5 minutes). Where to look: compass direction, and how many
-   * degrees above the horizon (a fist at arm's length is about 10 degrees).
+   * Planes over your zone now, or about to cross it if they fly straight on (within `horizon`
+   * seconds), soonest first. For each: where to look (compass direction, and degrees above the
+   * horizon: a fist at arm's length is about 10 degrees) and how soon.
    */
-  function lookUpTarget(now) {
-    const { home, radius_miles: radius, home_elevation_ft: groundFt = 0 } = state.config;
+  function predictions(now, horizon = 300) {
+    const { home, radius_miles: radius, home_elevation_ft: groundFt = 0, max_altitude_ft: ceiling } = state.config;
     const rad = Math.PI / 180;
-    let best = null;
+    const out = [];
     for (const p of state.live) {
       const [lon, lat] = livePos(p, now);
       const miles = milesBetween(home.lat, home.lon, lat, lon);
       const az = bearingTo(home.lat, home.lon, lat, lon);
       let eta = null;
       if (miles <= radius && p.in_zone) eta = 0;
-      else if (p.speed_kt && p.heading != null) {
+      else if (p.speed_kt && p.heading != null && !(ceiling && p.alt_ft > ceiling)) {
         const x = Math.sin(az * rad) * miles * MI, y = Math.cos(az * rad) * miles * MI;
         const v = p.speed_kt * KT, vx = Math.sin(p.heading * rad) * v, vy = Math.cos(p.heading * rad) * v;
         const tc = -(x * vx + y * vy) / (v * v);  // seconds until it's closest to home
-        if (tc > 0 && tc < 300 && Math.hypot(x + vx * tc, y + vy * tc) / MI <= radius) eta = tc;
+        if (tc > 0 && tc < horizon && Math.hypot(x + vx * tc, y + vy * tc) / MI <= radius) eta = tc;
       }
       if (eta === null) continue;
       const height = Math.max(0, ((p.alt_ft || 0) - groundFt) * FT);
       const up = Math.atan2(height, Math.max(1, miles * MI)) / rad;
-      if (!best || eta < best.eta || (eta === best.eta && miles < best.miles)) best = { p, miles, az, up, eta };
+      out.push({ p, miles, az, up, eta });
     }
-    return best;
+    return out.sort((x, y) => x.eta - y.eta || x.miles - y.miles);
   }
+
+  const lookUpTarget = (now) => predictions(now, 300)[0] || null;
 
   function fists(degrees) {
     if (degrees >= 70) return 'almost straight up';
@@ -923,13 +956,22 @@
     const { p, miles, az, up, eta } = target;
     const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
     const when = eta === 0 ? 'overhead now' : eta < 60 ? `in ${Math.round(eta / 5) * 5 || 5} seconds` : `in ${Math.round(eta / 60)} min`;
+    const note = skyNote(p, miles, az, up);
+    const seen = sawIt(p.hex);
     const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
       + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
       <div class="what"><div class="head">Look up · <strong>${compass(az)}, ${Math.round(up)}° up</strong></div>
-      <div class="sub">${logo(p.callsign)}<span><strong>${esc(label(p))}</strong> ${esc(routeShort(info))} · ${when} · ${esc(fists(up))}</span></div></div>`;
+      <div class="sub">${logo(p.callsign)}<span><strong>${esc(label(p))}</strong> ${esc(routeShort(info))} · ${when} · ${esc(fists(up))}</span></div>
+      ${note ? `<div class="sky-note">${esc(note)}</div>` : ''}</div>
+      <button class="saw${seen ? ' done' : ''}" data-saw="${esc(p.hex)}" data-callsign="${esc(p.callsign || '')}" title="Tap when you've spotted it in the sky">${seen ? '✓ Seen' : '👀 I saw it'}</button>`;
     if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
     el.hidden = false;
-    el.onclick = () => select('live', p.hex);
+    el.onclick = (e) => { if (!e.target.closest('.saw')) select('live', p.hex); };
+    // Speak once per plane, as it's about to come over (after its airline and route have loaded, if they're coming).
+    if (state.voice && eta <= 45 && !state.quietNow && (infoFor(p) !== null || eta < 15)) {
+      const last = state.spoken.get(p.hex) || 0;
+      if (Date.now() - last > 20 * 60000) { state.spoken.set(p.hex, Date.now()); say(announcement(target, info, note)); }
+    }
     // A chime when a plane is about to come over (once per plane).
     if (state.chime && eta <= 60) {
       const last = state.chimed.get(p.hex) || 0;
@@ -965,6 +1007,583 @@
     b.setAttribute('aria-pressed', String(on));
     b.textContent = on ? '🔔 Chime on' : '🔕 Chime';
     if (on) chime();  // also unlocks sound in the browser, which needs a click first
+  }
+
+  // ---------- can you see it? clouds + daylight ----------
+  const SOLID = ['BKN', 'OVC', 'OVX'];
+  const COVER = { FEW: 'a few clouds', SCT: 'scattered clouds', BKN: 'broken cloud', OVC: 'overcast', OVX: 'fog' };
+
+  async function loadSky() {
+    try { state.sky = await getJSON('api/sky'); } catch { /* keep the last one */ }
+    renderSkyLine();
+  }
+
+  /** Degrees between two directions in the sky (azimuth + altitude). */
+  function angleBetween(az1, alt1, az2, alt2) {
+    const r = Math.PI / 180;
+    const c = Math.sin(alt1 * r) * Math.sin(alt2 * r) + Math.cos(alt1 * r) * Math.cos(alt2 * r) * Math.cos((az1 - az2) * r);
+    return Math.acos(Math.max(-1, Math.min(1, c))) / r;
+  }
+
+  /** "Above the overcast at 1,800 ft: listen for it", "After dark: look for its lights"... or '' if it's easy to see. */
+  function skyNote(p, miles, az, up) {
+    const s = state.sky;
+    if (!s) return '';
+    const w = s.weather, sun = s.sun || {};
+    if (w && p.alt_ft != null) {
+      const height = p.alt_ft - (state.config.home_elevation_ft || 0);
+      if (w.ceiling_ft != null && height > w.ceiling_ft + 200) {
+        const layer = w.layers.find((l) => l.base_ft === w.ceiling_ft && SOLID.includes(l.cover)) || { cover: 'OVC' };
+        const at = `${w.ceiling_ft.toLocaleString()} ft`;
+        return layer.cover === 'BKN' ? `⛅ Above broken cloud at ${at}: you might catch it through a gap`
+          : `☁️ Above the ${COVER[layer.cover]} at ${at}: listen for it`;
+      }
+      const slant = Math.hypot(miles, Math.max(0, height) / 5280);
+      if (w.visibility_miles != null && w.visibility_miles < slant) return `🌫️ Visibility is only ${w.visibility_miles} mi, so it may be hard to see`;
+    }
+    if (sun.daylight === 'day' && sun.altitude > 0 && angleBetween(az, up, sun.azimuth, sun.altitude) < 20) {
+      return '😎 It’s near the sun: don’t look straight at it';
+    }
+    if (sun.daylight === 'night') return '🌙 After dark: look for its flashing lights';
+    if (sun.daylight === 'twilight') return '🌆 Getting dark: look for its lights';
+    return '';
+  }
+
+  function renderSkyLine() {
+    const el = $('#sky-line');
+    const s = state.sky;
+    if (!s) { el.hidden = true; return; }
+    const w = s.weather, dark = s.sun && s.sun.daylight !== 'day';
+    let text;
+    if (!w) text = dark ? '🌙 Dark out' : '☀️ Daylight';
+    else {
+      const solid = w.layers.find((l) => SOLID.includes(l.cover));
+      const top = w.layers[0];
+      if (solid) text = `${solid.cover === 'BKN' ? '🌥️ Broken cloud' : solid.cover === 'OVX' ? '🌫️ Fog' : '☁️ Overcast'} at ${solid.base_ft.toLocaleString()} ft`;
+      else if (top) text = `${top.cover === 'SCT' ? '⛅' : '🌤️'} ${COVER[top.cover][0].toUpperCase()}${COVER[top.cover].slice(1)} at ${top.base_ft.toLocaleString()} ft`;
+      else text = dark ? '🌙 Clear night' : '☀️ Clear skies';
+      if (w.visibility_miles != null && w.visibility_miles < 5) text += ` · 🌫️ ${w.visibility_miles} mi visibility`;
+      if (dark && !text.startsWith('🌙')) text += ' · 🌙 dark';
+    }
+    el.textContent = text;
+    el.title = w ? `${w.station} ${w.name} (${w.distance_miles} mi away), ${new Date(w.observed * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}:\n${w.raw}` : '';
+    el.hidden = false;
+  }
+
+  // ---------- spoken announcements ----------
+  const canSpeak = 'speechSynthesis' in window;
+
+  function say(text) {
+    if (!canSpeak) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = navigator.language || 'en-US';
+    u.rate = 1;
+    window.speechSynthesis.speak(u);
+  }
+
+  const DIRECTION_WORDS = { N: 'north', NE: 'north-east', E: 'east', SE: 'south-east', S: 'south', SW: 'south-west', W: 'west', NW: 'north-west' };
+
+  /** "Delta flight 573 from Fort Lauderdale, coming over in about 30 seconds. Look north-east, 25 degrees up." */
+  function announcement({ p, az, up, eta }, info, note) {
+    const number = /^[A-Z]{3}(\d+[A-Z]?)$/.exec(p.callsign || '');
+    const airline = (info.airline || '').replace(/\s+(Air ?Lines|Airways|Airlines)$/i, '');
+    const name = airline && number ? `${airline} flight ${number[1]}` : airline ? `${airline}, ${label(p)}` : label(p);
+    const from = info.origin_city ? ` from ${info.origin_city}` : '';
+    const when = eta === 0 ? ' is overhead now' : `, coming over in about ${eta < 60 ? `${Math.max(5, Math.round(eta / 5) * 5)} seconds` : 'a minute'}`;
+    const where = up >= 70 ? 'Look straight up.' : `Look ${DIRECTION_WORDS[compass(az)]}, ${Math.round(up)} degrees up.`;
+    const alt = p.alt_ft ? ` It's at ${(Math.round(p.alt_ft / 100) * 100).toLocaleString()} feet.` : '';
+    const sky = note ? ` ${note.replace(/^\S+\s/, '').replace(/:\s*/, ', ')}.` : '';  // "After dark, look for its flashing lights."
+    return `${name}${from}${when}. ${where}${alt}${sky}`;
+  }
+
+  function setVoice(on, announce = true) {
+    state.voice = on && canSpeak;
+    saved.set('voice', state.voice);
+    const b = $('#btn-voice');
+    b.setAttribute('aria-pressed', String(state.voice));
+    b.textContent = state.voice ? '🗣️ Voice on' : '🔇 Voice';
+    if (!canSpeak) { b.disabled = true; b.title = 'This browser can’t speak'; }
+    if (announce && state.voice) say('Voice announcements are on.');  // also unlocks speech, which needs a tap first
+  }
+
+  // ---------- coming up next ----------
+  const countdown = (secs) => (secs < 1 ? 'now' : `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`);
+
+  let lastUpNext = '';
+  function renderUpNext(now) {
+    const el = $('#upnext');
+    const next = state.tab === 'live' && state.config && !state.replay.on ? predictions(now, 600).slice(0, 4) : [];
+    if (!next.length) { el.hidden = true; lastUpNext = ''; return; }
+    const html = '<div class="upnext-head">Coming over next <span>if they fly straight on</span></div>' + next.map(({ p, az, eta }) => {
+      const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+      return `<button class="up" data-hex="${esc(p.hex)}">${logo(p.callsign)}
+        <span class="who"><strong>${esc(label(p))}</strong> <span class="r">${esc(routeShort(info))}</span></span>
+        <span class="from">${eta === 0 ? 'overhead' : compass(az)}</span>
+        <span class="t${eta === 0 ? ' now' : ''}">${eta === 0 ? 'now' : countdown(eta)}</span></button>`;
+    }).join('');
+    if (html !== lastUpNext) { el.innerHTML = html; lastUpNext = html; }
+    el.hidden = false;
+  }
+
+  // ---------- yours: "I saw it" and your photos ----------
+  async function postJSON(url, body) {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async function loadYours() {
+    try { state.yours = await getJSON('api/yours'); } catch { /* keep what we had */ }
+    lastDetailHtml = '';
+    renderDetail();
+  }
+
+  /** Did you tap "I saw it" on this plane (around time `at`, default now)? */
+  const sawIt = (hex, at = Date.now() / 1000) => state.yours.eyes.some(([h, t]) => h === hex && Math.abs(t - at) < 3600);
+
+  async function toggleSaw(hex, callsign, at) {
+    const undo = sawIt(hex, at);
+    try {
+      state.yours = await postJSON('api/saw', { hex, callsign, at, undo });
+    } catch (err) { toast(`Couldn’t save that: ${err.message}`); return; }
+    lastLookUpHtml = ''; lastDetailHtml = '';
+    renderDetail();
+    renderLookUp(performance.now());
+    const s = state.yours.streak;
+    if (!undo && s) toast(s.current > 1 ? `👀 Nice spot! ${s.current}-day streak 🔥` : '👀 Nice spot! Spot one tomorrow to start a streak.');
+    if (state.tab === 'collection') loadCollection();
+  }
+
+  /** Your photos of this flight (a spotted one), or of this plane in the last few hours (a live one). */
+  function photosOf(thing) {
+    const all = state.yours.photos;
+    if (thing.flight) return all.filter((ph) => ph.pass_id === thing.flight.id);
+    const since = Date.now() / 1000 - 6 * 3600;
+    return all.filter((ph) => ph.hex === thing.plane.hex && ph.added_at > since);
+  }
+
+  let toastTimer = 0;
+  function toast(text) {
+    let el = $('#toast');
+    if (!el) { el = document.createElement('div'); el.id = 'toast'; el.className = 'toast'; document.body.appendChild(el); }
+    el.textContent = text;
+    el.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('on'), 3500);
+  }
+
+  /** Shrink a picture in the browser (phones take huge ones) to a JPEG no bigger than `max` pixels. */
+  async function shrink(file, max, quality) {
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('This browser can’t open that kind of picture. Try a JPEG.'));
+      im.src = URL.createObjectURL(file);
+    });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k);
+    c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(img.src);
+    return { data: c.toDataURL('image/jpeg', quality), width: c.width, height: c.height };
+  }
+
+  let photoTarget = null;
+  function pickPhoto() {
+    const thing = selectedThing();
+    if (!thing) return;
+    photoTarget = thing.flight ? { pass_id: thing.flight.id, hex: thing.flight.hex, callsign: thing.flight.callsign }
+      : { hex: thing.plane.hex, callsign: thing.plane.callsign };
+    $('#photo-input').value = '';
+    $('#photo-input').click();
+  }
+
+  async function uploadPhoto(file) {
+    if (!file || !photoTarget) return;
+    toast('Adding your photo…');
+    try {
+      const full = await shrink(file, 1600, 0.85);
+      const thumb = await shrink(file, 480, 0.8);
+      state.yours = await postJSON('api/photo', { ...photoTarget, full: full.data, thumb: thumb.data, width: full.width, height: full.height });
+      toast('📸 Photo added');
+    } catch (err) {
+      toast(err.message);
+    }
+    lastDetailHtml = '';
+    renderDetail();
+    if (state.tab === 'collection') loadCollection();
+  }
+
+  // ---------- the overlay (your photos, share cards) ----------
+  function openOverlay(html, wide = false) {
+    $('#overlay-body').innerHTML = html;
+    $('#overlay .sheet').classList.toggle('wide', wide);
+    $('#overlay').hidden = false;
+  }
+  function closeOverlay() {
+    $('#overlay').hidden = true;
+    for (const img of document.querySelectorAll('#overlay-body img[data-blob]')) URL.revokeObjectURL(img.src);
+    $('#overlay-body').innerHTML = '';
+  }
+
+  function viewPhoto(id) {
+    const ph = state.yours.photos.find((x) => x.id === Number(id));
+    if (!ph) return;
+    const when = new Date(ph.added_at * 1000).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const route = ph.origin && ph.destination ? ` · ${ph.origin} → ${ph.destination}` : '';
+    openOverlay(`<img class="big-photo" src="photo/${ph.id}.jpg" alt="">
+      <div class="overlay-row"><div><strong>${esc(ph.callsign || ph.registration || ph.hex.toUpperCase())}</strong>${esc(route)}
+      <div class="muted">${esc([ph.airline, ph.type].filter(Boolean).join(' · '))}${ph.airline || ph.type ? ' · ' : ''}added ${esc(when)}</div></div>
+      <div class="overlay-actions">${ph.pass_id ? `<button class="linkbtn" data-open-flight="${ph.pass_id}">Show the flight</button>` : ''}
+      <a class="linkbtn" href="photo/${ph.id}.jpg" download="planespotter-${esc(ph.callsign || ph.hex)}-${ph.id}.jpg">Download</a>
+      <button class="linkbtn danger" data-delete-photo="${ph.id}">Delete</button></div></div>`, true);
+  }
+
+  async function deletePhoto(id) {
+    if (!window.confirm('Delete this photo? This can’t be undone.')) return;
+    try { state.yours = await postJSON('api/photo/delete', { photo: Number(id) }); } catch (err) { toast(err.message); return; }
+    closeOverlay();
+    lastDetailHtml = '';
+    renderDetail();
+    if (state.tab === 'collection') loadCollection();
+  }
+
+  /** Show a spotted flight from anywhere (the collection, a photo...), loading older history if needed. */
+  function openFlight(id) {
+    closeOverlay();
+    state.pendingSelect = { kind: 'history', key: String(id) };
+    if (!state.flights.some((f) => String(f.id) === String(id)) && state.days !== 0) {
+      state.days = 0;  // it's older than the list shows: show everything
+      saved.set('days', 0);
+      for (const c of document.querySelectorAll('[data-days]')) c.setAttribute('aria-pressed', String(c.dataset.days === '0'));
+    }
+    setTab('history');
+  }
+
+  // ---------- share cards ----------
+  const CARD_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+  function loadImage(src) {
+    return new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = src;
+    });
+  }
+
+  /** Write text no wider than `max`, shrinking the font if it has to. */
+  function fitText(g, text, x, y, size, weight, max, color) {
+    let s = size;
+    do { g.font = `${weight} ${s}px ${CARD_FONT}`; s -= 2; } while (g.measureText(text).width > max && s > 18);
+    g.fillStyle = color;
+    g.fillText(text, x, y);
+  }
+
+  function roundRect(g, x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+  }
+
+  /** The flight's path drawn on its own (no map, and nothing that shows where you live). */
+  function drawPath(g, path, box, color) {
+    if (path.length < 2) return false;
+    let pts = path.map((q) => [q[1], q[0]]);  // [lon, lat]
+    const lons = pts.map((q) => q[0]);
+    if (Math.max(...lons) - Math.min(...lons) > 180) pts = pts.map(([lo, la]) => [lo < 0 ? lo + 360 : lo, la]);
+    const merc = ([lo, la]) => [lo * Math.PI / 180, Math.log(Math.tan(Math.PI / 4 + (Math.max(-85, Math.min(85, la)) * Math.PI) / 360))];
+    const xy = pts.map(merc);
+    const xs = xy.map((q) => q[0]), ys = xy.map((q) => q[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const k = Math.min(box.w / Math.max(maxX - minX, 1e-4), box.h / Math.max(maxY - minY, 1e-4));
+    const ox = box.x + (box.w - (maxX - minX) * k) / 2, oy = box.y + (box.h - (maxY - minY) * k) / 2;
+    const screen = xy.map(([x, y]) => [ox + (x - minX) * k, oy + (maxY - y) * k]);
+    g.save();
+    g.strokeStyle = 'rgba(255,255,255,0.06)';
+    g.lineWidth = 2;
+    for (let i = 0; i <= 8; i++) {
+      const gx = box.x + (box.w * i) / 8, gy = box.y + (box.h * i) / 8;
+      g.beginPath(); g.moveTo(gx, box.y); g.lineTo(gx, box.y + box.h); g.stroke();
+      g.beginPath(); g.moveTo(box.x, gy); g.lineTo(box.x + box.w, gy); g.stroke();
+    }
+    g.lineJoin = 'round'; g.lineCap = 'round';
+    g.shadowColor = color; g.shadowBlur = 28;
+    g.strokeStyle = color; g.lineWidth = 9;
+    g.beginPath();
+    screen.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.stroke();
+    g.shadowBlur = 0;
+    for (const [x, y] of [screen[0], screen[screen.length - 1]]) {
+      g.fillStyle = '#0b0f14'; g.beginPath(); g.arc(x, y, 14, 0, 7); g.fill();
+      g.fillStyle = color; g.beginPath(); g.arc(x, y, 9, 0, 7); g.fill();
+    }
+    g.restore();
+    return screen;
+  }
+
+  async function makeShareCard(thing) {
+    const W = 1080, H = 1350, ACC = '#ffb020', MUTED = '#9aa7b6';
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    const bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#101826'); bg.addColorStop(1, '#070a0e');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+
+    const f = thing.flight, p = thing.plane;
+    const info = p ? { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) } : f;
+    const callsign = label(f || p);
+    const mine = photosOf(thing)[0];
+    const photo = mine ? await loadImage(`photo/${mine.id}.jpg`) : null;
+    if (photo) {
+      const k = Math.max(W / photo.naturalWidth, 720 / photo.naturalHeight);
+      const w = photo.naturalWidth * k, h = photo.naturalHeight * k;
+      g.drawImage(photo, (W - w) / 2, (720 - h) / 2, w, h);
+      const fade = g.createLinearGradient(0, 480, 0, 730);
+      fade.addColorStop(0, 'rgba(16,24,38,0)'); fade.addColorStop(1, 'rgba(16,24,38,1)');
+      g.fillStyle = fade; g.fillRect(0, 480, W, 260);
+    } else {
+      const w = state.whole && state.whole.key === selKeyOf(state.selected) && state.whole.path.length > 1 ? state.whole.path : null;
+      let path = w || (f ? f.path : []);
+      if (p && path.length) path = [...path, [p.lat, p.lon, p.alt_ft || 0, 0]];
+      const ends = drawPath(g, path, { x: 90, y: 110, w: 900, h: 520 }, ACC);
+      if (ends) {
+        g.font = `700 34px ${CARD_FONT}`;
+        g.fillStyle = '#e8edf3';
+        const tag = (code, [x, y]) => { if (code) { const tw = g.measureText(code).width; g.fillText(code, Math.min(W - 60 - tw, Math.max(60, x - tw / 2)), y < 160 ? y + 56 : y - 26); } };
+        tag(info.origin, ends[0]);
+        tag(p ? '' : info.destination, ends[ends.length - 1]);
+      } else {
+        g.font = `200px ${CARD_FONT}`; g.fillStyle = ACC; g.fillText('✈', W / 2 - 100, 440);
+      }
+    }
+
+    // Who: logo, callsign, airline.
+    const code = airlineCode((f || p).callsign);
+    const logoImg = code && state.logoOK.has(code) ? await loadImage(`logo/${code}.png`) : null;
+    let x = 80;
+    if (logoImg) {
+      g.fillStyle = '#fff'; roundRect(g, 80, 760, 120, 120, 26); g.fill();
+      const k = Math.min(96 / logoImg.naturalWidth, 96 / logoImg.naturalHeight);
+      g.drawImage(logoImg, 140 - (logoImg.naturalWidth * k) / 2, 820 - (logoImg.naturalHeight * k) / 2, logoImg.naturalWidth * k, logoImg.naturalHeight * k);
+      x = 230;
+    }
+    fitText(g, callsign, x, 830, 78, 800, W - 80 - x, '#ffffff');
+    fitText(g, info.airline || info.owner || (f || p).registration || '', x, 880, 38, 500, W - 80 - x, MUTED);
+
+    // Where from and to.
+    if (hasRoute(info)) {
+      fitText(g, `${info.origin || '?'} → ${info.destination || '?'}`, 80, 1020, 120, 800, W - 160, ACC);
+      fitText(g, [info.origin_city, info.destination_city].filter(Boolean).join(' to '), 80, 1076, 40, 500, W - 160, '#e8edf3');
+    }
+    const plane = [info.aircraft_desc || (f && f.aircraft) || (f || p).type, (f || p).registration].filter(Boolean).join(' · ');
+    fitText(g, plane, 80, 1130, 36, 500, W - 160, MUTED);
+
+    // The numbers.
+    const when = new Date((f ? f.first_seen : Date.now() / 1000) * 1000);
+    const stats = [
+      ['Spotted', `${when.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`],
+      ['Altitude', fmtAlt(f ? f.closest_alt_ft : p.alt_ft)],
+      [f ? 'Closest' : 'Distance', fmtDist(f ? f.closest_miles : p.distance_miles)],
+    ];
+    stats.forEach(([k, v], i) => {
+      const sx = 80 + i * 310;
+      g.font = `700 24px ${CARD_FONT}`; g.fillStyle = MUTED; g.fillText(k.toUpperCase(), sx, 1210);
+      fitText(g, v, sx, 1256, 40, 700, 290, '#ffffff');
+    });
+    g.strokeStyle = 'rgba(255,255,255,0.12)'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(80, 1160); g.lineTo(W - 80, 1160); g.stroke();
+    g.font = `800 28px ${CARD_FONT}`; g.fillStyle = MUTED;
+    const brand = 'plane';
+    const bw = g.measureText('planespotter').width;
+    g.fillText(brand, W - 80 - bw, 1312);
+    g.fillStyle = ACC; g.fillText('spotter', W - 80 - bw + g.measureText(brand).width, 1312);
+    return new Promise((resolve) => c.toBlob(resolve, 'image/png'));
+  }
+
+  async function shareSelected() {
+    const thing = selectedThing();
+    if (!thing) return;
+    toast('Making your card…');
+    const blob = await makeShareCard(thing);
+    if (!blob) { toast('Couldn’t make the picture.'); return; }
+    const name = `${label(thing.flight || thing.plane)}.png`;
+    const file = new File([blob], name, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: name }); toast('Shared ✈'); return; }
+      catch (err) { if (err.name === 'AbortError') return; }
+    }
+    const url = URL.createObjectURL(blob);
+    openOverlay(`<img class="share-card" data-blob="1" src="${url}" alt="Share card for ${esc(name)}">
+      <div class="overlay-row"><div class="muted">${'ontouchstart' in window ? 'Press and hold the picture to save it or send it.' : 'Save the picture, then send it however you like.'}</div>
+      <div class="overlay-actions"><a class="btn" href="${url}" download="${esc(name)}">Download</a></div></div>`);
+  }
+
+  // ---------- the noise tab ----------
+  async function loadNoise() {
+    try { state.noise = await getJSON(`api/noise?days=${state.noiseDays}`); } catch { /* keep what we had */ }
+    if (state.tab === 'noise') renderList();
+  }
+
+  const shortWhen = (ts) => new Date(ts * 1000).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+  function noiseRow(f, right) {
+    return `<button class="crow flight" data-open-flight="${f.id}">${logo(f.callsign)}<span class="cname"><strong>${esc(f.label)}</strong>
+      <span class="muted">${esc([f.aircraft, shortWhen(f.when)].filter(Boolean).join(' · '))}</span></span><span class="cnum">${esc(right)}</span></button>`;
+  }
+
+  function noiseHtml() {
+    const n = state.noise;
+    const secure = window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+    const meterCard = `<div class="meter-card">
+      <div class="meter-head"><strong>🎙️ Noise meter</strong>
+        <button class="chip" data-action="meter" aria-pressed="${meter.on}" ${secure ? '' : 'disabled'}>${meter.on ? 'Stop listening' : 'Start listening'}</button></div>
+      <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+      <div class="meter-note" id="meter-note">${secure
+        ? (meter.on ? 'Listening…' : 'Uses this device’s microphone to measure how loud each plane over your zone is. Leave this page open (it can be in the background). Nothing is recorded; only the loudness level, once a second, is kept for a few days.')
+        : `The microphone only works on the computer running planespotter (<a href="http://localhost:${location.port || 8765}/">localhost</a>)${state.config && state.config.secure_url ? ` or on the <a href="${esc(state.config.secure_url)}/">secure address</a>` : ''}.`}</div>
+    </div>`;
+    if (!n) return `<div class="collection">${meterCard}${empty('Loading the noise log…')}</div>`;
+    const tile = (k, v, note) => `<div class="ctile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>${note ? `<div class="note">${esc(note)}</div>` : ''}</div>`;
+    const range = [7, 30, 90].map((d) => `<button class="chip" data-noise-days="${d}" aria-pressed="${d === n.days}">${d} days</button>`).join('');
+    const nights = n.nights.map((e) => e.count);
+    const tips = n.nights.map((e) => `Night of ${new Date(`${e.date}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} · ${e.count} plane${e.count === 1 ? '' : 's'}`);
+    const step = Math.max(1, Math.round(n.nights.length / 4));
+    const ticks = n.nights.map((e, i) => [i, e.date]).filter(([i]) => i % step === 0)
+      .map(([i, d]) => [i, new Date(`${d}T12:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short' })]);
+    const loudest = n.loudest.length ? n.loudest[0] : null;
+    return `<div class="collection">
+      ${meterCard}
+      <div class="filters noise-range">${range}</div>
+      <div class="ctiles">${tile('Planes over your zone', n.total.toLocaleString())}
+        ${tile('Low', n.low_count.toLocaleString(), `under ${n.low_ft.toLocaleString()} ft above you`)}
+        ${tile('At night', n.night_count.toLocaleString(), `${n.night[0]}–${n.night[1]}`)}
+        ${tile('Loudest measured', loudest ? `+${loudest.louder_db} dB` : '—', loudest ? loudest.label : 'turn on the noise meter')}</div>
+      <h3>Planes at night <span>${n.night[0]}–${n.night[1]}</span></h3>
+      ${columnChart(nights, tips, ticks)}
+      ${n.loudest.length ? `<h3>Loudest planes <span>louder than the background</span></h3>${n.loudest.map((f) => noiseRow(f, `+${f.louder_db} dB`)).join('')}` : ''}
+      <h3>Lowest <span>height above you</span></h3>
+      ${n.lowest.length ? n.lowest.map((f) => noiseRow(f, fmtAlt(f.above_home_ft))).join('') : '<p class="csub">No low planes in this time.</p>'}
+      <h3>Latest at night</h3>
+      ${n.latest_night.length ? n.latest_night.map((f) => noiseRow(f, fmtAlt(f.alt_ft))).join('') : '<p class="csub">No planes at night in this time.</p>'}
+      <h3>Spreadsheet</h3>
+      <p class="csub">Every plane over your zone with its time, height, aircraft and (if measured) loudness. Opens in Numbers, Excel or Google Sheets: handy for a complaint to the airport or your council.</p>
+      <div class="downloads"><a class="btn" href="api/noise.csv?days=${n.days}" download>⬇ Last ${n.days} days</a>
+        <a class="btn ghost" href="api/noise.csv?days=0" download>⬇ Everything</a></div>
+    </div>`;
+  }
+
+  // ---------- noise meter (the microphone) ----------
+  // One level per second (the loudest moment of that second, in dB below full scale) goes to
+  // planespotter, which matches it to the planes going over. The sound itself never leaves the browser.
+  const meter = { on: false, ctx: null, stream: null, node: null, sec: 0, max: -Infinity, level: null, recent: [], queue: [], sending: false };
+
+  async function startMeter() {
+    try {
+      meter.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },  // the real level, not "improved"
+      });
+    } catch (err) {
+      toast(err.name === 'NotAllowedError' ? 'Microphone permission was turned down. Allow it in the browser’s address bar and try again.' : `No microphone: ${err.message}`);
+      return;
+    }
+    meter.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = meter.ctx.createMediaStreamSource(meter.stream);
+    // A ScriptProcessor keeps running when the tab is in the background (timers there get slowed down).
+    meter.node = meter.ctx.createScriptProcessor(4096, 1, 1);
+    meter.node.onaudioprocess = (e) => {
+      const d = e.inputBuffer.getChannelData(0);
+      let sum = 0;
+      for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+      const db = 10 * Math.log10(sum / d.length + 1e-12);
+      const sec = Math.floor(Date.now() / 1000);
+      if (sec !== meter.sec) {
+        if (meter.sec && meter.max > -Infinity) gotSecond(meter.sec, meter.max);
+        meter.sec = sec; meter.max = db;
+      } else meter.max = Math.max(meter.max, db);
+      meter.level = db;
+    };
+    src.connect(meter.node);
+    meter.node.connect(meter.ctx.destination);  // silent, but needed for it to run
+    meter.on = true;
+    if (state.tab === 'noise') renderList();
+  }
+
+  function stopMeter() {
+    meter.on = false;
+    if (meter.node) meter.node.disconnect();
+    if (meter.stream) meter.stream.getTracks().forEach((t) => t.stop());
+    if (meter.ctx) meter.ctx.close();
+    Object.assign(meter, { ctx: null, stream: null, node: null, level: null, recent: [] });
+    sendLevels();
+    if (state.tab === 'noise') renderList();
+  }
+
+  function gotSecond(sec, db) {
+    meter.queue.push([sec, Math.round(db * 10) / 10]);
+    meter.recent.push(db);
+    if (meter.recent.length > 120) meter.recent.shift();
+    if (meter.queue.length >= 10) sendLevels();
+  }
+
+  async function sendLevels() {
+    if (meter.sending || !meter.queue.length) return;
+    meter.sending = true;
+    const batch = meter.queue.splice(0, 900);
+    try {
+      const r = await postJSON('api/noise/levels', { samples: batch });
+      if (r.measured) loadNoise();
+    } catch {
+      meter.queue.unshift(...batch.slice(-600));  // try again with the next batch (planespotter may be restarting)
+    }
+    meter.sending = false;
+  }
+
+  /** The live bar: how much louder than the background (the quieter 20% of the last two minutes) it is now. */
+  function renderMeter() {
+    const fill = $('#meter-fill'), note = $('#meter-note');
+    if (!fill || !meter.on || meter.level == null) return;
+    const sorted = meter.recent.slice().sort((x, y) => x - y);
+    const bg = sorted.length ? sorted[Math.floor(sorted.length * 0.2)] : meter.level;
+    const over = Math.max(0, meter.level - bg);
+    fill.style.width = `${Math.min(100, (over / 30) * 100)}%`;
+    fill.classList.toggle('loud', over > 12);
+    const overhead = state.live.filter((p) => p.in_zone).map(label);
+    note.textContent = `Now: ${over < 1 ? 'background level' : `+${over.toFixed(0)} dB over the background`}`
+      + (overhead.length ? ` · overhead: ${overhead.join(', ')}` : '') + ' · keep this page open';
+  }
+
+  // ---------- collection extras: plane of the day, streak, records, your photos ----------
+  function extrasHtml(c) {
+    const star = c.star;
+    const s = c.streak || { current: 0, best: 0, total: 0 };
+    const starHtml = star ? `<button class="star" data-open-flight="${star.id}">${logo(star.callsign, true)}
+        <div><div class="k">⭐ Plane of the ${star.yesterday ? 'day (yesterday)' : 'day'}</div>
+        <div class="v">${esc(star.label)} <span class="muted">${esc([star.airline, star.route].filter(Boolean).join(' · '))}</span></div>
+        <div class="why">${esc(star.why)}</div></div></button>` : '';
+    const streak = `<div class="ctiles">
+      <div class="ctile"><div class="k">🔥 Streak</div><div class="v">${s.current} day${s.current === 1 ? '' : 's'}</div>
+        <div class="note">${s.current && !s.alive_today ? 'spot one today to keep it going' : `best ${s.best} day${s.best === 1 ? '' : 's'}`}</div></div>
+      <div class="ctile"><div class="k">👀 Seen with your own eyes</div><div class="v">${s.total.toLocaleString()}</div>
+        <div class="note">tap “I saw it” when you spot one</div></div></div>`;
+    const recs = (c.records || []).map((r) => `<button class="crow flight" data-open-flight="${r.id}"><span class="cflag">${r.emoji}</span>
+        <span class="cname"><strong>${esc(r.name)}</strong> <span class="muted">${esc(r.label)}${r.route ? ` · ${esc(r.route)}` : ''} · ${esc(new Date(r.when * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }))}</span></span>
+        <span class="cnum">${esc(r.value)}</span></button>`).join('');
+    const b = c.busiest || {};
+    const busy = [b.day ? `<div class="crow"><span class="cflag">📅</span><span class="cname"><strong>Busiest day</strong> <span class="muted">${esc(new Date(`${b.day.date}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }))}</span></span><span class="cnum">${b.day.count} planes</span></div>` : '',
+      b.hour ? `<div class="crow"><span class="cflag">⏱️</span><span class="cname"><strong>Busiest hour</strong> <span class="muted">${esc(shortWhen(b.hour.start))}</span></span><span class="cnum">${b.hour.count} planes</span></div>` : ''].join('');
+    const photos = state.yours.photos;
+    const gallery = photos.length
+      ? `<div class="gallery">${photos.slice(0, 60).map((ph) => `<button data-view-photo="${ph.id}" title="${esc(ph.callsign || ph.hex)}"><img src="photo/${ph.id}-thumb.jpg" alt="${esc(ph.callsign || '')}" loading="lazy"></button>`).join('')}</div>`
+      : '<p class="csub">Select a plane and tap “📷 Add photo” to keep your own pictures of it here.</p>';
+    return {
+      top: starHtml + streak,
+      records: recs || busy ? `<h3>Records</h3>${recs}${busy}` : '',
+      photos: `<h3>Your photos <span>${photos.length}</span></h3>${gallery}`,
+    };
   }
 
   // ---------- day replay ----------
@@ -1309,6 +1928,8 @@
   let lastFrame = 0;
   let lastReplayBar = 0;
   let lastLookUp = 0;
+  let lastUpNextAt = 0;
+  let lastMeterAt = 0;
   function animate(ts) {
     if (!document.hidden && ts - lastFrame > 50) {
       const r = state.replay;
@@ -1319,6 +1940,8 @@
       }
       render();
       if (ts - lastLookUp > 500 && state.config) { renderLookUp(performance.now()); lastLookUp = ts; }
+      if (ts - lastUpNextAt > 1000 && state.config) { renderUpNext(performance.now()); lastUpNextAt = ts; }
+      if (meter.on && state.tab === 'noise' && ts - lastMeterAt > 250) { renderMeter(); lastMeterAt = ts; }
       lastFrame = ts;
     }
     requestAnimationFrame(animate);
@@ -1339,12 +1962,14 @@
     saved.set('tab', tab);
     for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
     $('#history-filters').hidden = tab !== 'history';
-    $('#tools').hidden = tab === 'collection';
+    $('#tools').hidden = tab === 'collection' || tab === 'noise';
     state.listLimit = LIST_PAGE;
     $('#list').scrollTop = 0;
     renderList();
+    renderUpNext(performance.now());
     if (tab === 'history') loadFlights();
-    if (tab === 'collection') loadCollection();
+    if (tab === 'collection') { loadCollection(); loadYours(); }
+    if (tab === 'noise') loadNoise();
     loadWholeAll();
   }
 
@@ -1368,6 +1993,13 @@
     $('#sort').value = state.sort;
     $('#sort').addEventListener('change', (e) => { state.sort = e.target.value; saved.set('sort', state.sort); renderList(); });
     $('#list').addEventListener('click', (e) => {
+      const open = e.target.closest('[data-open-flight]');
+      if (open) { openFlight(open.dataset.openFlight); return; }
+      const view = e.target.closest('[data-view-photo]');
+      if (view) { viewPhoto(view.dataset.viewPhoto); return; }
+      if (e.target.closest('[data-action="meter"]')) { if (meter.on) stopMeter(); else startMeter(); return; }
+      const nd = e.target.closest('[data-noise-days]');
+      if (nd) { state.noiseDays = Number(nd.dataset.noiseDays); saved.set('noiseDays', state.noiseDays); loadNoise(); return; }
       const all = e.target.closest('[data-show-all]');
       if (all) { state.collectionAll = { ...(state.collectionAll || {}), [all.dataset.showAll]: true }; renderList(); return; }
       if (e.target.closest('[data-action="more"]')) { state.listLimit += LIST_PAGE; renderList(); return; }
@@ -1393,6 +2025,16 @@
     });
     $('#detail').addEventListener('click', (e) => {
       if (e.target.closest('.close')) select(null);
+      const view = e.target.closest('[data-view-photo]');
+      if (view) viewPhoto(view.dataset.viewPhoto);
+      if (e.target.closest('[data-action="add-photo"]')) pickPhoto();
+      if (e.target.closest('[data-action="share"]')) shareSelected();
+      const saw = e.target.closest('[data-action="saw"]');
+      if (saw) {
+        const thing = selectedThing();
+        const t = thing && (thing.plane || thing.flight);
+        if (t) toggleSaw(t.hex, t.callsign, Number(saw.dataset.at));
+      }
       if (e.target.closest('[data-action="fit-whole"]') && state.whole) {
         const coords = state.whole.p2.slice();
         const plane = state.selected && state.selected.kind === 'live' && selectedThing();
@@ -1416,6 +2058,32 @@
     $('#btn-home').addEventListener('click', goHome);
     $('#btn-heat').addEventListener('click', () => setHeat(!state.heat));
     $('#btn-chime').addEventListener('click', () => setChime(!state.chime));
+    $('#btn-voice').addEventListener('click', () => setVoice(!state.voice));
+    setVoice(state.voice, false);
+    // Browsers only start speaking after a tap or click on the page: the first one unlocks it.
+    document.addEventListener('pointerdown', () => { if (state.voice && canSpeak) say(' '); }, { once: true });
+    $('#btn-ar').addEventListener('click', () => {
+      const secure = state.config && state.config.secure_url;
+      // Phones only allow the camera and compass on a secure (https) page.
+      if (window.isSecureContext || !secure) window.open('sky', '_blank');
+      else window.open(`${secure}/sky`, '_blank');
+    });
+    $('#upnext').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-hex]');
+      if (b) select('live', b.dataset.hex, { scroll: true });
+    });
+    $('#lookup').addEventListener('click', (e) => {
+      const b = e.target.closest('.saw');
+      if (b) { e.stopPropagation(); toggleSaw(b.dataset.saw, b.dataset.callsign, Date.now() / 1000); }
+    });
+    $('#photo-input').addEventListener('change', (e) => uploadPhoto(e.target.files[0]));
+    $('#overlay').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget || e.target.closest('[data-action="close-overlay"]')) { closeOverlay(); return; }
+      const del = e.target.closest('[data-delete-photo]');
+      if (del) { deletePhoto(del.dataset.deletePhoto); return; }
+      const open = e.target.closest('[data-open-flight]');
+      if (open) openFlight(open.dataset.openFlight);
+    });
     if (state.chime) { $('#btn-chime').setAttribute('aria-pressed', 'true'); $('#btn-chime').textContent = '🔔 Chime on'; }
     $('#btn-replay').addEventListener('click', () => (state.replay.on ? closeReplay() : openReplay()));
     $('#replay-close').addEventListener('click', closeReplay);
@@ -1446,7 +2114,11 @@
       state.query = btn.dataset.route.toLowerCase();
       setTab('history');
     });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.selected) select(null); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (!$('#overlay').hidden) closeOverlay();
+      else if (state.selected) select(null);
+    });
   }
 
   async function start() {
@@ -1493,6 +2165,10 @@
     setInterval(() => { if (!document.hidden) loadWholeAll(); }, 30000);
     setInterval(() => { if (!document.hidden && state.tab === 'collection') loadCollection(); }, 120000);
     setInterval(() => { if (!document.hidden) loadFlights(); }, HISTORY_EVERY_MS);
+    loadSky();
+    setInterval(() => { if (!document.hidden) loadSky(); }, 5 * 60000);
+    loadYours();
+    setInterval(() => { if (!document.hidden && state.tab === 'noise') loadNoise(); }, 120000);
     renderHeatPanel();
     loadHeat();
     setInterval(() => { if (!document.hidden) loadHeat(); }, HISTORY_EVERY_MS);

@@ -5,6 +5,8 @@
 *.db-shm
 outbox/
 logo-cache/
+photos/
+https-cert/
 __pycache__/
 *.pyc
 .venv/

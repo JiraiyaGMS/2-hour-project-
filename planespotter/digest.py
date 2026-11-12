@@ -31,6 +31,7 @@ class Recap:
     closest: sqlite3.Row | None = None
     top_airlines: list[tuple[str, int]] = field(default_factory=list)
     quiet_count: int = 0  # planes that arrived during quiet hours
+    star: dict | None = None  # the plane of the day (records.plane_of_the_day)
 
 
 @dataclass

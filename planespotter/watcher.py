@@ -22,6 +22,8 @@ from .specials import FIRSTS_AFTER_DAYS, special_reasons
 from .heat import backfill as backfill_heat
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, segment_min_distance_miles
 from .mailer import Mailer
+from .records import plane_of_the_day
+from .sky import sky_note
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -43,8 +45,12 @@ class Watcher:
         budget=None,
         flights=None,
         notifier=None,
+        sky=None,
+        ground_ft: int = 0,
     ):
         self.cfg = cfg
+        self.sky = sky  # clouds + daylight, for "you'll hear it, not see it" in alerts (None = off)
+        self.ground_ft = ground_ft  # how high home is, since planes report height above sea level
         self.budget = budget  # adsb.lol's daily request limit, shared with the map
         self.flights = flights  # whole-flight lookups (None = off)
         self.notifier = notifier  # phone notifications (None = off)
@@ -212,7 +218,7 @@ class Watcher:
             log.warning("hit MAX_ALERTS_PER_HOUR; %d plane(s) will only appear in the digest",
                         len(pass_ids))
             return False
-        passes = self.store.get_passes(pass_ids)
+        passes = self.with_sky_notes(self.store.get_passes(pass_ids))
         pushed = self.notifier.plane_over_home(passes, self.cfg) if self.notifier else False
         try:
             self.mailer.send(alert_email(passes, self.cfg))
@@ -223,6 +229,21 @@ class Watcher:
         self.store.mark_alerted(pass_ids)
         self.store.log_alert_email(now)
         return True
+
+    def with_sky_notes(self, passes: list) -> list:
+        """Add a line like "☁️ Above the overcast at 1,800 ft: listen for it" when the sky's hiding it."""
+        if not self.sky:
+            return passes
+        try:
+            report = self.sky.report()
+        except Exception as exc:  # the weather is a nice extra; never let it stop an alert
+            log.info("no sky check: %s", exc)
+            return passes
+        out = []
+        for p in passes:
+            note = sky_note(report, p["closest_alt_ft"], p["closest_miles"], self.ground_ft)
+            out.append({**dict(p), "highlights": [note]} if note else p)
+        return out
 
     # --- digest -------------------------------------------------------------
 
@@ -271,6 +292,7 @@ class Watcher:
 
     def send_digest(self, today: date) -> bool:
         recap = build_recap(self.store, self.cfg, today)
+        recap.star = plane_of_the_day(recap.passes, self.store, self.cfg)
         forecast = build_forecast(self.store, self.cfg, today)
         try:
             self.mailer.send(digest_email(recap, forecast, self.cfg))

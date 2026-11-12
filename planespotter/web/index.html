@@ -14,13 +14,18 @@
     <header class="brand">
       <div class="logo">plane<span>spotter</span></div>
       <div class="home-line"><span class="zone-dot"></span><span id="home-line">Loading…</span></div>
-      <button id="btn-chime" class="chime" aria-pressed="false" title="Play a chime when a plane is about to fly over">🔕 Chime</button>
+      <div class="sky-line" id="sky-line" hidden></div>
+      <div class="sounds">
+        <button id="btn-chime" class="chime" aria-pressed="false" title="Play a chime when a plane is about to fly over">🔕 Chime</button>
+        <button id="btn-voice" class="chime" aria-pressed="false" title="Say which plane is coming, from where, and where to look">🔇 Voice</button>
+      </div>
     </header>
 
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="live" aria-selected="true">In the air <span class="count" id="live-count">0</span></button>
       <button role="tab" data-tab="history" aria-selected="false">Spotted <span class="count" id="history-count">0</span></button>
       <button role="tab" data-tab="collection" aria-selected="false">Collection</button>
+      <button role="tab" data-tab="noise" aria-selected="false">Noise</button>
     </div>
 
     <div class="tools" id="tools">
@@ -41,6 +46,7 @@
       </div>
     </div>
 
+    <div id="upnext" class="upnext" hidden aria-live="polite"></div>
     <div id="list" class="list" role="list"></div>
   </aside>
 
@@ -57,6 +63,9 @@
       </button>
       <button id="btn-replay" class="round" title="Replay a day" aria-label="Replay a day" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </button>
+      <button id="btn-ar" class="round" title="Sky view: point your phone at the sky to see which plane is which" aria-label="Sky view (AR)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2.5"/><path d="M12 7.5l1.2 2.6 2.8.3-2.1 1.9.6 2.8-2.5-1.5-2.5 1.5.6-2.8-2.1-1.9 2.8-.3z"/></svg>
       </button>
       <button id="btn-home" class="round" title="Back to home" aria-label="Back to home">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/></svg>
@@ -101,6 +110,14 @@
     </section>
   </main>
 </div>
+
+<div id="overlay" class="overlay" hidden role="dialog" aria-modal="true">
+  <div class="sheet">
+    <button class="close" data-action="close-overlay" aria-label="Close">×</button>
+    <div id="overlay-body"></div>
+  </div>
+</div>
+<input id="photo-input" type="file" accept="image/*" hidden>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
