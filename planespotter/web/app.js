@@ -72,6 +72,9 @@
     heatDays: saved.get('heatDays', 7),
     heatData: null,
     whole: null,                // the selected flight's whole path: { key, status, path, p3, p2 }
+    wholeAll: { flights: [], byId: new Map(), version: 0 },  // every spotted flight's whole path
+    logoOK: new Set(),          // airline codes whose logo loaded
+    logoBad: new Set(),         // ...and ones that have no logo
   };
 
   // ---------- small helpers ----------
@@ -122,7 +125,8 @@
   // ---------- live planes ----------
   /** Where a plane is now, gliding along its heading since the last position report. */
   function livePos(plane, now) {
-    const dt = Math.min(Math.max((now - plane.fixAt) / 1000, 0), 25);
+    // Glide for up to 5 minutes between updates (they can be minutes apart to stay within adsb.lol's limit).
+    const dt = Math.min(Math.max((now - plane.fixAt) / 1000, 0), 300);
     if (!plane.speed_kt || plane.heading == null) return [plane.lon, plane.lat];
     return destination(plane.lat, plane.lon, plane.heading, plane.speed_kt * KT * dt);
   }
@@ -145,7 +149,11 @@
       try {
         const data = await getJSON('api/live');
         const now = performance.now();
-        state.live = data.aircraft.map((p) => ({ ...p, fixAt: now - (p.seen_pos || 0) * 1000 }));
+        // How old each position is: time since the last check, plus how stale it already was then.
+        const sinceCheck = Math.max(0, (data.time || 0) - (data.updated || data.time || 0));
+        state.live = data.aircraft.map((p) => ({ ...p, fixAt: now - (sinceCheck + (p.seen_pos || 0)) * 1000 }));
+        state.liveMeta = { interval: data.budget ? data.budget.interval_s : 0, paused: data.paused_s || 0,
+                           waiting: !!data.waiting };
         state.liveError = null;
         state.quietNow = !!data.quiet_now;
         updateTrails();
@@ -233,8 +241,32 @@
       lowest: (x, y) => (x.closest_alt_ft ?? 1e9) - (y.closest_alt_ft ?? 1e9),
     }[state.sort];
     state.historyView = list.sort(by);
+    state.historyVersion = (state.historyVersion || 0) + 1;
     $('#history-count').textContent = state.historyView.length.toLocaleString();
   }
+
+  // ---------- airline logos ----------
+  /** 'DAL1140' -> 'DAL': airline callsigns start with the airline's ICAO code. */
+  const airlineCode = (callsign) => { const m = /^([A-Z]{3})\d/.exec(callsign || ''); return m ? m[1] : null; };
+  const SMALL_PLANE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c.8 0 1.3.9 1.3 2.1v5.4l7.9 4.7v2.1l-7.9-2.5v4.6l2.7 2v1.8L12 21.2l-4 1v-1.8l2.7-2v-4.6l-7.9 2.5v-2.1l7.9-4.7V4.1C10.7 2.9 11.2 2 12 2z"/></svg>';
+
+  function logo(callsign, big = false) {
+    const code = airlineCode(callsign);
+    const cls = `airline-logo${big ? ' big' : ''}`;
+    if (!code) return `<span class="${cls} ga" aria-hidden="true">${SMALL_PLANE}</span>`;
+    if (state.logoBad.has(code)) return `<span class="${cls}" aria-hidden="true"><span class="code">${code}</span></span>`;
+    return `<span class="${cls}" aria-hidden="true"><span class="code">${code}</span>`
+      + `<img src="logo/${code}.png" alt="" loading="lazy" data-code="${code}"></span>`;
+  }
+
+  // Remember which logos exist, so the map only asks for ones that do.
+  document.addEventListener('load', (e) => {
+    if (e.target.tagName === 'IMG' && e.target.dataset.code) state.logoOK.add(e.target.dataset.code);
+  }, true);
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (img.tagName === 'IMG' && img.dataset.code) { state.logoBad.add(img.dataset.code); img.remove(); }
+  }, true);
 
   // ---------- the list ----------
   function liveItem(p) {
@@ -242,11 +274,28 @@
     const selected = isSelected('live', p.hex) ? ' selected' : '';
     const sub = [info.airline, info.aircraft_desc || p.type].filter(Boolean).join(' · ');
     return `<button class="item${selected}" data-kind="live" data-key="${esc(p.hex)}" role="listitem">
+      ${logo(p.callsign)}
       <div class="main">
         <div class="title"><span class="callsign">${esc(label(p))}</span>${p.in_zone ? '<span class="badge">Overhead</span>' : ''}<span class="route">${esc(routeShort(info))}</span></div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
       <div class="meta"><div class="alt">${fmtAlt(p.alt_ft)}</div><div class="dist">${fmtDist(p.distance_miles)} ${compass(p.bearing)}</div></div>
+    </button>`;
+  }
+
+  /** A plane that crossed your zone earlier and is still in the air somewhere else. */
+  function awayItem({ w, f }) {
+    const selected = isSelected('history', f.id) ? ' selected' : '';
+    const pos = flyingNow(w, null, performance.now());
+    const sub = [f.airline, f.aircraft || f.type].filter(Boolean).join(' · ');
+    return `<button class="item${selected}" data-kind="history" data-key="${f.id}" role="listitem">
+      ${logo(f.callsign)}
+      <div class="main">
+        <div class="title"><span class="callsign">${esc(label(f))}</span><span class="route">${esc(routeShort(f))}</span></div>
+        <div class="sub">${esc(sub) || '&nbsp;'}</div>
+      </div>
+      <div class="meta">${pos ? `<div class="alt">${fmtAlt(pos.alt_ft)}</div><div class="dist">${esc(fromHome(pos.lat, pos.lon))}</div>`
+        : `<div class="dist">over you at ${fmtTime(f.first_seen)}</div>`}</div>
     </button>`;
   }
 
@@ -257,8 +306,9 @@
       : new Date(f.first_seen * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' });
     return `<button class="item${selected}" data-kind="history" data-key="${f.id}" role="listitem">
       <div class="time">${time}${f.quiet ? '<br>🌙' : ''}</div>
+      ${logo(f.callsign)}
       <div class="main">
-        <div class="title"><span class="callsign">${esc(label(f))}</span><span class="route">${esc(routeShort(f))}</span></div>
+        <div class="title"><span class="callsign">${esc(label(f))}</span>${isFlying(f.id) ? '<span class="badge air">In the air</span>' : ''}<span class="route">${esc(routeShort(f))}</span></div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
       <div class="meta"><div class="alt">${fmtAlt(f.closest_alt_ft)}</div><div class="dist">${fmtDist(f.closest_miles)} ${compass(f.bearing)}</div></div>
@@ -274,12 +324,20 @@
     $('#live-count').textContent = state.live.length;
     if (state.tab === 'live') {
       const items = state.live.filter((p) => matches(p, infoFor(p)));
-      if (!items.length) {
+      // Planes that went over you and are still flying, but are now too far away for the live list.
+      const nearby = new Set(state.live.map((p) => p.hex));
+      const away = state.wholeAll.flights
+        .filter((w) => w.flying && !nearby.has(w.hex))
+        .map((w) => ({ w, f: flightById(w.id) }))
+        .filter(({ f }) => f && matches(f));
+      if (!items.length && !away.length) {
         el.innerHTML = empty(state.query ? 'No planes in the air match your search.'
           : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.');
+        render();
         return;
       }
-      el.innerHTML = items.slice(0, state.listLimit).map(liveItem).join('') + moreButton(state.listLimit, items.length);
+      el.innerHTML = items.slice(0, state.listLimit).map(liveItem).join('') + moreButton(state.listLimit, items.length)
+        + (away.length ? `<div class="list-section">Went over you · still flying</div>${away.map(awayItem).join('')}` : '');
     } else {
       updateHistoryView();
       const items = state.historyView;
@@ -344,6 +402,54 @@
   }
 
   // ---------- whole flights ----------
+  const isFlying = (id) => { const w = state.wholeAll.byId.get(Number(id)); return !!(w && w.flying); };
+
+  /** Every spotted flight's whole path, plus live positions for the ones still in the air. */
+  async function loadWholeAll() {
+    const days = state.tab === 'history' ? state.days : 1;
+    try {
+      const data = await getJSON(`api/whole?days=${days}`);
+      const t = performance.now();
+      for (const f of data.flights) {
+        f.p3 = f.path.map((q) => [q[0], q[1], (q[2] || 0) * FT]);
+        f.p2 = f.path.map((q) => [q[0], q[1], 0]);
+        if (f.now) f.now.fixAt = t - (f.now.seen_pos || 0) * 1000;
+      }
+      state.wholeAll = {
+        flights: data.flights, byId: new Map(data.flights.map((f) => [f.id, f])),
+        version: state.wholeAll.version + 1,
+      };
+    } catch { /* keep what we had */ }
+    renderListSoon();
+    renderDetail();
+    render();
+  }
+
+  /** Where a spotted flight that's still flying is right now (glides between updates). */
+  function flyingNow(w, planesByHex, now) {
+    const near = planesByHex && planesByHex.get(w.hex);
+    if (near) return { lon: near.lon, lat: near.lat, alt_ft: near.p.alt_ft, heading: near.p.heading, near: true };
+    if (!w.now) return null;
+    const [lon, lat] = livePos({ ...w.now, fixAt: w.now.fixAt }, now);
+    return { lon, lat, alt_ft: w.now.alt_ft, heading: w.now.heading, near: false };
+  }
+
+  function milesBetween(lat1, lon1, lat2, lon2) {
+    const r = Math.PI / 180, dp = (lat2 - lat1) * r, dl = (lon2 - lon1) * r;
+    const h = Math.sin(dp / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dl / 2) ** 2;
+    return 3958.8 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+  function bearingTo(lat1, lon1, lat2, lon2) {
+    const r = Math.PI / 180, dl = (lon2 - lon1) * r;
+    const y = Math.sin(dl) * Math.cos(lat2 * r);
+    const x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos(dl);
+    return (Math.atan2(y, x) / r + 360) % 360;
+  }
+  function fromHome(lat, lon) {
+    const { home } = state.config;
+    const miles = milesBetween(home.lat, home.lon, lat, lon);
+    return `${miles < 100 ? miles.toFixed(1) : Math.round(miles).toLocaleString()} mi ${compass(bearingTo(home.lat, home.lon, lat, lon))}`;
+  }
   const selKeyOf = (sel) => (sel ? `${sel.kind}:${sel.key}` : '');
 
   async function loadWhole() {
@@ -425,8 +531,19 @@
     if (sel.kind === 'live') {
       return n > 1 ? '<div class="note">The pink line shows where it has flown so far.</div>' : '';
     }
-    if (w.status === 'done' && n > 1) return '';
-    if (w.status === 'waiting' && n > 1) return '<div class="note">It was still flying at the last check; the rest of its flight is added automatically.</div>';
+    const all = state.wholeAll.byId.get(Number(sel.key));
+    if (all && all.flying) {
+      const pos = flyingNow(all, null, performance.now());
+      return pos
+        ? `<div class="note">✈ Still in the air: ${esc(fmtAlt(pos.alt_ft))}, ${esc(fromHome(pos.lat, pos.lon))} of home. The pink line runs from takeoff to where it is now.</div>`
+        : '<div class="note">✈ Still in the air. The pink line shows its flight so far.</div>';
+    }
+    if (w.status === 'done' && n > 1) {
+      return w.path[n - 1][2] === 0
+        ? '<div class="note">Landed. The pink line is its whole flight, takeoff to landing.</div>'
+        : '<div class="note">The pink line is its whole flight, as far as adsb.lol could follow it.</div>';
+    }
+    if (w.status === 'waiting' && n > 1) return '<div class="note">The pink line shows its flight so far; the rest is added automatically.</div>';
     if (w.status === 'waiting') return '<div class="note">Its whole flight is looked up from adsb.lol shortly after it lands.</div>';
     if (w.status === 'unavailable') return '<div class="note">adsb.lol has no record of the rest of this flight.</div>';
     return '';
@@ -456,8 +573,8 @@
       const info = infoFor(p) || {};
       const photo = info.photo_url ? `<img class="photo" src="${esc(info.photo_url)}" alt="">` : '';
       html = `${photo}<button class="close" aria-label="Close">×</button><div class="body">
-        <h2>${esc(label(p))}</h2>
-        <div class="airline">${esc(info.airline || info.owner || '')}</div>
+        <div class="title-row">${logo(p.callsign, true)}<div><h2>${esc(label(p))}</h2>
+        <div class="airline">${esc(info.airline || info.owner || '')}</div></div></div>
         ${routeLong(info) ? `<div class="route-big">${esc(routeLong(info))}</div>` : ''}
         <div class="plane">${esc([info.aircraft_desc || p.type, p.registration].filter(Boolean).join(' · '))}</div>
         <div class="stats">
@@ -478,8 +595,8 @@
         : f.quiet ? '🌙 Came over during quiet hours, so it went in the morning report.'
           : 'No alert was emailed for this one.';
       html = `${photo}<button class="close" aria-label="Close">×</button><div class="body">
-        <h2>${esc(label(f))}</h2>
-        <div class="airline">${esc(f.airline || f.owner || '')}</div>
+        <div class="title-row">${logo(f.callsign, true)}<div><h2>${esc(label(f))}</h2>
+        <div class="airline">${esc(f.airline || f.owner || '')}</div></div></div>
         ${routeLong(f) ? `<div class="route-big">${esc(routeLong(f))}</div>` : ''}
         <div class="plane">${esc([f.aircraft || f.type, f.registration].filter(Boolean).join(' · '))}</div>
         <div class="stats">
@@ -535,7 +652,7 @@
       const whole = data.whole_flights || 0;
       const waiting = data.whole_flights_waiting || 0;
       $('#heat-note').textContent = `Within ${view} mi: every plane. Farther out: the whole flight of each plane`
-        + ` that crossed your ${zone} mi zone (${whole.toLocaleString()} so far`
+        + ` that crossed your ${zone} mi zone, including ones still in the air (${whole.toLocaleString()} landed so far`
         + (waiting ? `, ${waiting.toLocaleString()} more being looked up)` : ')') + '.'
         + (since ? ` Recording since ${since}.` : '');
     }
@@ -575,10 +692,16 @@
     let text, cls = '';
     if (state.liveError === 'offline') { text = 'Can’t reach planespotter. Is it still running?'; cls = 'error'; }
     else if (state.liveError) { text = 'Live data is unavailable right now, retrying…'; cls = 'error'; }
+    else if (state.liveMeta && state.liveMeta.paused > 60) {
+      text = `adsb.lol’s daily limit reached · back in ~${Math.ceil(state.liveMeta.paused / 60)} min`; cls = 'error';
+    }
+    else if (state.liveMeta && state.liveMeta.waiting) { text = 'Waiting for the first check…'; }
     else {
       const n = state.live.length;
       const over = state.live.filter((p) => p.in_zone).length;
       text = `Live · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
+      const every = state.liveMeta ? state.liveMeta.interval : 0;
+      if (every > 45) text += ` · updates every ${every >= 90 ? `${Math.round(every / 60)} min` : `${every} s`}`;
       if (state.quietNow) { text += ' · 🌙 quiet hours'; cls = 'quiet'; }
     }
     el.className = `status ${cls}`;
@@ -648,6 +771,32 @@
     });
   }
 
+  let wholeMemo = { key: '' };
+  const flightById = (id) => state.flights.find((f) => f.id === id);
+
+  // A white tile with rounded corners, drawn behind each logo on the map.
+  const TILE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect x="1" y="1" width="62" height="62" rx="14" fill="#fff" stroke="#d5dae1" stroke-width="2"/></svg>';
+  const TILE = {
+    iconAtlas: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(TILE_SVG)}`,
+    iconMapping: { tile: { x: 0, y: 0, width: 64, height: 64 } },
+  };
+
+  /** Airline logos floating above labelled planes (only logos we know exist, so nothing fails to load). */
+  function logoLayers(items) {
+    const data = items.filter((d) => d.code && state.logoOK.has(d.code));
+    if (!data.length) return [];
+    return [
+      new deck.IconLayer({
+        id: 'logo-tiles', data, ...TILE, getIcon: () => 'tile', getPosition: (d) => d.pos,
+        getSize: 26, sizeUnits: 'pixels', getPixelOffset: [0, -50],
+      }),
+      new deck.IconLayer({
+        id: 'logos', data, getPosition: (d) => d.pos, getSize: 20, sizeUnits: 'pixels', getPixelOffset: [0, -50],
+        getIcon: (d) => ({ url: `logo/${d.code}.png`, width: 90, height: 90, id: d.code }),
+      }),
+    ];
+  }
+
   /** Rebuilds the deck.gl layers. Called ~20 times a second so planes glide smoothly. */
   function render() {
     if (!overlay || !state.config) return;
@@ -665,13 +814,44 @@
     const planeColor = (d) => (d.selected ? C.select : d.p.in_zone ? C.accent : C.blue);
     const showHistory = state.tab === 'history' || (sel && sel.kind === 'history');
     const history = showHistory ? state.historyView.slice(0, 1500) : [];
-    const historyWithPaths = history.filter((f) => f.path.length > 1);
+    // Label planes near home only when zoomed in enough to tell them apart (the selected one always).
+    const zoomedIn = map.getZoom() >= 8;
+    const labelled = planes.filter((d) => d.selected || (zoomedIn && (d.p.in_zone || planes.length <= 25)));
+    const W = state.wholeAll;
+    const planesByHex = new Map(planes.map((d) => [d.p.hex, d]));
+    // Whole flights to draw: on Spotted, every flight in the list; on In the air, the ones still flying.
+    const memoKey = `${W.version}|${state.historyVersion}|${state.tab}|${showHistory}`;
+    if (wholeMemo.key !== memoKey) {
+      const ids = state.tab === 'history' ? new Set(state.historyView.map((f) => f.id)) : null;
+      const landed = [], flying = [];
+      for (const w of W.flights) {
+        if (ids ? !ids.has(w.id) : !w.flying) continue;
+        (w.flying ? flying : landed).push(w);
+      }
+      wholeMemo = {
+        key: memoKey, landed, flying,
+        // Flights without a whole path yet still get the bit we saw near home.
+        localOnly: history.filter((f) => f.path.length > 1 && !W.byId.has(f.id)),
+      };
+    }
+    const flyingNowList = wholeMemo.flying.map((w) => {
+      const pos = flyingNow(w, planesByHex, now);
+      const base = is3d ? w.p3 : w.p2;
+      return { w, pos, path: pos ? [...base, [pos.lon, pos.lat, z(pos.alt_ft)]] : base };
+    });
+    const farAway = flyingNowList.filter((d) => d.pos && !d.pos.near); // not on the live feed: draw a plane
+    const historyWithPaths = wholeMemo.localOnly;
     const selFlight = sel && sel.kind === 'history' ? state.flights.find((f) => String(f.id) === sel.key) : null;
     // The selected flight's whole path (for a live plane: from takeoff up to where it is now).
     const whole = state.whole && state.whole.key === selKey && state.whole.path.length > 1 ? state.whole : null;
     let wholePath = whole ? (is3d ? whole.p3 : whole.p2) : null;
     const selPlane = whole && sel.kind === 'live' ? planes.find((d) => d.selected) : null;
     if (wholePath && selPlane) wholePath = [...wholePath, [selPlane.lon, selPlane.lat, selPlane.z]];
+    if (wholePath && sel.kind === 'history') {
+      const w = W.byId.get(Number(sel.key));
+      const pos = w && w.flying ? flyingNow(w, planesByHex, now) : null;
+      if (pos) wholePath = [...wholePath, [pos.lon, pos.lat, z(pos.alt_ft)]];
+    }
 
     const layers = [
       new deck.PolygonLayer({
@@ -699,6 +879,35 @@
         getPosition: (d) => d.pos, getText: (d) => d.text, getSize: 12, getColor: a(C.accent, 255),
         fontWeight: 700, getPixelOffset: [0, -10], background: true, getBackgroundColor: a(C.panel, 210),
         backgroundPadding: [5, 2], fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
+      }),
+
+      // Whole flights of planes that came over: takeoff to landing, or to where they are now.
+      new deck.PathLayer({
+        id: 'whole-landed', data: wholeMemo.landed, pickable: true,
+        getPath: (w) => (is3d ? w.p3 : w.p2), getColor: a(C.accent, dark ? 95 : 120),
+        getWidth: 2, widthUnits: 'pixels', capRounded: true, jointRounded: true,
+        updateTriggers: { getPath: is3d },
+      }),
+      new deck.PathLayer({
+        id: 'whole-flying', data: flyingNowList, pickable: true,
+        getPath: (d) => d.path, getColor: a(C.accent, 215),
+        getWidth: 2.5, widthUnits: 'pixels', capRounded: true, jointRounded: true,
+      }),
+      new deck.IconLayer({
+        id: 'flying-planes', data: farAway, pickable: true, ...PLANE_ICON, getIcon: () => 'plane',
+        getPosition: (d) => [d.pos.lon, d.pos.lat, z(d.pos.alt_ft)], getAngle: (d) => -(d.pos.heading || 0),
+        getSize: 26, sizeUnits: 'pixels', billboard: false,
+        getColor: (d) => a(selKey === `history:${d.w.id}` ? C.select : C.accent, 255),
+        updateTriggers: { getColor: selKey },
+      }),
+      new deck.TextLayer({
+        id: 'flying-labels', data: farAway, pickable: true,
+        getPosition: (d) => [d.pos.lon, d.pos.lat, z(d.pos.alt_ft)],
+        getText: (d) => { const f = flightById(d.w.id); return f ? label(f) : ''; },
+        getPixelOffset: [0, -24], getSize: 11, getColor: a(C.ink, 255), fontWeight: 600,
+        background: true, getBackgroundColor: a(C.panel, 200), backgroundPadding: [5, 2],
+        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
+        updateTriggers: { getText: state.historyVersion },
       }),
 
       // History: the paths of planes that came over, and where each came closest.
@@ -767,12 +976,17 @@
         getColor: (d) => a(planeColor(d), 255),
       }),
       new deck.TextLayer({
-        id: 'plane-labels', data: planes.filter((d) => d.selected || d.p.in_zone || planes.length <= 25),
+        id: 'plane-labels', data: labelled,
         getPosition: (d) => [d.lon, d.lat, d.z], getText: (d) => label(d.p), getPixelOffset: [0, -24],
         getSize: (d) => (d.selected ? 13 : 11), getColor: a(C.ink, 255), fontWeight: 600,
         background: true, getBackgroundColor: (d) => (d.selected ? a(C.select, 90) : a(C.panel, 200)), backgroundPadding: [5, 2],
         fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
       }),
+      ...logoLayers(labelled.map((d) => ({ code: airlineCode(d.p.callsign), pos: [d.lon, d.lat, d.z] }))
+        .concat(farAway.map((d) => {
+          const f = flightById(d.w.id);
+          return { code: f && airlineCode(f.callsign), pos: [d.pos.lon, d.pos.lat, z(d.pos.alt_ft)] };
+        }))),
     ].filter(Boolean);
 
     overlay.setProps({ layers });
@@ -789,7 +1003,8 @@
     if (!hit || !hit.object) { if (state.selected) select(null); return; }
     const id = hit.layer.id;
     if (id === 'planes' || id === 'plane-labels' || id === 'trails') select('live', hit.object.p.hex, { fly: false, scroll: true });
-    else if (id.startsWith('history')) select('history', hit.object.id, { fly: false, scroll: true });
+    else if (id.startsWith('history') || id === 'whole-landed') select('history', hit.object.id, { fly: false, scroll: true });
+    else if (id === 'whole-flying' || id.startsWith('flying-')) select('history', hit.object.w.id, { fly: false, scroll: true });
   }
 
   // ---------- wiring ----------
@@ -802,6 +1017,7 @@
     $('#list').scrollTop = 0;
     renderList();
     if (tab === 'history') loadFlights();
+    loadWholeAll();
   }
 
   function wireUp() {
@@ -815,6 +1031,7 @@
       chip.setAttribute('aria-pressed', String(Number(chip.dataset.days) === state.days));
       chip.addEventListener('click', () => {
         state.days = Number(chip.dataset.days);
+        setTimeout(loadWholeAll, 0);
         saved.set('days', state.days);
         for (const c of document.querySelectorAll('[data-days]')) c.setAttribute('aria-pressed', String(c === chip));
         loadFlights();
@@ -905,6 +1122,7 @@
     setTab(state.tab);
     pollLive();
     if (state.tab !== 'history') loadFlights();
+    setInterval(() => { if (!document.hidden) loadWholeAll(); }, 30000);
     setInterval(() => { if (!document.hidden) loadFlights(); }, HISTORY_EVERY_MS);
     renderHeatPanel();
     loadHeat();

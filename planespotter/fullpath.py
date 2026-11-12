@@ -1,10 +1,11 @@
 """Whole flights for the planes that crossed your zone.
 
 planespotter only sees planes near home. To draw the rest of a flight (say
-Portland → Los Angeles), it asks adsb.lol for that aircraft's recorded
-positions once the flight is over, cuts out the one flight that went over
-home, and keeps a simplified copy. This runs in the background, one request
-at a time, so it never slows down the alerts.
+Portland → Los Angeles), it asks adsb.lol's API for that aircraft's recorded
+positions for the day, cuts out the one flight that went over home, and keeps
+a simplified copy: first while it's overhead (where it came from), then again
+later until it has landed. This runs in the background, one request at a
+time, within the daily request budget, so it never slows down the alerts.
 """
 
 from __future__ import annotations
@@ -17,27 +18,33 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Callable, NamedTuple
 
-from .adsb import USER_AGENT
+from .adsb import USER_AGENT, key_header
 from .heat import route_cells
 
 log = logging.getLogger(__name__)
 
-LIVE_TRACE_URL = "https://globe.adsb.lol/data/traces/{xx}/trace_full_{hex}.json"
-HISTORY_TRACE_URL = ("https://globe.adsb.lol/globe_history/{d.year:04d}/{d.month:02d}/{d.day:02d}"
-                     "/traces/{xx}/trace_full_{hex}.json")
-LIVE_HOURS = 20            # adsb.lol's "full" trace holds roughly the last 24 hours
+TRACE_HOURS = 20           # the API's trace covers about the last day; older flights can't be looked up
 LEG_GAP = 30 * 60          # no positions for this long = a separate flight
-SETTLE = 10 * 60           # wait this long after a plane leaves before looking it up
-RETRY = 30 * 60            # how often to check a flight that's still in the air
-MAX_TRIES = 40             # ~20 hours of checking, then keep what we have
+SETTLE = 30                # first look 30 s after a plane appears over home: where it came from
+RETRIES = [20 * 60, 40 * 60, 2 * 3600, 3 * 3600]  # then look again until it has landed
+MAX_TRIES = len(RETRIES) + 1
 MAX_POINTS = 250
 PAUSE = 10                 # seconds between lookups when there's a backlog
 
 # Pass states for the full_state column.
 WAITING, DONE, UNAVAILABLE = 0, 1, 2
+
+
+def retry_delay(tries: int) -> float:
+    """How long to wait before checking a flight again: soon at first, then less often."""
+    return RETRIES[min(max(tries, 1), len(RETRIES)) - 1]
+
+
+class OverBudget(Exception):
+    """Today's share of adsb.lol requests for whole flights is used up; try later."""
 
 
 class TraceNotFound(Exception):
@@ -53,8 +60,8 @@ class Point(NamedTuple):
     new_leg: bool
 
 
-def get_trace_json(url: str, timeout: float = 25) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
+def get_trace_json(url: str, timeout: float = 25, headers: dict | None = None) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
@@ -73,12 +80,9 @@ def get_trace_json(url: str, timeout: float = 25) -> dict:
     return data
 
 
-def live_url(hex_code: str) -> str:
-    return LIVE_TRACE_URL.format(xx=hex_code[-2:], hex=hex_code)
-
-
-def history_url(hex_code: str, day: date) -> str:
-    return HISTORY_TRACE_URL.format(d=day, xx=hex_code[-2:], hex=hex_code)
+def trace_url(hex_code: str, api_base: str = "https://api.adsb.lol") -> str:
+    """adsb.lol's API for an aircraft's recorded positions (the "full trace" for the day)."""
+    return f"{api_base.rstrip('/')}/1/trace/full/{hex_code}"
 
 
 def utc_day(ts: float) -> date:
@@ -174,16 +178,25 @@ def as_path(points: list[Point]) -> list[list]:
 class FlightLookup:
     """Finds the whole flight that an aircraft was on at a given time."""
 
-    def __init__(self, fetch: Callable[[str], dict] = get_trace_json, clock: Callable[[], float] = time.time):
-        self.fetch = fetch
+    def __init__(self, fetch: Callable[[str], dict] | None = None, clock: Callable[[], float] = time.time,
+                 api_base: str = "https://api.adsb.lol", api_key: str = "", budget=None):
+        self.fetch = fetch or (lambda url: get_trace_json(url, headers=key_header(api_key)))
         self.clock = clock
+        self.api_base = api_base
+        self.budget = budget
         self.cache: dict[str, tuple[float, list[Point] | None]] = {}
 
-    def points(self, url: str) -> list[Point] | None:
+    def points(self, hex_code: str, kind: str = "trace") -> list[Point] | None:
+        """The aircraft's recorded positions for about the last day (one API request, cached 2 min)."""
         now = self.clock()
+        url = trace_url(hex_code, self.api_base)
         hit = self.cache.get(url)
         if hit and now - hit[0] < 120:
             return hit[1]
+        if self.budget is not None:
+            if not self.budget.allow(kind):
+                raise OverBudget(kind)
+            self.budget.record("trace")
         try:
             pts = parse_trace(self.fetch(url))
         except TraceNotFound:
@@ -193,41 +206,14 @@ class FlightLookup:
         self.cache[url] = (now, pts)
         return pts
 
-    def day_points(self, hex_code: str, day: date) -> list[Point]:
-        now = self.clock()
-        pts: list[Point] = []
-        if day >= utc_day(now - LIVE_HOURS * 3600):
-            pts = self.points(live_url(hex_code)) or []
-        if day < utc_day(now):
-            pts = merge(pts, self.points(history_url(hex_code, day)) or [])
-        return pts
-
     def flight(self, hex_code: str, t_from: float, t_to: float) -> tuple[list[Point] | None, bool]:
         """(points of the flight, whether it has finished), or (None, False) if not found."""
         now = self.clock()
-        if now - t_to < LIVE_HOURS * 3600:
-            pts = self.points(live_url(hex_code)) or []
-        else:
-            pts = self.points(history_url(hex_code, utc_day(t_from))) or []
-        legs = split_legs(pts)
+        legs = split_legs(self.points(hex_code) or [])
         i = find_leg(legs, t_from, t_to)
         if i is None:
             return None, False
-
-        # Flights that cross midnight UTC are split over two days of records: join them up.
         leg = legs[i]
-        if i == 0 and not leg[0].ground:
-            earlier = self.day_points(hex_code, utc_day(leg[0].t - 3600))
-            if earlier:
-                pts = merge(pts, earlier)
-        if i == len(legs) - 1 and not leg[-1].ground and now - leg[-1].t > 3600:
-            later_day = utc_day(leg[-1].t) + timedelta(days=1)
-            if later_day <= utc_day(now):
-                pts = merge(pts, self.day_points(hex_code, later_day))
-        legs = split_legs(pts)
-        i = find_leg(legs, t_from, t_to)
-        leg = legs[i]
-
         finished = (
             leg[-1].ground                    # it landed
             or i < len(legs) - 1              # it has flown again since
@@ -236,8 +222,11 @@ class FlightLookup:
         return leg, finished
 
     def current_flight(self, hex_code: str) -> list[Point]:
-        """The flight a plane in the air right now is on, so far."""
-        legs = split_legs(self.points(live_url(hex_code)) or [])
+        """The flight a plane in the air right now is on, so far (when someone clicks it on the map)."""
+        try:
+            legs = split_legs(self.points(hex_code, kind="click") or [])
+        except OverBudget:
+            return []
         if legs and self.clock() - legs[-1][-1].t < 15 * 60:
             return legs[-1]
         return []
@@ -259,11 +248,21 @@ class FullPathFetcher:
         now = self.clock()
         if now < self.blocked_until:
             return False
+        budget = self.lookup.budget
+        if budget is not None and not budget.allow("trace"):
+            return False  # today's share is used up; flights wait their turn
         row = self.store.claim_full_path_job(now, settle=SETTLE, hold=15 * 60)
         if row is None:
             return False
+        if now - row["last_seen"] > TRACE_HOURS * 3600:
+            # adsb.lol's API only has about the last day, so older flights can't be looked up.
+            self.store.update_full_path(row["id"], state=UNAVAILABLE)
+            return True
         try:
             points, finished = self.lookup.flight(row["hex"], row["first_seen"], row["last_seen"])
+        except OverBudget:
+            self.store.update_full_path(row["id"], next_try=now + 30 * 60)
+            return False
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             # The service is busy or unreachable: try again later, more slowly each time.
             self.backoff = min(3600.0, max(120.0, self.backoff * 2))
@@ -280,8 +279,8 @@ class FullPathFetcher:
 
         tries = row["full_tries"] + 1
         if points is None:
-            state = UNAVAILABLE if tries >= 3 else WAITING
-            self.store.update_full_path(row["id"], state=state, tries=tries, next_try=now + RETRY)
+            state = UNAVAILABLE if tries >= 2 else WAITING
+            self.store.update_full_path(row["id"], state=state, tries=tries, next_try=now + retry_delay(tries))
             return True
         path = as_path(simplify(points))
         if finished or tries >= MAX_TRIES:
@@ -290,7 +289,7 @@ class FullPathFetcher:
                                         route_heat=(day, route_cells(self.cfg, path)))
         else:
             # Still flying: keep what we have so far, and look again later.
-            self.store.update_full_path(row["id"], path=path, tries=tries, next_try=now + RETRY)
+            self.store.update_full_path(row["id"], path=path, tries=tries, next_try=now + retry_delay(tries))
         return True
 
     def run_forever(self) -> None:
@@ -303,12 +302,13 @@ class FullPathFetcher:
             time.sleep(PAUSE if did_work else 30)
 
 
-def start_full_path_worker(cfg) -> threading.Thread:
+def start_full_path_worker(cfg, budget=None) -> threading.Thread:
     """Run the whole-flight lookups in a background thread with its own database connection."""
     from .store import Store
 
     def run():
-        FullPathFetcher(cfg, Store(cfg.db_path)).run_forever()
+        lookup = FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
+        FullPathFetcher(cfg, Store(cfg.db_path), lookup).run_forever()
 
     thread = threading.Thread(target=run, name="whole-flights", daemon=True)
     thread.start()

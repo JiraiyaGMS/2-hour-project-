@@ -91,6 +91,9 @@ It asks you:
 
    You can leave the email blank to try everything out first. Emails are
    then saved as files in `planespotter/outbox` instead of being sent.
+8. **An adsb.lol key** (optional). Press Return to skip; see
+   [adsb.lol's daily limit](#adsblols-daily-limit-and-a-free-key) below for
+   why you might want one.
 
 At the end it offers to show the planes near you right now and to send a
 test email. Say yes to both.
@@ -144,17 +147,27 @@ browser on your Mac.
 - **Your zone** is the orange circle. Planes inside it are orange, and the
   others nearby are blue. Planes glide between updates and leave a short
   trail.
-- **In the air** lists every plane nearby right now, closest first.
-  **Spotted** lists every plane that came through your zone. You can
-  filter by 24 hours, 7 days, 30 days or all, and sort by newest, closest
-  or lowest. 🌙 marks the ones that came during quiet hours.
+- **Airline logos** show next to every flight in the lists, in the flight
+  details, and above the labelled planes on the map. Airlines without a
+  logo get a badge with their code, and private planes a small plane icon.
+- **Whole flights:** every plane that crossed your zone is drawn along its
+  whole flight. If it's still in the air, the line runs from takeoff to
+  where it is right now (with the plane drawn there, updated every minute
+  while the map is open). Once it lands, the line runs from takeoff to
+  landing.
+- **In the air** lists every plane nearby right now, closest first, then
+  the ones that *went over you and are still flying* elsewhere.
+  **Spotted** lists every plane that came through your zone, with
+  *In the air* on the ones still flying. You can filter by 24 hours,
+  7 days, 30 days or all, and sort by newest, closest or lowest. 🌙 marks
+  the ones that came during quiet hours.
 - **Search** works on both lists and the map: try a flight number, an
   airline (*delta*), an airport code (*JFK*), a city, or an aircraft (*A380*).
 - **Click any flight** (in the list or on the map) to see its route, a
-  photo of the actual aircraft, its altitude and speed, and its **whole
-  flight** drawn in pink, from takeoff to landing. *Show its whole flight*
-  zooms out to fit it. For a plane in the air right now, you see where it
-  has flown so far (*Show where it's come from*).
+  photo of the actual aircraft, its altitude and speed, and its whole
+  flight in pink. It also says whether the plane is still in the air (and
+  where) or has landed. *Show its whole flight* zooms out to fit it. For
+  any plane nearby, *Show where it's come from* shows its flight so far.
 - **🔥 Heat map** (top right) shows the busiest flight paths, from blue
   (quiet) to red (busy). Choose today, 7 days, 30 days or all time.
   - Within about 15 miles it counts every plane, so approach and departure
@@ -170,15 +183,46 @@ browser on your Mac.
 like `http://192.168.1.23:8765`. Open that on your phone while it's on
 the same Wi-Fi. Add it to your home screen to use it like an app.
 
-A plane's complete flight is looked up from adsb.lol about 10 minutes
-after it leaves your zone. If it's still in the air, it's checked again
-every 30 minutes until it lands, and then added to the heat map. Flights
-already in your history are looked up too, newest first, so give it a
-little while after updating.
+A plane's whole flight is first looked up while it's over your zone,
+which shows where it came from. It's checked again 20 minutes, 1 hour, 3
+hours and 6 hours later until it lands, sooner if adsb.lol sees it on
+the ground. adsb.lol only keeps about the last day, so flights spotted
+more than a day before you updated can't be filled in.
 
 **Just the map, no emails:** run `python3 -m planespotter map`. To turn the
 map off, or to keep it to this Mac only, see the *Live map* settings in
 [`.env.example`](.env.example).
+
+---
+
+## adsb.lol's daily limit (and a free key)
+
+The flight data comes free from [adsb.lol](https://adsb.lol), a community
+network, which allows **500 requests a day** per home internet connection
+without a key. planespotter shares those out across the day so the
+alerts never run dry:
+
+- **Checking for planes** gets most of them, so it checks about **every 4
+  minutes**. A plane can cross your zone between checks; planespotter
+  still catches it by joining up each plane's positions, but the alert
+  can arrive a few minutes after it went over.
+- **While the live map is open**, it checks **every 30 seconds** instead,
+  until 60% of the day's allowance is used.
+- **Whole flights** get a quarter of the allowance, and live positions
+  for the map get a little.
+
+You can raise the limit for free:
+
+- **A free key** (1,000 a day: checks every 2 minutes). Ask for one at
+  <https://www.adsb.lol/request>, then run `python3 -m planespotter setup`
+  again and paste it at the last question.
+- **Feeding adsb.lol** (7,200 a day: checks every 20 seconds). With a cheap
+  ADS-B receiver (a USB radio stick and antenna on a Raspberry Pi) you
+  share what planes overhead broadcast, and get a feeder key in return.
+  Put the key in setup and add `ADSB_DAILY_LIMIT=7200` to your `.env`.
+
+If the limit is ever reached anyway, the map says so and everything
+carries on by itself once adsb.lol allows more requests.
 
 ---
 
@@ -191,6 +235,7 @@ map off, or to keep it to this Mac only, see the *Live map* settings in
 | `CERTIFICATE_VERIFY_FAILED` | Open **Finder → Applications → Python 3.x** and double-click **Install Certificates.command**. Then try again. |
 | `Username and Password not accepted` | The app password is wrong. Make a new one (step 5) and run `setup` again. |
 | No emails arriving | Look in your spam folder, and run `python3 -m planespotter test-email`. |
+| The map says *adsb.lol's daily limit reached* | The free allowance is used up for now; it carries on by itself. A free key doubles it (see above). |
 | Nothing ever shows up | Run `python3 -m planespotter check` to see what's flying nearby. Try a bigger radius, and check you pasted the coordinates of your house. |
 | The map page won't load | planespotter has to be running. Check the Terminal window is still open, then reload the page. |
 | The map won't open on my phone | The phone must be on the same Wi-Fi. Use the second address planespotter printed (not `localhost`). If your Mac asked about incoming connections and you clicked Deny, allow Python in **System Settings → Network → Firewall → Options**. |
@@ -257,22 +302,26 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
 
 ## How it works
 
-- **Live positions** come from [adsb.lol](https://adsb.lol), a free
+- **Live positions** come from [adsb.lol](https://adsb.lol)'s API, a free
   community network of ADS-B receivers (data under ODbL). The watcher and
-  the map share one request, at most every 10 seconds, and back off if
-  adsb.lol says we're asking too often.
+  the map share each request, follow the daily budget above, and wait as
+  long as adsb.lol asks if it ever says we're asking too often.
 - **The heat map** splits the sky into squares about 280 m across. Each
   time a plane flies through a square, that square's count for the day
   goes up by one. Each plane counts once per square per trip, however
   slowly it flies, and the gaps between position reports are filled in so
   fast jets leave a continuous line.
-- **Complete flights** come from adsb.lol's recorded positions for each
-  aircraft (the same free, open data as the live map). planespotter picks
-  out the one flight that passed over you (a plane can fly several a
-  day), joins it up if it crossed midnight UTC, and simplifies it to a few
-  hundred points. Far from home these go on a coarser grid of about 4 km
-  squares. The lookups run in the background, one at a time, every 10
-  seconds at most, so alerts are never held up.
+- **Whole flights** come from adsb.lol's API (`/1/trace/full`), which
+  returns an aircraft's recorded positions for about the last day.
+  planespotter picks out the one flight that passed over you (a plane can
+  fly several a day) and simplifies it to a few hundred points. Far from
+  home these go on a coarser heat-map grid of about 4 km squares. Lookups
+  run in the background, one at a time, so alerts are never held up.
+- **Airline logos** come from the community
+  [airline-logos](https://github.com/Jxck-S/airline-logos) collection, by
+  the airline's three-letter code (the start of its callsign, like *DAL*
+  for Delta). Each logo is downloaded once and kept in the `logo-cache`
+  folder. Logos are trademarks of their airlines.
 - **The map** uses [MapLibre](https://maplibre.org) with free
   [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
   to draw planes in 3D. It's served only from your computer. It never

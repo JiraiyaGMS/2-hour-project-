@@ -4,6 +4,7 @@
 *.db-wal
 *.db-shm
 outbox/
+logo-cache/
 __pycache__/
 *.pyc
 .venv/

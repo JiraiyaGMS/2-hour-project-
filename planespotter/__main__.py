@@ -18,13 +18,14 @@ from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
-from .webmap import MapServerError, shared_feed, start_map_server
+from .webmap import MapServerError, make_budget, shared_feed, start_feed_poller, start_map_server
 from .wizard import Cancelled, Wizard
 
 
 def build(cfg: Config) -> Watcher:
     store = Store(cfg.db_path)
-    return Watcher(cfg, store, shared_feed(cfg), Lookup(store, cfg.adsbdb_api), Mailer(cfg))
+    budget = make_budget(cfg)
+    return Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg), budget=budget)
 
 
 def cmd_setup(env_path: Path, args) -> int:
@@ -60,7 +61,8 @@ def cmd_setup(env_path: Path, args) -> int:
 def cmd_check(cfg: Config, args) -> int:
     """Show what's flying near home right now. Sends nothing, saves nothing."""
     look = max(cfg.radius_miles * 3, 10)
-    planes = LiveFeed(cfg.adsb_api).aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(look))
+    feed = LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=make_budget(cfg))
+    planes = feed.aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(look))
     rows = []
     for ac in planes:
         d = distance_miles(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)
@@ -93,7 +95,7 @@ def cmd_watch(cfg: Config, args) -> int:
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
     if cfg.map_enabled:
         try:
-            _, urls = start_map_server(cfg, feed=watcher.feed)
+            _, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget)
             print_map_urls(urls)
             print()
             if args.open:
@@ -110,12 +112,15 @@ def cmd_watch(cfg: Config, args) -> int:
 def cmd_map(cfg: Config, args) -> int:
     """Just the live map, without email alerts."""
     try:
-        _, urls = start_map_server(cfg)
+        budget = make_budget(cfg)
+        feed = shared_feed(cfg, budget)
+        _, urls = start_map_server(cfg, feed=feed, budget=budget)
     except MapServerError as exc:
         print(exc, file=sys.stderr)
         return 1
+    start_feed_poller(cfg, feed, budget)  # no watcher here, so the map keeps its own planes fresh
     if cfg.whole_flights:
-        start_full_path_worker(cfg)
+        start_full_path_worker(cfg, budget)
     print("The live map is running. Press Ctrl+C to stop.\n")
     print_map_urls(urls)
     print("\nThe Spotted list fills up while `watch` is running.")

@@ -101,6 +101,8 @@ class Config:
     map_port: int = 8765
     map_lan: bool = True  # let phones on the same Wi-Fi open the map
     whole_flights: bool = True  # look up the complete flight of planes that crossed the zone
+    adsb_api_key: str = ""      # optional free key from adsb.lol: raises the daily limit
+    adsb_daily_limit: int = 500  # adsb.lol requests allowed per day (500 without a key)
 
     @property
     def view_radius_miles(self) -> float:
@@ -245,6 +247,9 @@ class Config:
             map_port=number("MAP_PORT", "8765", int),
             map_lan=flag("MAP_LAN", True),
             whole_flights=flag("WHOLE_FLIGHTS", True),
+            adsb_api_key=get("ADSB_API_KEY"),
+            # Without a key adsb.lol allows 500 a day; a free key 1,000; feeders 7,200.
+            adsb_daily_limit=number("ADSB_DAILY_LIMIT", "1000" if get("ADSB_API_KEY") else "500", int),
         )
 
 
@@ -253,5 +258,5 @@ KNOWN_KEYS = {
     "POLL_SECONDS", "PASS_GAP_MINUTES", "MAX_ALERTS_PER_HOUR", "ALERTS_ENABLED",
     "QUIET_HOURS", "DIGEST_ENABLED", "DIGEST_TIME", "TIMEZONE", "EMAIL_TO",
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
-    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS",
+    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT",
 }

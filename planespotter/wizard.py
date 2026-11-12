@@ -119,6 +119,12 @@ class Wizard:
         else:
             values.update(SMTP_USER="", SMTP_PASSWORD="")
 
+        print("\n5. ADSB.LOL KEY (optional)")
+        print("   The flight data is free from adsb.lol: 500 requests a day without a key, which")
+        print("   means checking for planes about every 4 minutes. A free key doubles that (every")
+        print("   2 minutes). Ask for one at https://www.adsb.lol/request, or press Enter to skip.")
+        values["ADSB_API_KEY"] = self.ask("   adsb.lol key", cur.get("ADSB_API_KEY", ""))
+
         # Keep any advanced settings the person added by hand.
         for key, value in cur.items():
             if key in KNOWN_KEYS and key not in values:
@@ -220,6 +226,10 @@ SMTP_USER={SMTP_USER}
 SMTP_PASSWORD={SMTP_PASSWORD}
 SMTP_HOST={SMTP_HOST}
 SMTP_PORT={SMTP_PORT}
+
+# adsb.lol key (blank = 500 requests a day; a free key = 1,000; feeders get 7,200
+# and can set ADSB_DAILY_LIMIT=7200)
+ADSB_API_KEY={ADSB_API_KEY}
 """
 
 

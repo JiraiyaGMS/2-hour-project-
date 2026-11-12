@@ -23,10 +23,16 @@ log = logging.getLogger(__name__)
 USER_AGENT = "planespotter/1.0 (hobby plane-spotting script)"
 
 
-def get_json(url: str, timeout: float = 15) -> Any:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+def get_json(url: str, timeout: float = 15, headers: dict | None = None) -> Any:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                                               **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)
+
+
+def key_header(api_key: str) -> dict:
+    """adsb.lol reads an (optional) API key from the x-api-key header."""
+    return {"x-api-key": api_key} if api_key else {}
 
 
 @dataclass(frozen=True)
@@ -88,22 +94,26 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
 class LiveFeed:
     """Aircraft currently near a point, from adsb.lol."""
 
-    def __init__(self, base_url: str = "https://api.adsb.lol", timeout: float = 15):
+    def __init__(self, base_url: str = "https://api.adsb.lol", timeout: float = 15, api_key: str = "", budget=None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = api_key
+        self.budget = budget
 
     def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
         radius = max(1, min(250, math.ceil(radius_nm)))
         url = f"{self.base_url}/v2/point/{lat:.5f}/{lon:.5f}/{radius}"
-        data = get_json(url, self.timeout)
+        if self.budget:
+            self.budget.record("poll")
+        data = get_json(url, self.timeout, key_header(self.api_key))
         found = (parse_aircraft(raw) for raw in data.get("ac") or [])
         return [ac for ac in found if ac and ac.hex]
 
 
 def retry_after_seconds(exc: urllib.error.HTTPError) -> float:
-    """The server's Retry-After header in seconds, if it sent one (capped at 15 minutes)."""
+    """The server's Retry-After header in seconds, if it sent one (capped at 6 hours)."""
     try:
-        return min(900.0, float((exc.headers or {}).get("Retry-After") or 0))
+        return min(6 * 3600.0, float((exc.headers or {}).get("Retry-After") or 0))
     except (TypeError, ValueError):
         return 0.0
 
@@ -111,8 +121,10 @@ def retry_after_seconds(exc: urllib.error.HTTPError) -> float:
 class SharedFeed:
     """One request to adsb.lol serves both the watcher and the live map.
 
-    Results are reused for ``ttl`` seconds, and if adsb.lol says we're asking
-    too often (HTTP 429), we back off and keep showing the last answer for a bit.
+    Only the watcher (or the map's own poller) fetches, on the budget's schedule;
+    the map just reads the latest answer with ``latest()``. Results are reused for
+    ``ttl`` seconds, and if adsb.lol says we're asking too often (HTTP 429), we back
+    off for as long as it asks and keep showing the last answer for a bit.
     """
 
     def __init__(self, feed: LiveFeed, min_radius_nm: float = 0, ttl: float = 10.0, clock=None):
@@ -136,7 +148,8 @@ class SharedFeed:
             if now < self.blocked_until:
                 if self.data is not None and now - self.fetched_at < 180:
                     return self.data
-                raise urllib.error.URLError("adsb.lol asked us to slow down; trying again shortly")
+                minutes = math.ceil((self.blocked_until - now) / 60)
+                raise urllib.error.URLError(f"adsb.lol's request limit was reached; trying again in {minutes} min")
             radius = max(radius_nm, self.min_radius_nm)
             try:
                 self.data = self.feed.aircraft_near(lat, lon, radius)
@@ -152,6 +165,76 @@ class SharedFeed:
             self.radius = radius
             self.fetched_at = now
             return self.data
+
+    def latest(self) -> tuple[list[Aircraft] | None, float]:
+        """The most recent answer and when it arrived, without asking adsb.lol again."""
+        with self.lock:
+            return self.data, self.fetched_at
+
+    def paused_for(self) -> float:
+        """Seconds until we may ask again after a 429, or 0."""
+        return max(0.0, self.blocked_until - self.clock())
+
+
+class PositionLookup:
+    """Where specific planes are right now, wherever they are (not just near home).
+
+    Used to draw a spotted flight that's still in the air all the way to its
+    live position. One request covers many planes; answers are reused for ``ttl`` s.
+    """
+
+    def __init__(self, base_url: str = "https://api.adsb.lol", ttl: float = 60.0, clock=time.time,
+                 api_key: str = "", budget=None):
+        self.base_url = base_url.rstrip("/")
+        self.ttl = ttl
+        self.clock = clock
+        self.api_key = api_key
+        self.budget = budget
+        self.lock = threading.Lock()
+        self.known: dict[str, tuple[float, Aircraft | None]] = {}
+        self.blocked_until = 0.0
+
+    def fetch(self, hexes: list[str]) -> tuple[list[Aircraft], set[str]]:
+        """(planes in the air, addresses of planes on the ground) among ``hexes``."""
+        url = f"{self.base_url}/v2/hex/{','.join(hexes)}"
+        if self.budget:
+            self.budget.record("positions")
+        data = get_json(url, timeout=15, headers=key_header(self.api_key))
+        raw = data.get("ac") or []
+        flying = [ac for ac in (parse_aircraft(r) for r in raw) if ac]
+        ground = {str(r.get("hex", "")).lower() for r in raw if r.get("alt_baro") == "ground"}
+        return flying, ground
+
+    def get(self, hexes: list[str]) -> dict[str, Aircraft]:
+        hexes = sorted({h for h in hexes if len(h) == 6 and all(c in "0123456789abcdef" for c in h)})
+        with self.lock:
+            now = self.clock()
+            stale = [h for h in hexes if h not in self.known or now - self.known[h][0] >= self.ttl]
+            allowed = self.budget is None or self.budget.allow("positions")
+            if stale and now >= self.blocked_until and allowed:
+                try:
+                    for i in range(0, len(stale), 40):
+                        chunk = stale[i:i + 40]
+                        flying, ground = self.fetch(chunk)
+                        found = {ac.hex: ac for ac in flying}
+                        for h in chunk:
+                            # An Aircraft, "ground" (it has landed), or None (out of range).
+                            self.known[h] = (now, found.get(h) or ("ground" if h in ground else None))
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 429:
+                        self.blocked_until = now + max(120.0, retry_after_seconds(exc))
+                    log.info("position lookup failed: %s", exc)
+                except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                    log.info("position lookup failed: %s", exc)
+            for h in [h for h, (t, _) in self.known.items() if now - t > 600]:
+                del self.known[h]
+            return {h: self.known[h][1] for h in hexes
+                    if h in self.known and isinstance(self.known[h][1], Aircraft)}
+
+    def on_ground(self, hexes: list[str]) -> set[str]:
+        """Which of these planes adsb.lol last saw on the ground (they've landed)."""
+        with self.lock:
+            return {h for h in hexes if h in self.known and self.known[h][1] == "ground"}
 
 
 @dataclass(frozen=True)

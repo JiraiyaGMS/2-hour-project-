@@ -37,8 +37,11 @@ class Watcher:
         lookup: Lookup,
         mailer: Mailer,
         clock: Callable[[], float] = time.time,
+        budget=None,
     ):
         self.cfg = cfg
+        self.budget = budget  # adsb.lol's daily request limit, shared with the map
+        self.interval = float(cfg.poll_seconds)  # seconds until the next check
         self.store = store
         self.feed = feed
         self.lookup = lookup
@@ -54,9 +57,10 @@ class Watcher:
     # --- polling ------------------------------------------------------------
 
     def query_radius_nm(self) -> float:
-        """Look a little beyond the zone, so planes are seen before they enter it."""
-        travel = FASTEST_PLANE_KT * self.cfg.poll_seconds / 3600
-        return miles_to_nm(self.cfg.radius_miles) + travel + 1
+        """Look far enough beyond the zone that a plane is seen on both sides of it,
+        even when checks are minutes apart (to stay within adsb.lol's daily limit)."""
+        travel = min(FASTEST_PLANE_KT, 500) * self.interval / 3600
+        return min(250.0, miles_to_nm(self.cfg.radius_miles) + travel + 1)
 
     def in_zone(self, ac: Aircraft, now: float) -> tuple[float, float] | None:
         """(closest distance, bearing) if the plane is in the zone or crossed it since last poll."""
@@ -65,7 +69,7 @@ class Watcher:
             return None
         dist = distance_miles(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)
         prev = self.last_positions.get(ac.hex)
-        if prev and now - prev[2] <= cfg.poll_seconds * 3:
+        if prev and now - prev[2] <= max(cfg.poll_seconds, self.interval) * 2.5:
             dist = min(dist, segment_min_distance_miles(
                 cfg.home_lat, cfg.home_lon, prev[0], prev[1], ac.lat, ac.lon))
         if dist > cfg.radius_miles:
@@ -101,7 +105,7 @@ class Watcher:
                 log.info("overhead: %s %s %s, %s%s", ac.label, fmt_dist(hit[0]),
                          compass(hit[1]), fmt_alt(ac.alt_ft), route)
         try:
-            self.heat.record(planes, self.last_positions, now)
+            self.heat.record(planes, self.last_positions, now, max_gap=max(cfg.poll_seconds, self.interval) * 2.5)
         except sqlite3.Error as exc:  # the heat map is a nice-to-have; never let it stop alerts
             log.warning("couldn't update the heat map: %s", exc)
         self.last_positions = positions
@@ -170,20 +174,37 @@ class Watcher:
             self.store.set_meta("watch_started", str(self.clock()))
         backfill_heat(self.store, cfg)
         if cfg.whole_flights:
-            start_full_path_worker(cfg)  # looks up whole flights in the background
+            start_full_path_worker(cfg, self.budget)  # looks up whole flights in the background
         log.info(
-            "watching %.1f mi around %s (%.4f, %.4f), every %ds%s",
-            cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon, cfg.poll_seconds,
+            "watching %.1f mi around %s (%.4f, %.4f)%s",
+            cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon,
             f" — no email login set, emails are saved in {cfg.outbox_dir}" if cfg.dry_run
             else f", emailing {cfg.email_to}",
         )
+        if self.budget:
+            every = self.budget.base_interval
+            log.info("checking every %s to stay within adsb.lol's limit of %d requests a day%s",
+                     f"{every / 60:.1f} min" if every >= 90 else f"{every:.0f} s", self.budget.limit,
+                     "" if cfg.adsb_api_key else " (a free adsb.lol key raises it; see the README)")
         if cfg.quiet_hours:
             log.info("quiet hours %s: no alerts then, planes go in the %s report",
                      fmt_clock_range(cfg.quiet_hours), cfg.digest_time.strftime("%H:%M"))
         failures = 0
+        last_check = 0.0
         while True:
-            started = time.monotonic()
             now = self.clock()
+            # Check on the budget's schedule; it speeds up while someone has the live map open.
+            interval = self.budget.poll_interval() if self.budget else float(cfg.poll_seconds)
+            if failures:
+                interval = max(interval, min(300, cfg.poll_seconds * 2 ** min(failures, 4)))
+            if now - last_check < interval:
+                time.sleep(2)
+                today = self.digest_due(now)
+                if today is not None:
+                    self.send_digest(today)
+                continue
+            last_check = now
+            self.interval = interval
             try:
                 new_passes = self.poll(now)
                 failures = 0
@@ -200,6 +221,3 @@ class Watcher:
             today = self.digest_due(now)
             if today is not None:
                 self.send_digest(today)
-
-            delay = cfg.poll_seconds if failures == 0 else min(300, cfg.poll_seconds * 2 ** min(failures, 4))
-            time.sleep(max(1.0, delay - (time.monotonic() - started)))

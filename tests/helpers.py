@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import warnings
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
+
+# Many tests use throwaway in-memory databases and let Python close them; that's fine.
+warnings.simplefilter("ignore", ResourceWarning)
 
 from planespotter.adsb import Aircraft, FlightInfo
 from planespotter.config import Config
@@ -40,6 +44,9 @@ class FakeFeed:
 
     def aircraft_near(self, lat, lon, radius_nm):
         return list(self.planes)
+
+    def latest(self):
+        return list(self.planes), 1.0
 
 
 class FakeLookup:

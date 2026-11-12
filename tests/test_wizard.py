@@ -52,6 +52,7 @@ class WizardTests(unittest.TestCase):
             "",                      # keep the 07:00 report
             "me@gmail.com",
             "",                      # send from the same account
+            "my-adsb-key",
         ])
         self.assertEqual((cfg.home_lat, cfg.home_lon), (51.50071, -0.12462))
         self.assertEqual(cfg.home_name, "My House")
@@ -63,19 +64,22 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(cfg.smtp_user, "me@gmail.com")
         self.assertEqual(cfg.smtp_password, "abcdefghijklmnop")
         self.assertFalse(cfg.dry_run)
+        self.assertEqual(cfg.adsb_api_key, "my-adsb-key")
+        self.assertEqual(cfg.adsb_daily_limit, 1000)
         if os.name == "posix":
             self.assertEqual(stat.S_IMODE(self.env.stat().st_mode), 0o600)
 
     def test_defaults_and_no_email(self):
-        cfg = self.run_wizard(["40.7, -74.0", "", "", "", "", "", ""])
+        cfg = self.run_wizard(["40.7, -74.0", "", "", "", "", "", "", ""])
         self.assertEqual(cfg.home_name, "Home")
         self.assertEqual(cfg.radius_miles, 3)
         self.assertIsNone(cfg.max_altitude_ft)
         self.assertEqual(cfg.quiet_hours, (time(22), time(7)))
         self.assertTrue(cfg.dry_run)
+        self.assertEqual((cfg.adsb_api_key, cfg.adsb_daily_limit), ("", 500))
 
     def test_bad_answers_are_asked_again(self):
-        ask = scripted(["my house", "51.5 -0.1", "", "zero", "5", "", "late", "none", "", "nope", ""])
+        ask = scripted(["my house", "51.5 -0.1", "", "zero", "5", "", "late", "none", "", "nope", "", ""])
         wizard = Wizard(self.env, ask=ask, ask_secret=lambda p: "")
         wizard.save(wizard.run())
         cfg = Config.load(self.env)
@@ -86,10 +90,10 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(sum("Coordinates" in p for p in ask.prompts), 2)
 
     def test_rerunning_keeps_existing_answers_and_extra_settings(self):
-        self.run_wizard(["51.5, -0.1", "Flat", "4", "", "", "08:30", "me@icloud.com", ""])
+        self.run_wizard(["51.5, -0.1", "Flat", "4", "", "", "08:30", "me@icloud.com", "", ""])
         with self.env.open("a") as fh:
             fh.write("POLL_SECONDS=45\n")
-        again = Wizard(self.env, ask=scripted([""] * 8), ask_secret=lambda p: "")
+        again = Wizard(self.env, ask=scripted([""] * 9), ask_secret=lambda p: "")
         again.save(again.run())
         cfg = Config.load(self.env)
         self.assertEqual(cfg.home_name, "Flat")

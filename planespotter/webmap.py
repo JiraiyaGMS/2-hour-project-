@@ -17,12 +17,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from .adsb import Aircraft, LiveFeed, Lookup, SharedFeed
+from .adsb import Aircraft, LiveFeed, Lookup, PositionLookup, SharedFeed
+from .budget import ApiBudget
 from .config import Config
 from .geo import bearing_deg, distance_miles, miles_to_nm, offset
 from .heat import backfill as backfill_heat
 from .heat import heat_json
-from .fullpath import FlightLookup, as_path, simplify
+from .fullpath import WAITING, FlightLookup, Point, as_path, simplify
+from .logos import LogoCache
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -82,44 +84,83 @@ def pass_json(cfg: Config, row) -> dict[str, Any]:
     }
 
 
-def shared_feed(cfg: Config) -> SharedFeed:
+def make_budget(cfg: Config) -> ApiBudget:
+    """adsb.lol's daily request limit, shared by everything in planespotter."""
+    return ApiBudget(cfg.db_path, cfg.adsb_daily_limit, cfg.poll_seconds)
+
+
+def shared_feed(cfg: Config, budget: ApiBudget | None = None) -> SharedFeed:
     """The live feed used by both the watcher and the map (one request serves both)."""
     view = miles_to_nm(cfg.view_radius_miles) if cfg.map_enabled else 0
-    return SharedFeed(LiveFeed(cfg.adsb_api), min_radius_nm=view)
+    return SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), min_radius_nm=view)
 
 
 class LiveCache:
-    """Fetches live planes at most every few seconds, however many browsers are open."""
+    """The planes near home from the watcher's latest check. The map never asks adsb.lol itself."""
 
-    def __init__(self, cfg: Config, feed: LiveFeed, ttl: float = 4.0, clock: Callable[[], float] = time.time):
+    def __init__(self, cfg: Config, feed, ttl: float = 2.0, clock: Callable[[], float] = time.time):
         self.cfg, self.feed, self.ttl, self.clock = cfg, feed, ttl, clock
         self.lock = threading.Lock()
         self.data: dict[str, Any] | None = None
-        self.fetched_at = 0.0
+        self.built_from = -1.0
 
     def get(self) -> dict[str, Any]:
         with self.lock:
-            now = self.clock()
-            if self.data is None or now - self.fetched_at >= self.ttl:
-                cfg = self.cfg
-                planes = self.feed.aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(cfg.view_radius_miles))
-                aircraft = [plane_json(cfg, ac) for ac in planes]
+            cfg = self.cfg
+            planes, fetched_at = self.feed.latest()
+            if self.data is None or fetched_at != self.built_from:
+                aircraft = [plane_json(cfg, ac) for ac in planes or []]
                 aircraft = [a for a in aircraft if a["distance_miles"] <= cfg.view_radius_miles]
                 aircraft.sort(key=lambda a: a["distance_miles"])
-                self.data = {"time": now, "aircraft": aircraft, "quiet_now": cfg.in_quiet_hours(now)}
-                self.fetched_at = now
-            return self.data
+                self.data = {"aircraft": aircraft, "updated": fetched_at, "waiting": planes is None}
+                self.built_from = fetched_at
+            now = self.clock()
+            return {**self.data, "time": now, "quiet_now": cfg.in_quiet_hours(now)}
+
+
+def start_feed_poller(cfg: Config, feed: SharedFeed, budget: ApiBudget) -> threading.Thread:
+    """For `map` on its own (no watcher): keep the live planes fresh, on the budget's schedule."""
+    def run():
+        last = 0.0
+        while True:
+            if time.time() - last >= budget.poll_interval():
+                last = time.time()
+                try:
+                    feed.aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(cfg.view_radius_miles))
+                except (OSError, ValueError) as exc:
+                    log.info("couldn't fetch planes: %s", exc)
+            time.sleep(2)
+
+    thread = threading.Thread(target=run, name="map-feed", daemon=True)
+    thread.start()
+    return thread
 
 
 class MapApp:
     """Everything the request handler needs; one per server."""
 
-    def __init__(self, cfg: Config, feed=None, clock: Callable[[], float] = time.time, flight_lookup=None):
+    def __init__(self, cfg: Config, feed=None, clock: Callable[[], float] = time.time, flight_lookup=None,
+                 position_lookup=None, logo_cache=None, budget=None):
         self.cfg = cfg
         self.clock = clock
-        self.live = LiveCache(cfg, feed or shared_feed(cfg), ttl=2.0, clock=clock)
-        self.flights = flight_lookup or FlightLookup(clock=clock)
+        self.budget = budget
+        self.feed = feed or shared_feed(cfg, budget)
+        self.live = LiveCache(cfg, self.feed, clock=clock)
+        key = cfg.adsb_api_key
+        self.flights = flight_lookup or FlightLookup(clock=clock, api_base=cfg.adsb_api, api_key=key, budget=budget)
+        self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget)
+        self.logos = logo_cache or LogoCache(Path(cfg.db_path).parent / "logo-cache")
         self._local = threading.local()
+        self._whole_cache: dict[float, tuple[float, list]] = {}
+
+    def live_json(self) -> dict[str, Any]:
+        """Live planes, plus how fresh they are and how the day's request budget is going."""
+        if self.budget:
+            self.budget.mark_viewing()  # someone's watching: check more often for a while
+        data = self.live.get()
+        paused = self.feed.paused_for() if hasattr(self.feed, "paused_for") else 0
+        return {**data, "paused_s": round(paused),
+                "budget": self.budget.status() if self.budget else None}
 
     def store(self) -> Store:
         """SQLite connections can't be shared between threads, so each gets its own."""
@@ -151,6 +192,52 @@ class MapApp:
         return {**pass_json(self.cfg, row), "whole_path": whole,
                 "whole_state": {0: "waiting", 1: "done", 2: "unavailable"}[row["full_state"]]}
 
+    def whole_json(self, days: float) -> dict[str, Any]:
+        """The whole flight of every spotted plane: takeoff to landing, or to where it is now."""
+        now = self.clock()
+        hit = self._whole_cache.get(days)
+        if hit and now - hit[0] < 20:
+            flights = hit[1]
+        else:
+            since = 0.0 if days <= 0 else now - days * 86400
+            rows = self.store().db.execute(
+                "SELECT id, hex, full_state, full_path FROM passes WHERE first_seen >= ? AND full_path != '[]' "
+                "ORDER BY first_seen DESC LIMIT 1500", (since,)).fetchall()
+            flights, newest_per_plane = [], set()
+            for r in rows:
+                path = json.loads(r["full_path"])
+                if len(path) < 2:
+                    continue
+                last = path[-1]
+                # Still in the air: not finished, last heard recently, not on the ground,
+                # and the newest pass for that aircraft (older ones are earlier flights).
+                flying = (r["full_state"] == WAITING and r["hex"] not in newest_per_plane
+                          and now - last[3] < 6 * 3600 and last[2] != 0)
+                newest_per_plane.add(r["hex"])
+                points = [Point(p[3], p[0], p[1], p[2], False, False) for p in path]
+                overview = simplify(points, tolerance_m=400, max_points=120)  # plenty for drawing many at once
+                flights.append({"id": r["id"], "hex": r["hex"], "flying": flying,
+                                "path": [[round(q.lon, 4), round(q.lat, 4), q.alt] for q in overview]})
+            self._whole_cache = {days: (now, flights)}
+        flying_hexes = [f["hex"] for f in flights if f["flying"]][:120]
+        positions = self.positions.get(flying_hexes)
+        landed = self.positions.on_ground(flying_hexes)
+        out = []
+        for f in flights:
+            if f["flying"] and f["hex"] in landed:
+                # adsb.lol sees it on the ground: it has landed. Fetch its final path soon.
+                f = {**f, "flying": False, "landed": True}
+                self.store().db.execute(
+                    "UPDATE passes SET full_next = ? WHERE id = ? AND full_state = 0 AND full_next > ?",
+                    (now, f["id"], now))
+                self.store().db.commit()
+            ac = positions.get(f["hex"]) if f["flying"] else None
+            if ac:
+                f = {**f, "now": {"lat": ac.lat, "lon": ac.lon, "alt_ft": ac.alt_ft, "heading": ac.track,
+                                  "speed_kt": ac.speed_kt, "seen_pos": ac.seen_pos}}
+            out.append(f)
+        return {"flights": out}
+
     def trace_json(self, hex_code: str) -> dict[str, Any]:
         """The flight a live plane is on, from takeoff until now."""
         hex_code = "".join(c for c in hex_code.lower() if c in "0123456789abcdef")[:6]
@@ -181,11 +268,11 @@ def make_handler(app: MapApp):
         def log_message(self, fmt, *args):  # keep the terminal tidy
             log.debug("map: " + fmt, *args)
 
-        def send(self, status: int, body: bytes, content_type: str) -> None:
+        def send(self, status: int, body: bytes, content_type: str, cache: str = "no-store") -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
@@ -203,12 +290,20 @@ def make_handler(app: MapApp):
                 elif url.path == "/api/config":
                     self.send_json(app.config_json())
                 elif url.path == "/api/live":
-                    self.send_json(app.live.get())
+                    self.send_json(app.live_json())
                 elif url.path == "/api/flights":
                     self.send_json(app.flights_json(float(query.get("days", "7") or 7)))
                 elif url.path == "/api/heat":
                     days = int(float(query.get("days", "7") or 7))
                     self.send_json(heat_json(app.store(), app.cfg, app.clock(), days))
+                elif url.path.startswith("/logo/") and url.path.endswith(".png"):
+                    png = app.logos.get(url.path[len("/logo/"):-len(".png")])
+                    if png:
+                        self.send(200, png, "image/png", cache="max-age=604800")
+                    else:
+                        self.send(404, b"", "image/png", cache="max-age=86400")
+                elif url.path == "/api/whole":
+                    self.send_json(app.whole_json(float(query.get("days", "1") or 1)))
                 elif url.path == "/api/flight":
                     self.send_json(app.flight_json(int(query.get("id", "0") or 0)))
                 elif url.path == "/api/trace":
@@ -240,7 +335,8 @@ def lan_address() -> str | None:
         return None
 
 
-def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_lookup=None):
+def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_lookup=None,
+                     position_lookup=None, logo_cache=None, budget=None):
     """Start serving the map in a background thread. Returns (server, list of URLs)."""
     host = "0.0.0.0" if cfg.map_lan else "127.0.0.1"
     store = Store(cfg.db_path)
@@ -248,7 +344,9 @@ def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_loo
     store.close()
     port = cfg.map_port if port is None else port
     try:
-        server = ThreadingHTTPServer((host, port), make_handler(MapApp(cfg, feed, flight_lookup=flight_lookup)))
+        app = MapApp(cfg, feed, flight_lookup=flight_lookup, position_lookup=position_lookup,
+                     logo_cache=logo_cache, budget=budget)
+        server = ThreadingHTTPServer((host, port), make_handler(app))
     except OSError as exc:
         raise MapServerError(
             f"Couldn't start the map on port {port} ({exc.strerror or exc}). "

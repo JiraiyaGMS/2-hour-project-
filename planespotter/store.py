@@ -204,7 +204,7 @@ class Store:
         """The newest pass whose whole flight is due a lookup, reserved so no one else takes it."""
         while True:
             row = self.db.execute(
-                "SELECT * FROM passes WHERE full_state = 0 AND full_next <= ? AND last_seen <= ? "
+                "SELECT * FROM passes WHERE full_state = 0 AND full_next <= ? AND first_seen <= ? "
                 "ORDER BY first_seen DESC LIMIT 1", (now, now - settle)).fetchone()
             if row is None:
                 return None

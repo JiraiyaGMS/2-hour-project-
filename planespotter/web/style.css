@@ -120,6 +120,27 @@ button { font: inherit; color: inherit; }
   color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 1px 5px;
 }
 .empty { color: var(--muted); padding: 28px 12px; text-align: center; }
+.badge.air { color: var(--blue); background: color-mix(in srgb, var(--blue) 14%, transparent); }
+
+/* Airline logos sit on a white tile so dark logos stay visible in dark mode. */
+.airline-logo {
+  flex: none; position: relative; width: 30px; height: 30px; border-radius: 8px; margin-top: 1px;
+  background: #fff; display: grid; place-items: center; overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(15, 25, 40, .08);
+}
+.airline-logo img {
+  position: absolute; inset: 0; width: 100%; height: 100%; padding: 3px; object-fit: contain; background: #fff;
+}
+.airline-logo .code { font-size: 9px; font-weight: 800; letter-spacing: .02em; color: #5d6b7a; }
+.airline-logo.ga { background: var(--panel-2); color: var(--muted); box-shadow: none; }
+.airline-logo.ga svg { width: 16px; height: 16px; }
+.airline-logo.big { width: 44px; height: 44px; border-radius: 11px; }
+.airline-logo.big .code { font-size: 12px; }
+.title-row { display: flex; gap: 12px; align-items: center; }
+.list-section {
+  font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  padding: 16px 8px 6px; border-top: 1px solid var(--line); margin-top: 8px;
+}
 .more { display: block; margin: 8px auto; }
 
 /* ---------- map ---------- */
@@ -232,8 +253,9 @@ button { font: inherit; color: inherit; }
   .detail { left: 8px; right: 8px; bottom: 8px; width: auto; max-width: none; }
   .detail .photo, .detail .note { display: none; }
   .detail .body { padding: 10px 44px 12px 14px; }
-  .detail h2 { font-size: 18px; display: inline; }
-  .detail .airline { display: inline; margin-left: 6px; font-size: 13px; }
+  .detail h2 { font-size: 18px; }
+  .detail .airline { font-size: 13px; }
+  .airline-logo.big { width: 36px; height: 36px; }
   .detail .route-big { font-size: 14px; margin-top: 4px; }
   .detail .plane { font-size: 12.5px; }
   .stats { margin-top: 8px; gap: 6px; }

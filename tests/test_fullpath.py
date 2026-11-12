@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from planespotter.budget import ApiBudget
 from planespotter.fullpath import (DONE, UNAVAILABLE, WAITING, FlightLookup, FullPathFetcher, TraceNotFound,
-                                   history_url, live_url, parse_trace, simplify, split_legs)
+                                   parse_trace, simplify, split_legs, trace_url)
 from planespotter.heat import heat_json
 from planespotter.store import Store
 
@@ -91,7 +92,7 @@ class LookupTests(unittest.TestCase):
         t = utc(2026, 11, 7, 12)
         earlier = leg(t - 5 * 3600, LAX, PDX, 120)
         pdx_lax = leg(t, PDX, LAX, 120)
-        fake = FakeAdsbLol({live_url("abc123"): trace_file(earlier + pdx_lax)})
+        fake = FakeAdsbLol({trace_url("abc123"): trace_file(earlier + pdx_lax)})
         lookup = FlightLookup(fetch=fake, clock=lambda: t + 3 * 3600)
         points, finished = lookup.flight("abc123", t + 100 * 60, t + 102 * 60)  # near LAX at the end
         self.assertTrue(finished)
@@ -101,27 +102,30 @@ class LookupTests(unittest.TestCase):
     def test_a_flight_still_in_the_air_is_not_finished(self):
         t = utc(2026, 11, 7, 12)
         so_far = leg(t, PDX, LAX, 60, land=False)
-        fake = FakeAdsbLol({live_url("abc123"): trace_file(so_far)})
+        fake = FakeAdsbLol({trace_url("abc123"): trace_file(so_far)})
         lookup = FlightLookup(fetch=fake, clock=lambda: t + 61 * 60)
         points, finished = lookup.flight("abc123", t + 30 * 60, t + 31 * 60)
         self.assertFalse(finished)
         self.assertEqual(len(points), 61)
         self.assertEqual(len(lookup.current_flight("abc123")), 61)
 
-    def test_old_flights_come_from_the_daily_archive_and_cross_midnight(self):
-        t = utc(2026, 11, 1, 23, 0)  # takes off at 23:00 UTC, lands at 01:00 the next day
-        flight = leg(t, PDX, LAX, 120)
-        day1 = [p for p in flight if p[0] < utc(2026, 11, 2)]
-        day2 = [p for p in flight if p[0] >= utc(2026, 11, 2)]
-        fake = FakeAdsbLol({
-            history_url("abc123", datetime(2026, 11, 1).date()): trace_file(day1, base=utc(2026, 11, 1)),
-            history_url("abc123", datetime(2026, 11, 2).date()): trace_file(day2, base=utc(2026, 11, 2)),
-        })
-        lookup = FlightLookup(fetch=fake, clock=lambda: utc(2026, 11, 8))
-        points, finished = lookup.flight("abc123", t + 30 * 60, t + 31 * 60)  # seen before midnight
-        self.assertTrue(finished)
-        self.assertEqual(len(points), 121)
-        self.assertTrue(points[0].ground and points[-1].ground)
+    def test_uses_adsb_lol_api_with_the_key(self):
+        self.assertEqual(trace_url("abc123"), "https://api.adsb.lol/1/trace/full/abc123")
+        seen = {}
+
+        def fake_get(url, timeout=25, headers=None):
+            seen.update(url=url, headers=headers)
+            raise TraceNotFound(url)
+
+        import planespotter.fullpath as fp
+        original = fp.get_trace_json
+        fp.get_trace_json = fake_get
+        try:
+            FlightLookup(api_key="secret-key").flight("abc123", 0, 1)
+        finally:
+            fp.get_trace_json = original
+        self.assertEqual(seen["url"], "https://api.adsb.lol/1/trace/full/abc123")
+        self.assertEqual(seen["headers"], {"x-api-key": "secret-key"})
 
     def test_unknown_aircraft(self):
         lookup = FlightLookup(fetch=FakeAdsbLol(), clock=lambda: utc(2026, 11, 8))
@@ -147,7 +151,7 @@ class FetcherTests(unittest.TestCase):
         return self.store.get_pass(self.pid)
 
     def test_a_finished_flight_is_saved_and_added_to_the_route_heat(self):
-        fetcher, _ = self.fetcher({live_url("abc123"): trace_file(leg(self.t, PDX, LAX, 120))})
+        fetcher, _ = self.fetcher({trace_url("abc123"): trace_file(leg(self.t, PDX, LAX, 120))})
         self.assertTrue(fetcher.step())
         row = self.row()
         self.assertEqual(row["full_state"], DONE)
@@ -162,7 +166,7 @@ class FetcherTests(unittest.TestCase):
 
     def test_a_flight_still_flying_is_kept_and_checked_again(self):
         so_far = leg(self.t, PDX, LAX, 115, land=False)
-        fetcher, fake = self.fetcher({live_url("abc123"): trace_file(so_far)})
+        fetcher, fake = self.fetcher({trace_url("abc123"): trace_file(so_far)})
         self.now[0] = self.t + 116 * 60 + 600  # just after it settled
         self.assertTrue(fetcher.step())
         row = self.row()
@@ -170,7 +174,7 @@ class FetcherTests(unittest.TestCase):
         self.assertTrue(json.loads(row["full_path"]))  # the part so far is already there
         self.assertEqual(self.store.heat_cells(table="route_heat"), [])  # counted only when finished
         self.assertFalse(fetcher.step())  # not due again yet
-        fake.files[live_url("abc123")] = trace_file(leg(self.t, PDX, LAX, 120))
+        fake.files[trace_url("abc123")] = trace_file(leg(self.t, PDX, LAX, 120))
         self.now[0] += 31 * 60
         fetcher.lookup.cache.clear()
         self.assertTrue(fetcher.step())
@@ -178,12 +182,34 @@ class FetcherTests(unittest.TestCase):
 
     def test_gives_up_when_there_is_no_record(self):
         fetcher, fake = self.fetcher({})
-        for _ in range(3):
+        for _ in range(2):
             self.assertTrue(fetcher.step())
             self.now[0] += 31 * 60
             fetcher.lookup.cache.clear()
         self.assertEqual(self.row()["full_state"], UNAVAILABLE)
-        self.assertEqual(len(fake.requests), 3)
+        self.assertEqual(len(fake.requests), 2)
+
+    def test_flights_older_than_a_day_are_not_looked_up(self):
+        fetcher, fake = self.fetcher({})
+        self.now[0] = self.t + 30 * 3600
+        self.assertTrue(fetcher.step())
+        self.assertEqual(self.row()["full_state"], UNAVAILABLE)
+        self.assertEqual(fake.requests, [])  # adsb.lol's API only keeps about a day
+
+    def test_stays_within_its_share_of_the_daily_budget(self):
+        with TemporaryDirectory() as tmp:
+            budget = ApiBudget(Path(tmp) / "b.db", daily_limit=100, clock=lambda: self.now[0])
+            fake = FakeAdsbLol({trace_url("abc123"): trace_file(leg(self.t, PDX, LAX, 120))})
+            clock = lambda: self.now[0]  # noqa: E731
+            fetcher = FullPathFetcher(self.cfg, self.store, FlightLookup(fetch=fake, clock=clock, budget=budget), clock=clock)
+            for _ in range(25):
+                budget.record("trace")  # whole flights get a quarter of the day: used up
+            self.assertFalse(fetcher.step())
+            self.assertEqual(fake.requests, [])
+            self.assertEqual(self.row()["full_state"], WAITING)
+            self.now[0] += 25 * 3600  # a day later the share is free again (the pass is too old now, though)
+            self.assertTrue(fetcher.step())
+            self.assertEqual(self.row()["full_state"], UNAVAILABLE)
 
     def test_backs_off_when_adsb_lol_is_busy(self):
         fetcher, fake = self.fetcher({})

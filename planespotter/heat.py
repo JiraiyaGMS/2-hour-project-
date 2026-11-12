@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from typing import Iterable
 
 from .geo import distance_miles, offset
@@ -81,7 +82,7 @@ class HeatRecorder:
         # hex -> (last time seen, cells already counted on this trip)
         self.visited: dict[str, tuple[float, set]] = {}
 
-    def record(self, planes: Iterable, previous: dict[str, tuple], now: float) -> int:
+    def record(self, planes: Iterable, previous: dict[str, tuple], now: float, max_gap: float | None = None) -> int:
         """Add this poll's planes. ``previous`` is hex -> (lat, lon, time, ...)."""
         cfg = self.cfg
         gap = cfg.pass_gap_minutes * 60
@@ -94,7 +95,7 @@ class HeatRecorder:
             if now - last_seen > gap:
                 counted = set()  # a new trip: it can count again
             prev = previous.get(ac.hex)
-            if prev and now - prev[2] <= cfg.poll_seconds * 3:
+            if prev and now - prev[2] <= (max_gap or cfg.poll_seconds * 3):
                 cells = cells_along(prev[0], prev[1], ac.lat, ac.lon)
             else:
                 cells = {cell_of(ac.lat, ac.lon)}
@@ -148,6 +149,21 @@ def heat_json(store, cfg, now: float, days: int) -> dict:
     for cx, cy, n in store.heat_cells(since_day.isoformat() if since_day else "", table="route_heat"):
         lat, lon = cell_center(cx, cy, ROUTE_DLAT)
         route_cells_out.append([round(lon, 4), round(lat, 4), n])
+    # Flights still in the air: add the part flown so far (they're counted for good once they land).
+    flying = Counter()
+    for row in store.db.execute(
+            "SELECT full_path FROM passes WHERE first_seen >= ? AND full_state = 0 AND full_path != '[]'",
+            (since_ts,)):
+        flying.update(route_cells(cfg, json.loads(row["full_path"])))
+    if flying:
+        merged = Counter({cell_of(lat, lon, ROUTE_DLAT): 0 for lon, lat, _ in route_cells_out})
+        for lon, lat, n in route_cells_out:
+            merged[cell_of(lat, lon, ROUTE_DLAT)] += n
+        merged.update(flying)
+        route_cells_out = []
+        for (cx, cy), n in merged.items():
+            lat, lon = cell_center(cx, cy, ROUTE_DLAT)
+            route_cells_out.append([round(lon, 4), round(lat, 4), n])
     mapped, waiting = store.full_path_counts(since_ts)
     return {"cells": cells, "max": max((c[2] for c in cells), default=0), "routes": routes,
             "first_day": store.first_heat_day(),
