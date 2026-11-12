@@ -72,6 +72,9 @@
     heatDays: saved.get('heatDays', 7),
     heatData: null,
     whole: null,                // the selected flight's whole path: { key, status, path, p3, p2 }
+    replay: { on: false, playing: false, t: 0, speed: 300, flights: [], day: '' },
+    chime: saved.get('chime', false),
+    chimed: new Map(),          // hex -> when we last chimed for it
     wholeAll: { flights: [], byId: new Map(), version: 0 },  // every spotted flight's whole path
     logoOK: new Set(),          // airline codes whose logo loaded
     logoBad: new Set(),         // ...and ones that have no logo
@@ -153,7 +156,7 @@
         const sinceCheck = Math.max(0, (data.time || 0) - (data.updated || data.time || 0));
         state.live = data.aircraft.map((p) => ({ ...p, fixAt: now - (sinceCheck + (p.seen_pos || 0)) * 1000 }));
         state.liveMeta = { interval: data.budget ? data.budget.interval_s : 0, paused: data.paused_s || 0,
-                           waiting: !!data.waiting };
+                           waiting: !!data.waiting, receiver: data.source === 'receiver' };
         state.liveError = null;
         state.quietNow = !!data.quiet_now;
         updateTrails();
@@ -169,6 +172,7 @@
       updateStatus();
       if (state.tab === 'live') renderList();
       renderDetail();
+      selectPending();
     }
     setTimeout(pollLive, LIVE_EVERY_MS);
   }
@@ -223,6 +227,19 @@
       if (!state.flightsLoaded) state.flights = [];
     }
     if (state.tab === 'history') renderList(); else updateHistoryView();
+    selectPending();
+  }
+
+  /** Select the flight a notification link pointed at, as soon as it has loaded. */
+  function selectPending() {
+    const want = state.pendingSelect;
+    if (!want || !map) return;
+    const found = want.kind === 'live' ? state.live.some((p) => p.hex === want.key)
+      : state.flights.some((f) => String(f.id) === want.key);
+    if (!found) return;
+    state.pendingSelect = null;
+    history.replaceState(null, '', location.pathname);
+    select(want.kind, want.key, { scroll: true });
   }
 
   function haystack(f, info) {
@@ -268,15 +285,97 @@
     if (img.tagName === 'IMG' && img.dataset.code) { state.logoBad.add(img.dataset.code); img.remove(); }
   }, true);
 
+  // ---------- your collection ----------
+  async function loadCollection() {
+    try { state.collection = await getJSON('api/collection'); } catch { /* keep what we had */ }
+    if (state.tab === 'collection') renderList();
+  }
+
+  /**
+   * A single-series column chart as inline SVG: thin columns (max 24 px) with 4 px rounded
+   * tops and square bottoms on a hairline baseline, a 2 px gap between them, and a tooltip
+   * on hover. One series, so no legend: the heading says what it shows.
+   */
+  function columnChart(values, tips, ticks) {
+    const W = 330, H = 120, top = 6, bottom = 20, plot = H - top - bottom;
+    const slot = W / values.length;
+    const bw = Math.min(24, slot - 2);
+    const max = Math.max(1, ...values);
+    let bars = '';
+    values.forEach((v, i) => {
+      const x = i * slot + (slot - bw) / 2;
+      const h = v ? Math.max(2, (v / max) * plot) : 0;
+      const y = top + plot - h;
+      const r = Math.min(4, h, bw / 2);
+      const shape = h ? `<path class="col" d="M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + bw - r}Q${x + bw},${y} ${x + bw},${y + r}V${y + h}Z"/>` : '';
+      // A full-height hit area, bigger than the column, for the tooltip.
+      bars += `<g class="slot" data-tip="${esc(tips[i])}">${shape}<rect class="hit" x="${i * slot}" y="${top}" width="${slot}" height="${plot}"/></g>`;
+    });
+    const labels = ticks.map(([i, text]) => `<text class="tick" x="${i * slot + slot / 2}" y="${H - 5}">${esc(text)}</text>`).join('');
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img">`
+      + `<line class="base" x1="0" x2="${W}" y1="${top + plot}" y2="${top + plot}"/>${bars}${labels}</svg>`
+      + '<div class="chart-tip" hidden></div></div>';
+  }
+
+  function collectionHtml() {
+    const c = state.collection;
+    if (!c) return empty('Loading your collection…');
+    if (!c.totals.planes) return empty('Nothing spotted yet. Keep planespotter running and your collection will grow.');
+    const t = c.totals;
+    const since = new Date(c.since * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+    const tile = (k, v) => `<div class="ctile"><div class="k">${esc(k)}</div><div class="v">${Number(v).toLocaleString()}</div></div>`;
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const hourTips = c.hours.map((n, h) => `${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00 · ${plural(n, 'plane')}`);
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const dayTips = c.weekdays.map((n, i) => `${days[i]} · ${plural(n, 'plane')}`);
+    const earned = c.badges.filter((b) => b.earned_at).length;
+    const badge = (b) => `<div class="cbadge${b.earned_at ? ' earned' : ''}" title="${esc(b.how)}">
+        <div class="emoji">${b.emoji}</div><div class="name">${esc(b.name)}</div>
+        <div class="how">${b.earned_at ? esc(new Date(b.earned_at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }))
+          : esc(b.progress || b.how)}</div></div>`;
+    const showAll = state.collectionAll || {};
+    const listOf = (key, rows, row) => {
+      const limit = showAll[key] ? rows.length : 8;
+      return rows.slice(0, limit).map(row).join('')
+        + (rows.length > limit ? `<button class="chip more" data-show-all="${key}">Show all ${rows.length}</button>` : '');
+    };
+    return `<div class="collection">
+      <p class="csub">Everything you've spotted since ${esc(since)}.</p>
+      <div class="ctiles">${tile('Planes', t.planes)}${tile('Airlines', t.airlines)}${tile('Aircraft types', t.types)}${tile('Countries', t.countries)}</div>
+      <h3>Badges <span>${earned} of ${c.badges.length}</span></h3>
+      <div class="cbadges">${c.badges.map(badge).join('')}</div>
+      <h3>Planes by time of day</h3>
+      ${columnChart(c.hours, hourTips, [[0, '00:00'], [6, '06:00'], [12, '12:00'], [18, '18:00']])}
+      <h3>Planes by day of the week</h3>
+      ${columnChart(c.weekdays, dayTips, days.map((d, i) => [i, d]))}
+      <h3>Airlines <span>${t.airlines}</span></h3>
+      ${listOf('airlines', c.airlines, (a) => `<div class="crow">${logo(`${a.code}1`)}<span class="cname">${esc(a.name)}</span><span class="cnum">${a.count}</span></div>`)}
+      <h3>Aircraft types <span>${t.types}</span></h3>
+      ${listOf('types', c.types, (ty) => `<div class="crow"><span class="ccode">${esc(ty.code)}</span><span class="cname">${esc(ty.name)}</span><span class="cnum">${ty.count}</span></div>`)}
+      <h3>Countries <span>${t.countries}</span></h3>
+      ${listOf('countries', c.countries, (co) => `<div class="crow"><span class="cflag">${co.flag}</span><span class="cname">${esc(co.name)}</span><span class="cnum">${co.count}</span></div>`)}
+    </div>`;
+  }
+
   // ---------- the list ----------
+  /** The route we checked against the plane's real flight, if it went over us in the last few hours. */
+  function checkedRoute(hex) {
+    const f = state.flights.find((x) => x.hex === hex && x.route_checked && Date.now() / 1000 - x.first_seen < 6 * 3600);
+    return f ? { origin: f.origin, destination: f.destination, origin_city: f.origin_city, destination_city: f.destination_city } : null;
+  }
+
+  /** "✨ A380", "🚨 7700"... for special planes. */
+  const specialBadges = (p) => (p.special || []).map((x) =>
+    `<span class="badge ${x.emergency ? 'sos' : 'special'}" title="${esc(x.text)}">${x.emergency ? '🚨' : '✨'} ${esc(x.short)}</span>`).join('');
+
   function liveItem(p) {
-    const info = infoFor(p) || {};
+    const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
     const selected = isSelected('live', p.hex) ? ' selected' : '';
     const sub = [info.airline, info.aircraft_desc || p.type].filter(Boolean).join(' · ');
     return `<button class="item${selected}" data-kind="live" data-key="${esc(p.hex)}" role="listitem">
       ${logo(p.callsign)}
       <div class="main">
-        <div class="title"><span class="callsign">${esc(label(p))}</span>${p.in_zone ? '<span class="badge">Overhead</span>' : ''}<span class="route">${esc(routeShort(info))}</span></div>
+        <div class="title"><span class="callsign">${esc(label(p))}</span>${p.in_zone ? '<span class="badge">Overhead</span>' : ''}${specialBadges(p)}<span class="route">${esc(routeShort(info))}</span></div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
       <div class="meta"><div class="alt">${fmtAlt(p.alt_ft)}</div><div class="dist">${fmtDist(p.distance_miles)} ${compass(p.bearing)}</div></div>
@@ -322,6 +421,11 @@
   function renderList() {
     const el = $('#list');
     $('#live-count').textContent = state.live.length;
+    if (state.tab === 'collection') {
+      el.innerHTML = collectionHtml();
+      render();
+      return;
+    }
     if (state.tab === 'live') {
       const items = state.live.filter((p) => matches(p, infoFor(p)));
       // Planes that went over you and are still flying, but are now too far away for the live list.
@@ -463,7 +567,7 @@
         whole = { status: data.whole_state, path: data.whole_path || [] };
       } else {
         const data = await getJSON(`api/trace?hex=${encodeURIComponent(sel.key)}`);
-        whole = { status: 'so-far', path: data.path || [] };
+        whole = { status: 'so-far', path: data.path || [], origin: data.origin || null };
       }
     } catch {
       whole = { status: 'error', path: [] };
@@ -529,7 +633,8 @@
     if (!w) return '<div class="note">Getting its whole flight…</div>';
     const n = w.path.length;
     if (sel.kind === 'live') {
-      return n > 1 ? '<div class="note">The pink line shows where it has flown so far.</div>' : '';
+      const from = w.origin ? `Took off from ${esc(place(w.origin.code, w.origin.city || w.origin.name))}. ` : '';
+      return n > 1 ? `<div class="note">${from}The pink line shows where it has flown so far.</div>` : '';
     }
     const all = state.wholeAll.byId.get(Number(sel.key));
     if (all && all.flying) {
@@ -575,12 +680,13 @@
       html = `${photo}<button class="close" aria-label="Close">×</button><div class="body">
         <div class="title-row">${logo(p.callsign, true)}<div><h2>${esc(label(p))}</h2>
         <div class="airline">${esc(info.airline || info.owner || '')}</div></div></div>
-        ${routeLong(info) ? `<div class="route-big">${esc(routeLong(info))}</div>` : ''}
+        ${routeLong({ ...info, ...(checkedRoute(p.hex) || {}) }) ? `<div class="route-big">${esc(routeLong({ ...info, ...(checkedRoute(p.hex) || {}) }))}</div>` : ''}
         <div class="plane">${esc([info.aircraft_desc || p.type, p.registration].filter(Boolean).join(' · '))}</div>
         <div class="stats">
           ${stat('Altitude', fmtAlt(p.alt_ft))}${stat('Speed', fmtSpeed(p.speed_kt))}${stat('Heading', p.heading == null ? '—' : `${compass(p.heading)} ${Math.round(p.heading)}°`)}
           ${stat('From home', `${fmtDist(p.distance_miles)} ${compass(p.bearing)}`)}${stat('Type', p.type || '—')}${stat('Squawk', p.squawk || '—')}
         </div>
+        ${(p.special || []).map((x) => `<div class="note"><strong>${x.emergency ? '🚨' : '✨'} ${esc(x.text)}</strong></div>`).join('')}
         ${thing.lost ? '<div class="note">Out of range now, showing its last position.</div>'
           : p.in_zone ? '<div class="note"><span class="badge">Overhead</span> inside your zone right now</div>' : ''}
         ${wholeNote()}
@@ -597,7 +703,7 @@
       html = `${photo}<button class="close" aria-label="Close">×</button><div class="body">
         <div class="title-row">${logo(f.callsign, true)}<div><h2>${esc(label(f))}</h2>
         <div class="airline">${esc(f.airline || f.owner || '')}</div></div></div>
-        ${routeLong(f) ? `<div class="route-big">${esc(routeLong(f))}</div>` : ''}
+        ${routeLong(f) ? `<div class="route-big">${esc(routeLong(f))}${f.route_checked ? ' <span class="checked" title="Checked against its actual flight path">✓</span>' : ''}</div>` : ''}
         <div class="plane">${esc([f.aircraft || f.type, f.registration].filter(Boolean).join(' · '))}</div>
         <div class="stats">
           ${stat(`Seen ${['Today', 'Yesterday'].includes(dayLabel(f.first_seen)) ? dayLabel(f.first_seen).toLowerCase() : dayLabel(f.first_seen)}`, fmtTime(f.first_seen))}${stat('Closest', `${fmtDist(f.closest_miles)} ${compass(f.bearing)}`)}${stat('Altitude', fmtAlt(f.closest_alt_ft))}
@@ -699,7 +805,7 @@
     else {
       const n = state.live.length;
       const over = state.live.filter((p) => p.in_zone).length;
-      text = `Live · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
+      text = `${state.liveMeta && state.liveMeta.receiver ? 'Live from your receiver' : 'Live'} · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
       const every = state.liveMeta ? state.liveMeta.interval : 0;
       if (every > 45) text += ` · updates every ${every >= 90 ? `${Math.round(every / 60)} min` : `${every} s`}`;
       if (state.quietNow) { text += ' · 🌙 quiet hours'; cls = 'quiet'; }
@@ -769,6 +875,226 @@
       center: [state.config.home.lon, state.config.home.lat], zoom: zoomFor(state.config.radius_miles),
       pitch: is3d ? 58 : 0, bearing: is3d ? -18 : 0, duration: 1000, essential: true,
     });
+  }
+
+  // ---------- look up! ----------
+  /**
+   * The plane to look for now: one over your zone, or else the next one about to cross it
+   * (flying straight on, within 5 minutes). Where to look: compass direction, and how many
+   * degrees above the horizon (a fist at arm's length is about 10 degrees).
+   */
+  function lookUpTarget(now) {
+    const { home, radius_miles: radius, home_elevation_ft: groundFt = 0 } = state.config;
+    const rad = Math.PI / 180;
+    let best = null;
+    for (const p of state.live) {
+      const [lon, lat] = livePos(p, now);
+      const miles = milesBetween(home.lat, home.lon, lat, lon);
+      const az = bearingTo(home.lat, home.lon, lat, lon);
+      let eta = null;
+      if (miles <= radius && p.in_zone) eta = 0;
+      else if (p.speed_kt && p.heading != null) {
+        const x = Math.sin(az * rad) * miles * MI, y = Math.cos(az * rad) * miles * MI;
+        const v = p.speed_kt * KT, vx = Math.sin(p.heading * rad) * v, vy = Math.cos(p.heading * rad) * v;
+        const tc = -(x * vx + y * vy) / (v * v);  // seconds until it's closest to home
+        if (tc > 0 && tc < 300 && Math.hypot(x + vx * tc, y + vy * tc) / MI <= radius) eta = tc;
+      }
+      if (eta === null) continue;
+      const height = Math.max(0, ((p.alt_ft || 0) - groundFt) * FT);
+      const up = Math.atan2(height, Math.max(1, miles * MI)) / rad;
+      if (!best || eta < best.eta || (eta === best.eta && miles < best.miles)) best = { p, miles, az, up, eta };
+    }
+    return best;
+  }
+
+  function fists(degrees) {
+    if (degrees >= 70) return 'almost straight up';
+    const n = Math.round(degrees / 5) / 2;  // nearest half fist
+    if (n < 0.5) return 'just above the horizon';
+    const whole = Math.floor(n), half = n - whole ? '½' : '';
+    return `about ${whole || ''}${half} fist${n > 1 ? 's' : ''} above the horizon`;
+  }
+
+  let lastLookUpHtml = '';
+  function renderLookUp(now) {
+    const el = $('#lookup');
+    const target = state.replay.on ? null : lookUpTarget(now);
+    if (!target) { el.hidden = true; lastLookUpHtml = ''; return; }
+    const { p, miles, az, up, eta } = target;
+    const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+    const when = eta === 0 ? 'overhead now' : eta < 60 ? `in ${Math.round(eta / 5) * 5 || 5} seconds` : `in ${Math.round(eta / 60)} min`;
+    const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
+      + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
+      <div class="what"><div class="head">Look up · <strong>${compass(az)}, ${Math.round(up)}° up</strong></div>
+      <div class="sub">${logo(p.callsign)}<span><strong>${esc(label(p))}</strong> ${esc(routeShort(info))} · ${when} · ${esc(fists(up))}</span></div></div>`;
+    if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
+    el.hidden = false;
+    el.onclick = () => select('live', p.hex);
+    // A chime when a plane is about to come over (once per plane).
+    if (state.chime && eta <= 60) {
+      const last = state.chimed.get(p.hex) || 0;
+      if (Date.now() - last > 20 * 60000) { state.chimed.set(p.hex, Date.now()); chime(); }
+    }
+  }
+
+  let audio = null;
+  function chime() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === 'suspended') audio.resume();
+      const t0 = audio.currentTime;
+      [880, 1318.5].forEach((freq, i) => {   // two soft notes, like an airport chime
+        const osc = audio.createOscillator(), gain = audio.createGain();
+        const start = t0 + i * 0.22;
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 1.1);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(start);
+        osc.stop(start + 1.2);
+      });
+    } catch { /* no sound available */ }
+  }
+
+  function setChime(on) {
+    state.chime = on;
+    saved.set('chime', on);
+    const b = $('#btn-chime');
+    b.setAttribute('aria-pressed', String(on));
+    b.textContent = on ? '🔔 Chime on' : '🔕 Chime';
+    if (on) chime();  // also unlocks sound in the browser, which needs a click first
+  }
+
+  // ---------- day replay ----------
+  const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const clockOf = (secs) => `${String(Math.floor(secs / 3600) % 24).padStart(2, '0')}:${String(Math.floor(secs / 60) % 60).padStart(2, '0')}`;
+
+  function openReplay() {
+    const r = state.replay;
+    r.on = true;
+    const select = $('#replay-day');
+    select.innerHTML = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      return `<option value="${isoDay(d)}">${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</option>`;
+    }).join('');
+    $('#replay').hidden = false;
+    $('#map-wrap').classList.add('replaying');
+    $('#btn-replay').setAttribute('aria-pressed', 'true');
+    if (state.selected) select(null);
+    loadReplay(select.value);
+  }
+
+  function closeReplay() {
+    Object.assign(state.replay, { on: false, playing: false });
+    $('#replay').hidden = true;
+    $('#map-wrap').classList.remove('replaying');
+    $('#btn-replay').setAttribute('aria-pressed', 'false');
+    render();
+  }
+
+  async function loadReplay(day) {
+    const r = state.replay;
+    r.day = day;
+    r.playing = false;
+    $('#replay-note').textContent = 'Loading…';
+    let data;
+    try { data = await getJSON(`api/replay?day=${day}`); } catch { $('#replay-note').textContent = 'Couldn’t load that day.'; return; }
+    r.flights = data.flights.map((f) => ({
+      ...f,
+      ts: f.path.map((q) => q[3]),
+      p3: f.path.map((q) => [q[0], q[1], (q[2] || 0) * FT]),
+      p2: f.path.map((q) => [q[0], q[1], 0]),
+    }));
+    // Start a few minutes before the first plane of the day.
+    const firsts = r.flights.map((f) => f.first_seen - data.start);
+    r.t = firsts.length ? Math.max(0, Math.min(...firsts) - 600) : 0;
+    r.playing = r.flights.length > 0;
+    updateReplayBar();
+  }
+
+  /** Where each replayed plane is at time t (seconds after midnight), and which way it's heading. */
+  function replayPlanes(t, is3d) {
+    const out = [];
+    for (const f of state.replay.flights) {
+      const ts = f.ts;
+      if (t < ts[0] || t > ts[ts.length - 1]) continue;
+      let lo = 0, hi = ts.length - 1;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ts[mid] <= t) lo = mid; else hi = mid; }
+      const a = f.path[lo], b = f.path[hi];
+      const k = ts[hi] > ts[lo] ? (t - ts[lo]) / (ts[hi] - ts[lo]) : 0;
+      const alt = (a[2] || 0) + ((b[2] || 0) - (a[2] || 0)) * k;
+      out.push({
+        f, lon: a[0] + (b[0] - a[0]) * k, lat: a[1] + (b[1] - a[1]) * k, z: is3d ? alt * FT : 0,
+        heading: bearingTo(a[1], a[0], b[1], b[0]),
+      });
+    }
+    return out;
+  }
+
+  function updateReplayBar() {
+    const r = state.replay;
+    $('#replay-slider').value = String(Math.round(r.t));
+    $('#replay-clock').textContent = clockOf(r.t);
+    $('#replay-play').textContent = r.playing ? '❚❚' : '▶';
+    $('#replay-play').setAttribute('aria-label', r.playing ? 'Pause' : 'Play');
+    const flying = replayPlanes(r.t, false).length;
+    const total = r.flights.length;
+    $('#replay-note').textContent = total
+      ? `${flying} of this day's ${total} spotted flight${total === 1 ? '' : 's'} in the air`
+      : 'No planes were spotted on this day.';
+  }
+
+  function replayLayers(is3d) {
+    const r = state.replay;
+    const now = replayPlanes(r.t, is3d);
+    return [
+      new deck.TripsLayer({
+        id: 'replay-trails', data: r.flights, getPath: (f) => (is3d ? f.p3 : f.p2), getTimestamps: (f) => f.ts,
+        getColor: a(C.accent, 230), widthMinPixels: 2.5, trailLength: 1800, fadeTrail: true,
+        currentTime: r.t, capRounded: true, jointRounded: true, updateTriggers: { getPath: is3d },
+      }),
+      new deck.IconLayer({
+        id: 'replay-planes', data: now, ...PLANE_ICON, getIcon: () => 'plane',
+        getPosition: (d) => [d.lon, d.lat, d.z], getAngle: (d) => -d.heading, getSize: 26,
+        sizeUnits: 'pixels', billboard: false, getColor: a(C.accent, 255),
+      }),
+      map.getZoom() >= 8 ? new deck.TextLayer({
+        id: 'replay-labels', data: now, getPosition: (d) => [d.lon, d.lat, d.z], getText: (d) => d.f.callsign,
+        getPixelOffset: [0, -22], getSize: 11, getColor: a(C.ink, 255), fontWeight: 600,
+        background: true, getBackgroundColor: a(C.panel, 200), backgroundPadding: [5, 2],
+        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
+      }) : null,
+    ];
+  }
+
+  /** Your zone and your house: drawn in every mode. */
+  function baseLayers() {
+    const { home, radius_miles: radius } = state.config;
+    return [
+      new deck.PolygonLayer({
+        id: 'zone', data: [{ polygon: state.zone }], getPolygon: (d) => d.polygon,
+        filled: true, stroked: true, getFillColor: a(C.accent, dark ? 20 : 26), getLineColor: a(C.accent, 230),
+        lineWidthUnits: 'pixels', getLineWidth: 2, parameters: GROUND,
+      }),
+      new deck.TextLayer({
+        id: 'zone-label', data: [{ pos: destination(home.lat, home.lon, 0, radius * MI), text: `${radius} mi` }],
+        getPosition: (d) => d.pos, getText: (d) => d.text, getSize: 12, getColor: a(C.accent, 255),
+        fontWeight: 700, getPixelOffset: [0, -10], background: true, getBackgroundColor: a(C.panel, 210),
+        backgroundPadding: [5, 2], fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
+      }),
+      new deck.ScatterplotLayer({
+        id: 'home', data: [home], getPosition: (h) => [h.lon, h.lat], getRadius: 6, radiusUnits: 'pixels',
+        getFillColor: a(C.ink, 255), stroked: true, getLineColor: a(C.accent, 255), lineWidthUnits: 'pixels', getLineWidth: 3,
+      }),
+      new deck.TextLayer({
+        id: 'home-label', data: [home], getPosition: (h) => [h.lon, h.lat], getText: (h) => h.name,
+        getSize: 12, getColor: a(C.ink, 255), getPixelOffset: [0, 16], fontWeight: 700,
+        background: true, getBackgroundColor: a(C.panel, 200), backgroundPadding: [5, 2],
+        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
+      }),
+    ];
   }
 
   let wholeMemo = { key: '' };
@@ -853,12 +1179,14 @@
       if (pos) wholePath = [...wholePath, [pos.lon, pos.lat, z(pos.alt_ft)]];
     }
 
+    if (state.replay.on) {
+      overlay.setProps({ layers: [...baseLayers(), ...replayLayers(is3d)].filter(Boolean) });
+      return;
+    }
+
+    const base = baseLayers();
     const layers = [
-      new deck.PolygonLayer({
-        id: 'zone', data: [{ polygon: state.zone }], getPolygon: (d) => d.polygon,
-        filled: true, stroked: true, getFillColor: a(C.accent, dark ? 20 : 26), getLineColor: a(C.accent, 230),
-        lineWidthUnits: 'pixels', getLineWidth: 2, parameters: GROUND,
-      }),
+      base[0],
       state.heat && state.heatData && (state.heatData.route_cells || []).length ? new deck.HeatmapLayer({
         id: 'heat-routes', data: state.heatData.route_cells, getPosition: (c) => [c[0], c[1]], getWeight: (c) => c[2],
         radiusPixels: heatRadiusPixels(4440, 12, 140), intensity: 1.3, threshold: 0.03, opacity: dark ? 0.8 : 0.65,
@@ -874,12 +1202,7 @@
         extruded: true, wireframe: true, getElevation: ceiling * FT, material: false,
         getFillColor: a(C.accent, 16), getLineColor: a(C.accent, 90),
       }) : null,
-      new deck.TextLayer({
-        id: 'zone-label', data: [{ pos: destination(home.lat, home.lon, 0, radius * MI), text: `${radius} mi` }],
-        getPosition: (d) => d.pos, getText: (d) => d.text, getSize: 12, getColor: a(C.accent, 255),
-        fontWeight: 700, getPixelOffset: [0, -10], background: true, getBackgroundColor: a(C.panel, 210),
-        backgroundPadding: [5, 2], fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
-      }),
+      base[1],
 
       // Whole flights of planes that came over: takeoff to landing, or to where they are now.
       new deck.PathLayer({
@@ -943,16 +1266,7 @@
       }) : null,
 
       // Home.
-      new deck.ScatterplotLayer({
-        id: 'home', data: [home], getPosition: (h) => [h.lon, h.lat], getRadius: 6, radiusUnits: 'pixels',
-        getFillColor: a(C.ink, 255), stroked: true, getLineColor: a(C.accent, 255), lineWidthUnits: 'pixels', getLineWidth: 3,
-      }),
-      new deck.TextLayer({
-        id: 'home-label', data: [home], getPosition: (h) => [h.lon, h.lat], getText: (h) => h.name,
-        getSize: 12, getColor: a(C.ink, 255), getPixelOffset: [0, 16], fontWeight: 700,
-        background: true, getBackgroundColor: a(C.panel, 200), backgroundPadding: [5, 2],
-        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
-      }),
+      ...base.slice(2),
 
       // Live planes: trails, drop lines to the ground, shadows, the planes, labels.
       new deck.PathLayer({
@@ -993,8 +1307,20 @@
   }
 
   let lastFrame = 0;
+  let lastReplayBar = 0;
+  let lastLookUp = 0;
   function animate(ts) {
-    if (!document.hidden && ts - lastFrame > 50) { render(); lastFrame = ts; }
+    if (!document.hidden && ts - lastFrame > 50) {
+      const r = state.replay;
+      if (r.on && r.playing) {
+        r.t = Math.min(86400, r.t + ((ts - lastFrame) / 1000) * r.speed);
+        if (r.t >= 86400) r.playing = false;
+        if (ts - lastReplayBar > 250) { updateReplayBar(); lastReplayBar = ts; }
+      }
+      render();
+      if (ts - lastLookUp > 500 && state.config) { renderLookUp(performance.now()); lastLookUp = ts; }
+      lastFrame = ts;
+    }
     requestAnimationFrame(animate);
   }
 
@@ -1013,10 +1339,12 @@
     saved.set('tab', tab);
     for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
     $('#history-filters').hidden = tab !== 'history';
+    $('#tools').hidden = tab === 'collection';
     state.listLimit = LIST_PAGE;
     $('#list').scrollTop = 0;
     renderList();
     if (tab === 'history') loadFlights();
+    if (tab === 'collection') loadCollection();
     loadWholeAll();
   }
 
@@ -1040,9 +1368,28 @@
     $('#sort').value = state.sort;
     $('#sort').addEventListener('change', (e) => { state.sort = e.target.value; saved.set('sort', state.sort); renderList(); });
     $('#list').addEventListener('click', (e) => {
+      const all = e.target.closest('[data-show-all]');
+      if (all) { state.collectionAll = { ...(state.collectionAll || {}), [all.dataset.showAll]: true }; renderList(); return; }
       if (e.target.closest('[data-action="more"]')) { state.listLimit += LIST_PAGE; renderList(); return; }
       const item = e.target.closest('.item');
       if (item) select(item.dataset.kind, item.dataset.key);
+    });
+    $('#list').addEventListener('mousemove', (e) => {
+      const slot = e.target.closest('.slot');
+      const chart = e.target.closest('.chart');
+      for (const tip of document.querySelectorAll('.chart-tip')) if (!chart || !chart.contains(tip)) tip.hidden = true;
+      if (!chart) return;
+      const tip = chart.querySelector('.chart-tip');
+      for (const s of chart.querySelectorAll('.slot.on')) s.classList.remove('on');
+      if (!slot) { tip.hidden = true; return; }
+      slot.classList.add('on');
+      const box = chart.getBoundingClientRect();
+      tip.textContent = slot.dataset.tip;
+      tip.hidden = false;
+      tip.style.left = `${Math.min(box.width - tip.offsetWidth, Math.max(0, e.clientX - box.left - tip.offsetWidth / 2))}px`;
+    });
+    $('#list').addEventListener('mouseleave', () => {
+      for (const tip of document.querySelectorAll('.chart-tip')) tip.hidden = true;
     });
     $('#detail').addEventListener('click', (e) => {
       if (e.target.closest('.close')) select(null);
@@ -1068,6 +1415,23 @@
     $('#btn-2d').addEventListener('click', () => setMode('2d'));
     $('#btn-home').addEventListener('click', goHome);
     $('#btn-heat').addEventListener('click', () => setHeat(!state.heat));
+    $('#btn-chime').addEventListener('click', () => setChime(!state.chime));
+    if (state.chime) { $('#btn-chime').setAttribute('aria-pressed', 'true'); $('#btn-chime').textContent = '🔔 Chime on'; }
+    $('#btn-replay').addEventListener('click', () => (state.replay.on ? closeReplay() : openReplay()));
+    $('#replay-close').addEventListener('click', closeReplay);
+    $('#replay-play').addEventListener('click', () => {
+      const r = state.replay;
+      if (r.t >= 86400) r.t = 0;
+      r.playing = !r.playing;
+      updateReplayBar();
+    });
+    $('#replay-day').addEventListener('change', (e) => loadReplay(e.target.value));
+    $('#replay-speed').addEventListener('change', (e) => { state.replay.speed = Number(e.target.value); });
+    $('#replay-slider').addEventListener('input', (e) => {
+      state.replay.t = Number(e.target.value);
+      state.replay.playing = false;
+      updateReplayBar();
+    });
     $('#heat-days').addEventListener('change', (e) => {
       state.heatDays = Number(e.target.value);
       saved.set('heatDays', state.heatDays);
@@ -1119,10 +1483,15 @@
     map.on('load', () => { addBuildings(); setMode(state.mode, false); });
     map.on('click', onMapClick);
 
+    // Opened from a phone notification: ?flight=<id> (a spotted flight) or ?plane=<hex> (live).
+    const params = new URLSearchParams(location.search);
+    if (params.get('flight')) { state.pendingSelect = { kind: 'history', key: params.get('flight') }; state.tab = 'history'; }
+    else if (params.get('plane')) state.pendingSelect = { kind: 'live', key: params.get('plane').toLowerCase() };
     setTab(state.tab);
     pollLive();
     if (state.tab !== 'history') loadFlights();
     setInterval(() => { if (!document.hidden) loadWholeAll(); }, 30000);
+    setInterval(() => { if (!document.hidden && state.tab === 'collection') loadCollection(); }, 120000);
     setInterval(() => { if (!document.hidden) loadFlights(); }, HISTORY_EVERY_MS);
     renderHeatPanel();
     loadHeat();

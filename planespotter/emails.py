@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from html import escape
@@ -94,6 +95,21 @@ def _stat(name: str, value: str) -> str:
     )
 
 
+def field(p, name: str, default=None):
+    """p[name] for a database row or a dict, or ``default`` if it has no such field."""
+    try:
+        return p[name]
+    except (KeyError, IndexError):
+        return default
+
+
+def highlights(p) -> list[str]:
+    """Lines like "✨ First Qantas flight you've spotted" or "🚨 Emergency (7700)"."""
+    notes = list(field(p, "highlights", None) or [])
+    notes += [f"✨ {f}" for f in json.loads(field(p, "firsts", "[]") or "[]")]
+    return notes
+
+
 def _plane_card(p, cfg: Config) -> str:
     heading = f" heading {compass(p['track'])}" if p["track"] is not None else ""
     speed = f"{round(p['speed_kt'])} kt{heading}" if p["speed_kt"] is not None else heading.strip() or "—"
@@ -111,6 +127,8 @@ def _plane_card(p, cfg: Config) -> str:
         lines.append(f'<div style="font-size:16px;margin-top:10px">{escape(route(p))}</div>')
     if details:
         lines.append(f'<div style="font-size:13px;color:{MUTED};margin-top:4px">{escape(details)}</div>')
+    for note in highlights(p):
+        lines.append(f'<div style="font-size:14px;font-weight:600;margin-top:8px">{escape(note)}</div>')
     stats = (
         _stat("Distance", f"{fmt_dist(p['closest_miles'])} {compass(p['closest_bearing'])}")
         + _stat("Altitude", fmt_alt(p["closest_alt_ft"]))
@@ -129,6 +147,38 @@ def _plane_card(p, cfg: Config) -> str:
         f'style="border:1px solid {LINE};border-radius:10px;border-collapse:separate;margin:0 0 12px">'
         f'<tr><td style="padding:16px">{header}{stats}{link}</td></tr></table>'
     )
+
+
+def special_email(items: list[dict], cfg: Config) -> Email:
+    """An email about special planes nearby: emergencies, military, A380s, helicopters overhead."""
+    cards, text_lines = [], []
+    for it in items:
+        ac, info = it["ac"], it["info"]
+        p = {
+            "callsign": ac.callsign, "registration": ac.registration, "hex": ac.hex,
+            "airline": info.airline or info.owner, "origin": info.origin, "origin_city": info.origin_city,
+            "destination": info.destination, "destination_city": info.destination_city,
+            "aircraft_desc": info.aircraft_desc, "type_code": ac.type_code, "photo_url": info.photo_url,
+            "closest_miles": it["distance"], "closest_bearing": it["bearing"], "closest_alt_ft": ac.alt_ft,
+            "speed_kt": ac.speed_kt, "track": ac.track,
+            "highlights": [f"{'🚨' if emergency else '✨'} {text}" for _, text, emergency in it["reasons"]],
+        }
+        cards.append(_plane_card(p, cfg))
+        text_lines += [label(p) + (f" — {p['airline']}" if p["airline"] else ""), *[f"  {h}" for h in p["highlights"]],
+                       f"  {fmt_dist(it['distance'])} {compass(it['bearing'])} of {cfg.home_name}, {fmt_alt(ac.alt_ft)}",
+                       f"  Track: {track_url(ac.hex)}", ""]
+    emergency = any(r[2] for it in items for r in it["reasons"])
+    first = items[0]
+    if len(items) == 1:
+        reason = first["reasons"][0][1]
+        subject = (f"{'🚨' if emergency else '✨'} {reason}: {first['ac'].label}, "
+                   f"{fmt_dist(first['distance'])} {compass(first['bearing'])} of {cfg.home_name}")
+    else:
+        kinds = ", ".join(dict.fromkeys(r[1] for it in items for r in it["reasons"]))
+        subject = f"{'🚨' if emergency else '✨'} {len(items)} special planes near {cfg.home_name}: {kinds}"
+    intro = "Something worth looking up for, within the live map's range"
+    body = f'<p style="font-size:14px;color:{MUTED};margin:0 0 14px">{escape(intro)}</p>' + "".join(cards)
+    return Email(subject=subject, text="\n".join([intro, ""] + text_lines), html=_page(subject, body))
 
 
 def alert_email(passes: list[sqlite3.Row], cfg: Config) -> Email:
@@ -162,6 +212,7 @@ def alert_email(passes: list[sqlite3.Row], cfg: Config) -> Email:
             f"  {fmt_dist(p['closest_miles'])} {compass(p['closest_bearing'])} of {cfg.home_name}, "
             f"{fmt_alt(p['closest_alt_ft'])}"
         )
+        text_lines.extend(f"  {h}" for h in highlights(p))
         text_lines.append(f"  Track: {track_url(p['hex'])}")
         text_lines.append("")
     return Email(subject=subject, text="\n".join(text_lines), html=_page(subject, body))

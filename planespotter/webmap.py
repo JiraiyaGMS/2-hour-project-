@@ -17,14 +17,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from .adsb import Aircraft, LiveFeed, Lookup, PositionLookup, SharedFeed
+from .adsb import (Aircraft, FeedWithReceiver, LiveFeed, Lookup, PositionLookup, ReceiverFeed,
+                   SharedFeed)
+from .airports import airports, route_from_path
 from .budget import ApiBudget
+from .collection import build_collection
 from .config import Config
 from .geo import bearing_deg, distance_miles, miles_to_nm, offset
 from .heat import backfill as backfill_heat
 from .heat import heat_json
 from .fullpath import WAITING, FlightLookup, Point, as_path, simplify
 from .logos import LogoCache
+from .specials import short_label, special_reasons
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -58,6 +62,8 @@ def plane_json(cfg: Config, ac: Aircraft) -> dict[str, Any]:
         "seen_pos": ac.seen_pos, "distance_miles": round(dist, 2),
         "bearing": round(bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)),
         "in_zone": in_zone(cfg, dist, ac.alt_ft),
+        "special": [{"text": text, "short": short_label(key, text), "emergency": emergency}
+                    for key, text, emergency in special_reasons(ac, dist, cfg)],
     }
 
 
@@ -81,6 +87,7 @@ def pass_json(cfg: Config, row) -> dict[str, Any]:
         "destination": row["destination"], "destination_city": row["destination_city"],
         "aircraft": row["aircraft_desc"], "owner": row["owner"], "photo_url": row["photo_url"],
         "alerted": bool(row["alerted"]), "quiet": cfg.in_quiet_hours(row["first_seen"]),
+        "route_checked": bool(row["route_checked"]),
     }
 
 
@@ -89,10 +96,22 @@ def make_budget(cfg: Config) -> ApiBudget:
     return ApiBudget(cfg.db_path, cfg.adsb_daily_limit, cfg.poll_seconds)
 
 
-def shared_feed(cfg: Config, budget: ApiBudget | None = None) -> SharedFeed:
-    """The live feed used by both the watcher and the map (one request serves both)."""
+def shared_feed(cfg: Config, budget: ApiBudget | None = None):
+    """The live feed used by both the watcher and the map (one request serves both).
+
+    With your own receiver, that comes first, and adsb.lol is only the backup."""
     view = miles_to_nm(cfg.view_radius_miles) if cfg.map_enabled else 0
-    return SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), min_radius_nm=view)
+    adsb_lol = SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), min_radius_nm=view)
+    if cfg.receiver_url:
+        return FeedWithReceiver(ReceiverFeed(cfg.receiver_url), adsb_lol)
+    return adsb_lol
+
+
+def home_elevation_ft(cfg: Config) -> int:
+    """Roughly how high home is above sea level (the nearest airport's elevation), so we can
+    say how high up in the sky to look. Planes report their height above sea level."""
+    airport = airports().nearest(cfg.home_lat, cfg.home_lon, max_km=40)
+    return airport.elevation_ft if airport else 0
 
 
 class LiveCache:
@@ -123,7 +142,8 @@ def start_feed_poller(cfg: Config, feed: SharedFeed, budget: ApiBudget) -> threa
     def run():
         last = 0.0
         while True:
-            if time.time() - last >= budget.poll_interval():
+            pace = cfg.poll_seconds if getattr(feed, "uses_receiver", False) else budget.poll_interval()
+            if time.time() - last >= pace:
                 last = time.time()
                 try:
                     feed.aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(cfg.view_radius_miles))
@@ -159,8 +179,12 @@ class MapApp:
             self.budget.mark_viewing()  # someone's watching: check more often for a while
         data = self.live.get()
         paused = self.feed.paused_for() if hasattr(self.feed, "paused_for") else 0
-        return {**data, "paused_s": round(paused),
-                "budget": self.budget.status() if self.budget else None}
+        receiver = getattr(self.feed, "uses_receiver", False)
+        budget = self.budget.status() if self.budget else None
+        if receiver and budget:
+            budget["interval_s"] = self.cfg.poll_seconds
+        return {**data, "paused_s": round(paused), "budget": budget,
+                "source": "receiver" if receiver else "adsb.lol"}
 
     def store(self) -> Store:
         """SQLite connections can't be shared between threads, so each gets its own."""
@@ -176,6 +200,7 @@ class MapApp:
             "view_radius_miles": cfg.view_radius_miles,
             "max_altitude_ft": cfg.max_altitude_ft,
             "quiet_hours": [t.strftime("%H:%M") for t in cfg.quiet_hours] if cfg.quiet_hours else None,
+            "home_elevation_ft": home_elevation_ft(cfg),
         }
 
     def flights_json(self, days: float) -> dict[str, Any]:
@@ -238,6 +263,27 @@ class MapApp:
             out.append(f)
         return {"flights": out}
 
+    def replay_json(self, day: str) -> dict[str, Any]:
+        """Every spotted flight of one local day, with timed paths, for the replay."""
+        from datetime import date as _date, timedelta
+        d = _date.fromisoformat(day)
+        start, end = self.cfg.day_start(d), self.cfg.day_start(d + timedelta(days=1))
+        flights = []
+        for r in self.store().passes_between(start, end):
+            path = json.loads(r["full_path"] or "[]")
+            if len(path) < 2:
+                path = json.loads(r["path"] or "[]")  # no whole flight yet: the part near home
+            if len(path) < 2:
+                continue
+            flights.append({
+                "id": r["id"], "hex": r["hex"], "callsign": r["callsign"] or r["registration"] or r["hex"].upper(),
+                "airline": r["airline"], "origin": r["origin"], "destination": r["destination"],
+                "first_seen": r["first_seen"],
+                # [lon, lat, alt_ft, seconds after the start of the day]
+                "path": [[p[1], p[0], p[2], round(p[3] - start)] for p in path],
+            })
+        return {"day": day, "start": start, "end": end, "flights": flights}
+
     def trace_json(self, hex_code: str) -> dict[str, Any]:
         """The flight a live plane is on, from takeoff until now."""
         hex_code = "".join(c for c in hex_code.lower() if c in "0123456789abcdef")[:6]
@@ -248,7 +294,11 @@ class MapApp:
         except (OSError, ValueError) as exc:
             log.info("couldn't get the flight so far for %s: %s", hex_code, exc)
             points = []
-        return {"path": as_path(simplify(points)) if points else []}
+        if not points:
+            return {"path": []}
+        origin, _ = route_from_path(as_path(points[:1]), landed=False)
+        return {"path": as_path(simplify(points)),
+                "origin": {"code": origin.code, "city": origin.city, "name": origin.name} if origin else None}
 
     def info_json(self, query: dict[str, str]) -> dict[str, Any]:
         try:
@@ -302,6 +352,10 @@ def make_handler(app: MapApp):
                         self.send(200, png, "image/png", cache="max-age=604800")
                     else:
                         self.send(404, b"", "image/png", cache="max-age=86400")
+                elif url.path == "/api/replay":
+                    self.send_json(app.replay_json(query.get("day", "")))
+                elif url.path == "/api/collection":
+                    self.send_json(build_collection(app.store(), app.cfg))
                 elif url.path == "/api/whole":
                     self.send_json(app.whole_json(float(query.get("days", "1") or 1)))
                 elif url.path == "/api/flight":

@@ -4,17 +4,30 @@ Get an email whenever a plane flies over your house, plus a sky report
 every morning with the last 24 hours of planes and the flights expected
 overhead today, and a live 3D/2D map of the sky around you.
 
-- **Alerts:** callsign, airline, route (e.g. *Singapore (SIN) → Los Angeles (LAX)*),
-  aircraft type, a photo, altitude, distance, and a link to follow it live.
+- **Alerts** by email and on your phone: callsign, airline logo, the route
+  it's *really* flying (checked against its actual flight path), aircraft
+  type, a photo, altitude, distance, and a link to follow it live.
+- **Special planes:** separate alerts for emergencies, military aircraft,
+  A380s and 747s, helicopters right overhead, and every airline or aircraft
+  type you've never spotted before.
 - **Quiet hours:** no alerts overnight. Those planes show up in the
   morning report instead, marked 🌙.
 - **Daily report:** the last 24 hours of planes with stats (busiest hour,
   lowest, closest, top airlines), and a forecast of today's regular flights
   with their usual times.
+- **Weekly email:** your week of planes, the rarest one, new additions to
+  your collection, the busiest routes and airlines.
 - **Live map:** a 3D map (tilt and spin it, with buildings) or a flat 2D
   one, showing your zone, every plane nearby at its real altitude, and a
   searchable list of everything that has flown over. It runs on your Mac,
   so nothing is published, and your phone can open it too.
+- **Look up!** On the map, a card points to where in the sky to look for
+  the plane coming over: which way to face and how high, with an optional
+  chime.
+- **Your collection** of airlines, aircraft types and countries, with
+  badges and charts, and a **replay** of any day's traffic as a time-lapse.
+- **Your own receiver** (optional): plug in a cheap ADS-B radio for
+  unlimited, real-time data.
 - Free data and no API keys. Nothing extra to install besides Python.
 
 ---
@@ -91,12 +104,16 @@ It asks you:
 
    You can leave the email blank to try everything out first. Emails are
    then saved as files in `planespotter/outbox` instead of being sent.
-8. **An adsb.lol key** (optional). Press Return to skip; see
+8. **Phone notifications** (optional). Answer **y** and follow
+   [Phone notifications](#phone-notifications) below.
+9. **An adsb.lol key** (optional). Press Return to skip; see
    [adsb.lol's daily limit](#adsblols-daily-limit-and-a-free-key) below for
    why you might want one.
+10. **Your own receiver** (optional). Press Return to skip; see
+    [Build your own receiver](#build-your-own-receiver-optional).
 
-At the end it offers to show the planes near you right now and to send a
-test email. Say yes to both.
+At the end it offers to show the planes near you right now, send a test
+email, and send a test phone notification. Say yes to all of them.
 
 ### 6. Start watching
 
@@ -179,6 +196,24 @@ browser on your Mac.
   - The panel also lists the most common routes over your zone; click one
     to see those flights.
 
+- **Look up!** When a plane is over your zone, or about to cross it, a card
+  at the top of the map says which way to face and how high to look
+  (*NE, 35° up*, or "about 3½ fists above the horizon": a fist at arm's
+  length is about 10°), and how long until it's overhead. Tap it to select
+  the plane. Turn on **🔔 Chime** (under the planespotter name) to hear a soft chime about a
+  minute before each plane comes over. It works while the map is open.
+- **✨ and 🚨 badges** mark special planes in the list: an A380, a military
+  aircraft, a helicopter overhead, or an emergency.
+- **Collection** (third tab) is everything you've ever spotted: totals,
+  airlines with their logos, aircraft types, countries (from the planes'
+  registrations), the times of day and days of the week planes come over,
+  and 17 badges to earn (*Superjumbo*, *Night owl*, *Thousand club*...).
+- **🕒 Replay** (top right) plays back a whole day of spotted flights as a
+  time-lapse: pick the day and speed, drag the slider to any time.
+- **Routes with a ✓** have been checked against the plane's real flight:
+  the airport it actually took off from (and landed at), not just what a
+  route database guessed from the flight number.
+
 **On your phone:** when planespotter starts, it prints a second address
 like `http://192.168.1.23:8765`. Open that on your phone while it's on
 the same Wi-Fi. Add it to your home screen to use it like an app.
@@ -194,6 +229,115 @@ map off, or to keep it to this Mac only, see the *Live map* settings in
 [`.env.example`](.env.example).
 
 ---
+
+## Phone notifications
+
+Alerts can go to your phone through **ntfy**, a free app with no account
+needed. Tapping a notification opens the live map on that plane (when
+your phone is on your home Wi-Fi).
+
+1. Run `python3 -m planespotter setup`, press Return through the questions
+   you've already answered, and answer **y** to *Send alerts to your
+   phone?*. It shows a topic name like `planespotter-k3m9x2q7w4c8a1`.
+2. On your phone, install **ntfy** from the App Store or Google Play.
+3. Open ntfy, tap **+** (*Subscribe to topic*), type the topic name exactly,
+   and tap **Subscribe**. Leave the server as `ntfy.sh`.
+4. On iPhone, allow notifications when it asks.
+5. Back in Terminal, send a test:
+
+   ```bash
+   python3 -m planespotter test-push
+   ```
+
+   A notification should arrive within a few seconds.
+
+Anyone who knows your topic name could read your alerts, which is why it's
+long and random. Keep it to yourself; the alerts never say where you live.
+
+## Special planes
+
+Special-plane alerts go out by email and phone, at most once every 6 hours
+per plane, and not during quiet hours:
+
+- **🚨 Emergencies:** a plane squawking 7700 (emergency), 7600 (radio
+  failure) or 7500 (hijack), anywhere on the map (about 15 miles).
+- **Military aircraft** anywhere on the map.
+- **Rare and huge types** anywhere on the map: A380, 747, An-124,
+  Dreamlifter, Beluga, C-5 Galaxy, B-52 and more. Change the list with
+  `SPECIAL_TYPES` in `.env`.
+- **Helicopters** right over your zone.
+- **✨ Firsts:** the first time an airline or aircraft type comes over your
+  zone, its normal alert says so. These start after a few days of
+  watching, otherwise everything would be a first.
+
+To see what one looks like, send a sample:
+
+```bash
+python3 -m planespotter test-special
+```
+
+Turn them off with `SPECIAL_ALERTS=false` (or just the helicopters with
+`SPECIAL_HELICOPTERS=false`) in `.env`.
+
+## The weekly email
+
+Every Sunday at the daily-report time you get a summary of the week:
+total planes compared with the week before, the busiest day and hour, the
+lowest plane, the rarest plane, new additions to your collection, special
+planes, and the busiest routes and airlines. Send one now to see it:
+
+```bash
+python3 -m planespotter weekly
+```
+
+Change the day with `WEEKLY_DAY` (e.g. `WEEKLY_DAY=fri`), or turn it off
+with `WEEKLY_REPORT=false`.
+
+## Build your own receiver (optional)
+
+Planes broadcast their position on 1090 MHz, and a cheap radio can pick it
+up directly. With your own receiver, planespotter gets every plane in
+range instantly and without limits (checks every 5 seconds), and you can
+share the data with adsb.lol for their 7,200-a-day feeder key.
+
+**What you need (about $60–120):**
+
+- A **Raspberry Pi 4 or 5** (or Pi 3B+), its power supply, and a
+  **microSD card** (16 GB or more).
+- An **ADS-B USB radio** tuned for 1090 MHz, e.g. the *FlightAware Pro Stick
+  Plus* or *Nooelec NESDR SMArt*.
+- A **1090 MHz antenna.** The one in the box works; a better one near a
+  window, or outside and high up, sees much further.
+
+**Set it up (about 30 minutes):**
+
+1. Go to <https://adsb.im>, download the image for your Pi, and write it to
+   the microSD card with **Raspberry Pi Imager** (choose *Use custom* and
+   pick the downloaded file).
+2. Put the card in the Pi, plug in the radio and antenna, connect the Pi to
+   your router with a network cable (or set up Wi-Fi as adsb.im
+   explains), and power it on.
+3. After a few minutes, open <http://adsb-feeder.local> on your Mac and
+   follow its setup: enter your location, and tick **adsb.lol** in the
+   list of places to share data with.
+4. Check it's working: <http://adsb-feeder.local:8080> shows a map of
+   the planes your receiver can see.
+5. Tell planespotter about it: run `python3 -m planespotter setup`, press
+   Return through the earlier questions, and at **Your own ADS-B receiver**
+   enter:
+
+   ```
+   http://adsb-feeder.local:8080/data/aircraft.json
+   ```
+
+   Setup checks it can read it, and says how many planes it can see.
+6. Restart planespotter. The map's status now says *Live from your
+   receiver*.
+
+If the receiver ever stops answering, planespotter falls back to adsb.lol
+on its own until it's back. For the feeder key, ask adsb.lol
+(<https://www.adsb.lol/request>) once your receiver has been feeding for a
+while, then add it in setup with `ADSB_DAILY_LIMIT=7200` in `.env`.
 
 ## adsb.lol's daily limit (and a free key)
 
@@ -235,6 +379,10 @@ carries on by itself once adsb.lol allows more requests.
 | `CERTIFICATE_VERIFY_FAILED` | Open **Finder → Applications → Python 3.x** and double-click **Install Certificates.command**. Then try again. |
 | `Username and Password not accepted` | The app password is wrong. Make a new one (step 5) and run `setup` again. |
 | No emails arriving | Look in your spam folder, and run `python3 -m planespotter test-email`. |
+| No phone notifications | Run `python3 -m planespotter test-push`. Check the topic in the ntfy app matches `NTFY_TOPIC` in `.env` exactly, and that notifications are allowed for ntfy in your phone's settings. |
+| Tapping a notification doesn't open the map | It opens the map's home-Wi-Fi address, so your phone must be on your home Wi-Fi and planespotter running. |
+| No chime | Click **🔔 Chime** on the map first (browsers only play sound after a click), and keep the map open; check your volume. |
+| *Your receiver isn't answering* | Open the receiver's address in a browser to check it's on, and check the address in setup. planespotter uses adsb.lol meanwhile. |
 | The map says *adsb.lol's daily limit reached* | The free allowance is used up for now; it carries on by itself. A free key doubles it (see above). |
 | Nothing ever shows up | Run `python3 -m planespotter check` to see what's flying nearby. Try a bigger radius, and check you pasted the coordinates of your house. |
 | The map page won't load | planespotter has to be running. Check the Terminal window is still open, then reload the page. |
@@ -263,7 +411,10 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter watch` | Runs until you stop it: alerts, the daily report and the live map. Add `--open` to open the map in your browser. |
 | `python3 -m planespotter map` | Just the live map, without any emails. |
 | `python3 -m planespotter digest` | Sends the daily report right now. |
+| `python3 -m planespotter weekly` | Sends the weekly email right now. |
 | `python3 -m planespotter test-email` | Sends a test email. |
+| `python3 -m planespotter test-push` | Sends a test phone notification. |
+| `python3 -m planespotter test-special` | Sends a sample special-plane alert (email and phone). |
 
 There are more settings (how often to check, the hourly alert limit and so
 on) in [`.env.example`](.env.example). Copy any of them into your `.env`.
@@ -340,9 +491,14 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
 - **Quiet hours.** Planes are still recorded overnight, but no alerts are
   sent. The morning report covers the 24 hours since the previous report,
   so overnight planes appear there, marked 🌙.
-- **Wrong routes are dropped.** Route databases map a flight number to a
-  single leg, but many flight numbers fly several legs a day. A route is
-  only shown if the plane is actually somewhere along it.
+- **Routes are checked against the real flight.** Route databases map a
+  flight number to a single leg, and are often wrong. So planespotter looks
+  up the plane's actual flight as soon as it comes over (before the alert
+  goes out, when the daily budget allows) and uses the airport nearest
+  where it took off, and later where it landed or is about to. The
+  airport list (about 12,000 airports, from the public-domain
+  [OurAirports](https://ourairports.com/data/)) comes with planespotter;
+  `python3 scripts/update_airports.py` refreshes it.
 - **Today's forecast is learned.** Exact flight paths aren't published
   anywhere for free. But airlines fly the same flight number at about the
   same time every day, so any flight that has passed over on at least 2 of
@@ -363,7 +519,6 @@ python3 -m unittest discover -s tests
 
 ## Ideas for next time
 
-- Push notifications (ntfy.sh, Telegram) alongside email.
-- Only alert for interesting planes: helicopters, military aircraft,
-  A380s, emergency squawks (7700).
-- Busiest times of day: a chart of when planes come over.
+- Point your phone at the sky: an augmented-reality view of the planes.
+- A tiny e-ink or LED display by the window showing the next plane over.
+- Sound: hear each plane's flight number read out as it comes over.

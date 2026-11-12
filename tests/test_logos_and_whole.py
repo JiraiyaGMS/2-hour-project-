@@ -157,6 +157,19 @@ class WholeFlightTests(unittest.TestCase):
         self.assertEqual((flying["now"]["lat"], flying["now"]["alt_ft"]), (54.0, 33000))
         self.assertIn(["bbb222"], self.positions.calls)  # only the plane still in the air was looked up
 
+    def test_replay_gives_timed_paths_for_the_day(self):
+        from datetime import datetime, timezone
+        now = time.time()
+        day = datetime.fromtimestamp(now - 1800, timezone.utc).date().isoformat()  # the tests use UTC
+        data = json.loads(self.get(f"/api/replay?day={day}")[2])
+        flying = next(f for f in data["flights"] if f["id"] == self.ids["flying"])
+        self.assertEqual(flying["callsign"], "DAL2")
+        lon, lat, alt, secs = flying["path"][0]
+        self.assertEqual((lon, lat, alt), (-0.1, 51.5, 0))
+        self.assertAlmostEqual(secs, now - 1900 - data["start"], delta=2)  # seconds after midnight
+        with self.assertRaises(urllib.error.HTTPError):
+            self.get("/api/replay?day=not-a-date")
+
     def test_heat_includes_flights_still_in_the_air(self):
         store = Store(self.cfg.db_path)
         data = heat_json(store, self.cfg, time.time(), days=1)

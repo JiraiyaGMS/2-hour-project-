@@ -13,9 +13,12 @@ from typing import Callable
 from .adsb import Aircraft, LiveFeed, Lookup
 from .config import Config, fmt_clock_range
 from .digest import build_forecast, build_recap
-from .emails import alert_email, digest_email, fmt_alt, fmt_dist
-from .fullpath import start_full_path_worker
+from .emails import alert_email, digest_email, fmt_alt, fmt_dist, special_email
+from .fullpath import OverBudget, save_flight, start_full_path_worker
 from .heat import HeatRecorder
+from .weekly import build_week, weekly_email
+from .logos import airline_code
+from .specials import FIRSTS_AFTER_DAYS, special_reasons
 from .heat import backfill as backfill_heat
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, segment_min_distance_miles
 from .mailer import Mailer
@@ -38,9 +41,14 @@ class Watcher:
         mailer: Mailer,
         clock: Callable[[], float] = time.time,
         budget=None,
+        flights=None,
+        notifier=None,
     ):
         self.cfg = cfg
         self.budget = budget  # adsb.lol's daily request limit, shared with the map
+        self.flights = flights  # whole-flight lookups (None = off)
+        self.notifier = notifier  # phone notifications (None = off)
+        self.new_specials: list[dict] = []  # special planes found by poll(), sent by send_specials()
         self.interval = float(cfg.poll_seconds)  # seconds until the next check
         self.store = store
         self.feed = feed
@@ -100,10 +108,15 @@ class Watcher:
             if is_new:
                 info = self.lookup.info(ac, now)
                 self.store.set_info(pass_id, info)
+                self.check_route(pass_id, ac, now)
+                info = self.store.get_pass(pass_id)  # the route may have just been corrected
+                self.note_firsts(pass_id, ac, info, now)
                 new_passes.append(pass_id)
-                route = f" ({info.origin}→{info.destination})" if info.origin or info.destination else ""
+                route = (f" ({info['origin'] or '?'}→{info['destination'] or '?'})"
+                         if info["origin"] or info["destination"] else "")
                 log.info("overhead: %s %s %s, %s%s", ac.label, fmt_dist(hit[0]),
                          compass(hit[1]), fmt_alt(ac.alt_ft), route)
+        self.new_specials.extend(self.find_specials(planes, now))
         try:
             self.heat.record(planes, self.last_positions, now, max_gap=max(cfg.poll_seconds, self.interval) * 2.5)
         except sqlite3.Error as exc:  # the heat map is a nice-to-have; never let it stop alerts
@@ -111,6 +124,80 @@ class Watcher:
         self.last_positions = positions
         self.open_paths = {h: pid for h, pid in self.open_paths.items() if h in positions}
         return new_passes
+
+    def note_firsts(self, pass_id: int, ac: Aircraft, row, now: float) -> None:
+        """Is this the first time we've seen this airline, or this kind of plane?"""
+        started = float(self.store.get_meta("watch_started") or now)
+        if not self.cfg.special_alerts or now - started < FIRSTS_AFTER_DAYS * 86400:
+            return  # in the first few days everything would be a "first"
+        firsts = []
+        code = airline_code(ac.callsign)
+        if code and not self.store.seen_before(pass_id, airline=code):
+            firsts.append(f"First {row['airline'] or code} flight you've spotted")
+        if ac.type_code and not self.store.seen_before(pass_id, type_code=ac.type_code):
+            firsts.append(f"First {row['aircraft_desc'] or ac.type_code} you've spotted")
+        if firsts:
+            self.store.set_firsts(pass_id, firsts)
+            log.info("first! %s", "; ".join(firsts))
+
+    def find_specials(self, planes: list[Aircraft], now: float) -> list[dict]:
+        """Special planes anywhere on the live map that we haven't announced in the last 6 hours."""
+        cfg = self.cfg
+        found = []
+        for ac in planes:
+            dist = distance_miles(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)
+            if dist > cfg.view_radius_miles:
+                continue
+            fresh = [r for r in special_reasons(ac, dist, cfg)
+                     if not self.store.special_announced(ac.hex, r[0], now - 6 * 3600)]
+            if not fresh:
+                continue
+            for key, _, _ in fresh:
+                self.store.log_special(ac.hex, key, now)
+            found.append({"ac": ac, "distance": dist, "bearing": bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon),
+                          "reasons": fresh})
+            log.info("special: %s %s, %s", ac.label, fmt_dist(dist), ", ".join(r[1] for r in fresh))
+        return found
+
+    def send_specials(self, items: list[dict], now: float) -> bool:
+        if not items or not self.cfg.alerts_enabled:
+            return False
+        if self.cfg.in_quiet_hours(now):
+            log.info("quiet hours: no alert for %d special plane(s)", len(items))
+            return False
+        if self.store.specials_since(now - 3600) > 12:
+            log.warning("lots of special planes this hour; not sending more alerts for a while")
+            return False
+        items = [{**it, "info": self.lookup.info(it["ac"], now)} for it in items]
+        if self.notifier:
+            for it in items:
+                ac, info = it["ac"], it["info"]
+                reason = it["reasons"][0]
+                title = f"{'🚨' if reason[2] else '✨'} {reason[1]}: {ac.label}"
+                where = f"{fmt_dist(it['distance'])} {compass(it['bearing'])} of {self.cfg.home_name}, {fmt_alt(ac.alt_ft)}"
+                details = " · ".join(x for x in (info.airline or info.owner, info.aircraft_desc) if x)
+                self.notifier.special(title, f"{details}\n{where}" if details else where, ac.hex, ac.callsign,
+                                      emergency=reason[2], photo=info.photo_url)
+        try:
+            self.mailer.send(special_email(items, self.cfg))
+        except SEND_ERRORS as exc:
+            log.error("could not send special-plane email: %s", exc)
+            return False
+        return True
+
+    def check_route(self, pass_id: int, ac: Aircraft, now: float) -> None:
+        """Look up where the plane really came from before alerting (route databases are often wrong)."""
+        if self.flights is None or ac.hex.startswith("~"):
+            return
+        try:
+            points, finished = self.flights.flight(ac.hex, now - 120, now)
+        except OverBudget:
+            return  # the background worker will get to it
+        except FETCH_ERRORS as exc:
+            log.info("couldn't look up %s's flight: %s", ac.label, exc)
+            return
+        if points:
+            save_flight(self.store, self.cfg, pass_id, now, points, finished, tries=1, now=now)
 
     # --- alerts -------------------------------------------------------------
 
@@ -125,12 +212,14 @@ class Watcher:
             log.warning("hit MAX_ALERTS_PER_HOUR; %d plane(s) will only appear in the digest",
                         len(pass_ids))
             return False
-        email = alert_email(self.store.get_passes(pass_ids), self.cfg)
+        passes = self.store.get_passes(pass_ids)
+        pushed = self.notifier.plane_over_home(passes, self.cfg) if self.notifier else False
         try:
-            self.mailer.send(email)
+            self.mailer.send(alert_email(passes, self.cfg))
         except SEND_ERRORS as exc:
             log.error("could not send alert email: %s", exc)
-            return False
+            if not pushed:
+                return False
         self.store.mark_alerted(pass_ids)
         self.store.log_alert_email(now)
         return True
@@ -153,6 +242,32 @@ class Watcher:
             self.store.set_meta("last_digest", today.isoformat())
             return None
         return today
+
+    def weekly_due(self, now: float) -> date | None:
+        """Today's date if this is the day (and time) for the weekly email and it hasn't gone yet."""
+        cfg = self.cfg
+        if not cfg.weekly_report:
+            return None
+        local = cfg.local(now)
+        if local.weekday() != cfg.weekly_day or local.time() < cfg.digest_time:
+            return None
+        today = local.date()
+        if self.store.get_meta("last_weekly") == today.isoformat():
+            return None
+        started = float(self.store.get_meta("watch_started") or now)
+        if now - started < 2 * 86400:
+            self.store.set_meta("last_weekly", today.isoformat())  # too new to have a week to report
+            return None
+        return today
+
+    def send_weekly(self, today: date) -> bool:
+        try:
+            self.mailer.send(weekly_email(build_week(self.store, self.cfg, today), self.cfg))
+        except SEND_ERRORS as exc:
+            log.error("could not send the weekly email: %s", exc)
+            return False
+        self.store.set_meta("last_weekly", today.isoformat())
+        return True
 
     def send_digest(self, today: date) -> bool:
         recap = build_recap(self.store, self.cfg, today)
@@ -194,7 +309,8 @@ class Watcher:
         while True:
             now = self.clock()
             # Check on the budget's schedule; it speeds up while someone has the live map open.
-            interval = self.budget.poll_interval() if self.budget else float(cfg.poll_seconds)
+            receiver = getattr(self.feed, "uses_receiver", False)  # your own receiver: no daily limit
+            interval = self.budget.poll_interval() if self.budget and not receiver else float(cfg.poll_seconds)
             if failures:
                 interval = max(interval, min(300, cfg.poll_seconds * 2 ** min(failures, 4)))
             if now - last_check < interval:
@@ -202,6 +318,9 @@ class Watcher:
                 today = self.digest_due(now)
                 if today is not None:
                     self.send_digest(today)
+                week_day = self.weekly_due(now)
+                if week_day is not None:
+                    self.send_weekly(week_day)
                 continue
             last_check = now
             self.interval = interval
@@ -209,6 +328,8 @@ class Watcher:
                 new_passes = self.poll(now)
                 failures = 0
                 self.send_alerts(new_passes, now)
+                specials, self.new_specials = self.new_specials, []
+                self.send_specials(specials, now)
             except FETCH_ERRORS as exc:
                 failures += 1
                 log.warning("couldn't fetch planes (attempt %d): %s", failures, exc)

@@ -14,14 +14,16 @@
     <header class="brand">
       <div class="logo">plane<span>spotter</span></div>
       <div class="home-line"><span class="zone-dot"></span><span id="home-line">Loading…</span></div>
+      <button id="btn-chime" class="chime" aria-pressed="false" title="Play a chime when a plane is about to fly over">🔕 Chime</button>
     </header>
 
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="live" aria-selected="true">In the air <span class="count" id="live-count">0</span></button>
       <button role="tab" data-tab="history" aria-selected="false">Spotted <span class="count" id="history-count">0</span></button>
+      <button role="tab" data-tab="collection" aria-selected="false">Collection</button>
     </div>
 
-    <div class="tools">
+    <div class="tools" id="tools">
       <div class="search">
         <input id="search" type="search" autocomplete="off"
                placeholder="Search flights, airlines, airports, aircraft">
@@ -53,6 +55,9 @@
       <button id="btn-heat" class="round" title="Heat map of the busiest flight paths" aria-label="Heat map" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
       </button>
+      <button id="btn-replay" class="round" title="Replay a day" aria-label="Replay a day" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </button>
       <button id="btn-home" class="round" title="Back to home" aria-label="Back to home">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/></svg>
       </button>
@@ -62,7 +67,23 @@
       <span><i style="background:var(--blue)"></i>Nearby</span>
       <span><i style="background:var(--select)"></i>Selected</span>
     </div>
+    <section id="lookup" class="lookup" hidden aria-live="polite"></section>
     <section id="detail" class="detail" hidden></section>
+    <section id="replay" class="replay" hidden aria-label="Replay a day">
+      <div class="replay-row">
+        <button id="replay-play" class="round" aria-label="Play">▶</button>
+        <select id="replay-day" aria-label="Day"></select>
+        <select id="replay-speed" aria-label="Speed">
+          <option value="60">1 min / sec</option>
+          <option value="300" selected>5 min / sec</option>
+          <option value="900">15 min / sec</option>
+        </select>
+        <span id="replay-clock" class="replay-clock">00:00</span>
+        <button id="replay-close" class="close" aria-label="Close replay">×</button>
+      </div>
+      <input id="replay-slider" type="range" min="0" max="86400" step="30" value="0" aria-label="Time of day">
+      <div id="replay-note" class="replay-note"></div>
+    </section>
     <section id="heat-panel" class="heat-panel" hidden aria-label="Heat map">
       <div class="heat-head">
         <strong>Busiest flight paths</strong>

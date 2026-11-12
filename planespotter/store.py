@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS heat (
     PRIMARY KEY (day, cx, cy)
 );
 
+-- Collection badges, kept once earned.
+CREATE TABLE IF NOT EXISTS badges (key TEXT PRIMARY KEY, earned_at REAL NOT NULL);
+
+-- Special planes already announced (so each is announced once in a while, not every check).
+CREATE TABLE IF NOT EXISTS special_seen (hex TEXT NOT NULL, reason TEXT NOT NULL, at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS special_seen_by_hex ON special_seen (hex, reason, at);
+
 -- The same, on a coarser grid, for the whole flights of planes that crossed your zone.
 CREATE TABLE IF NOT EXISTS route_heat (
     day TEXT    NOT NULL,
@@ -97,6 +104,10 @@ class Store:
             "full_state": "INTEGER NOT NULL DEFAULT 0",  # 0 waiting, 1 done, 2 not available
             "full_next": "REAL NOT NULL DEFAULT 0",
             "full_tries": "INTEGER NOT NULL DEFAULT 0",
+            # 1 once the route has been checked against the plane's actual flight
+            "route_checked": "INTEGER NOT NULL DEFAULT 0",
+            # e.g. ["First Qantas flight you've spotted"], shown in its alert
+            "firsts": "TEXT NOT NULL DEFAULT '[]'",
         }
         for name, kind in added.items():
             if name not in columns:
@@ -230,6 +241,54 @@ class Store:
         if route_heat:
             day, cells = route_heat
             self.add_heat(day, cells, commit=False, table="route_heat")
+        self.db.commit()
+
+    def set_route(self, pass_id: int, origin, destination) -> None:
+        """Use the airports a flight really left from / arrived at (from its path)."""
+        if origin is None and destination is None:
+            return
+        row = self.get_pass(pass_id)
+        if row is None:
+            return
+        fields = {"route_checked": 1}
+        if origin is not None:
+            fields.update(origin=origin.code, origin_city=origin.city or origin.name)
+        if destination is not None:
+            fields.update(destination=destination.code, destination_city=destination.city or destination.name)
+        elif origin is not None and row["origin"] and row["origin"] != origin.code:
+            # The route database was describing a different flight, so its destination is suspect too.
+            fields.update(destination="", destination_city="")
+        self.db.execute(f"UPDATE passes SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                        (*fields.values(), pass_id))
+        self.db.commit()
+
+    # --- special planes ---------------------------------------------------------
+
+    def special_announced(self, hex_code: str, reason: str, since: float) -> bool:
+        return self.db.execute("SELECT 1 FROM special_seen WHERE hex = ? AND reason = ? AND at >= ?",
+                               (hex_code, reason, since)).fetchone() is not None
+
+    def log_special(self, hex_code: str, reason: str, at: float) -> None:
+        self.db.execute("INSERT INTO special_seen (hex, reason, at) VALUES (?, ?, ?)", (hex_code, reason, at))
+        self.db.execute("DELETE FROM special_seen WHERE at < ?", (at - 30 * 86400,))
+        self.db.commit()
+
+    def specials_since(self, since: float) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM special_seen WHERE at >= ?", (since,)).fetchone()[0]
+
+    def seen_before(self, pass_id: int, airline: str | None = None, type_code: str | None = None) -> bool:
+        """Has an earlier pass had this airline (ICAO code) / aircraft type?"""
+        if airline:
+            row = self.db.execute(
+                "SELECT 1 FROM passes WHERE id != ? AND substr(callsign, 1, 3) = ? "
+                "AND callsign GLOB '[A-Z][A-Z][A-Z][0-9]*' LIMIT 1", (pass_id, airline)).fetchone()
+        else:
+            row = self.db.execute("SELECT 1 FROM passes WHERE id != ? AND type_code = ? LIMIT 1",
+                                  (pass_id, type_code)).fetchone()
+        return row is not None
+
+    def set_firsts(self, pass_id: int, firsts: list[str]) -> None:
+        self.db.execute("UPDATE passes SET firsts = ? WHERE id = ?", (json.dumps(firsts), pass_id))
         self.db.commit()
 
     def get_pass(self, pass_id: int) -> sqlite3.Row | None:

@@ -10,12 +10,13 @@ import webbrowser
 from datetime import date
 from pathlib import Path
 
-from .adsb import LiveFeed, Lookup
+from .adsb import Lookup
 from .config import DEFAULT_ENV, Config, ConfigError, fmt_clock_range
 from .emails import fmt_alt, test_email
-from .fullpath import start_full_path_worker
+from .fullpath import FlightLookup, start_full_path_worker
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
+from .notify import PushNotifier
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
 from .webmap import MapServerError, make_budget, shared_feed, start_feed_poller, start_map_server
@@ -25,7 +26,10 @@ from .wizard import Cancelled, Wizard
 def build(cfg: Config) -> Watcher:
     store = Store(cfg.db_path)
     budget = make_budget(cfg)
-    return Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg), budget=budget)
+    flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
+               if cfg.whole_flights else None)
+    return Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
+                   budget=budget, flights=flights, notifier=PushNotifier(cfg))
 
 
 def cmd_setup(env_path: Path, args) -> int:
@@ -50,6 +54,8 @@ def cmd_setup(env_path: Path, args) -> int:
             print()
         if not cfg.dry_run and wizard.yes(f"Send a test email to {cfg.email_to}?"):
             cmd_test_email(cfg, args)
+        if cfg.ntfy_topic and wizard.yes("Send a test notification to your phone?"):
+            cmd_test_push(cfg, args)
     except (Cancelled, KeyboardInterrupt):
         pass
     except FETCH_ERRORS as exc:
@@ -61,8 +67,10 @@ def cmd_setup(env_path: Path, args) -> int:
 def cmd_check(cfg: Config, args) -> int:
     """Show what's flying near home right now. Sends nothing, saves nothing."""
     look = max(cfg.radius_miles * 3, 10)
-    feed = LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=make_budget(cfg))
+    feed = shared_feed(cfg, make_budget(cfg))
     planes = feed.aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(look))
+    if getattr(feed, "uses_receiver", False):
+        print("(from your own receiver)")
     rows = []
     for ac in planes:
         d = distance_miles(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)
@@ -97,6 +105,7 @@ def cmd_watch(cfg: Config, args) -> int:
         try:
             _, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget)
             print_map_urls(urls)
+            watcher.notifier.map_url = urls[-1]  # tapping a phone notification opens the map (home Wi-Fi)
             print()
             if args.open:
                 webbrowser.open(urls[0])
@@ -139,6 +148,51 @@ def cmd_digest(cfg: Config, args) -> int:
     watcher = build(cfg)
     today = date.fromisoformat(args.date) if args.date else cfg.local(time.time()).date()
     return 0 if watcher.send_digest(today) else 1
+
+
+def cmd_weekly(cfg: Config, args) -> int:
+    """Send the weekly email right now (the seven days up to today's report time)."""
+    watcher = build(cfg)
+    today = date.fromisoformat(args.date) if args.date else cfg.local(time.time()).date()
+    return 0 if watcher.send_weekly(today) else 1
+
+
+def cmd_test_special(cfg: Config, args) -> int:
+    """Send a sample special-plane alert (email + phone) so you can see what they look like."""
+    from .adsb import Aircraft, FlightInfo
+    from .emails import special_email
+
+    ac = Aircraft(hex="7c4920", callsign="QFA11", registration="VH-OQA", type_code="A388",
+                  lat=cfg.home_lat, lon=cfg.home_lon, alt_ft=4200, speed_kt=180.0, track=250.0)
+    info = FlightInfo(airline="Qantas (TEST)", origin="SYD", origin_city="Sydney", destination="LAX",
+                      destination_city="Los Angeles", aircraft_desc="Airbus A380-842")
+    item = {"ac": ac, "info": info, "distance": 6.4, "bearing": 32.0,
+            "reasons": [("type", "Airbus A380 (TEST)", False)]}
+    email = special_email([item], cfg)
+    email.subject = "TEST · " + email.subject
+    try:
+        path = Mailer(cfg).send(email)
+    except SEND_ERRORS as exc:
+        print(f"Email failed: {exc}", file=sys.stderr)
+        path = None
+    print(f"Saved: {path}" if path else f"✔ Sent a test special-plane email to {cfg.email_to}.")
+    if cfg.ntfy_topic:
+        ok = PushNotifier(cfg).special("✨ TEST · Airbus A380: QFA11", "Qantas · Airbus A380-842\n6.4 mi NE, 4,200 ft",
+                                       ac.hex, ac.callsign)
+        print("✔ Sent a test phone notification." if ok else "Phone notification failed (see above).")
+    return 0
+
+
+def cmd_test_push(cfg: Config, args) -> int:
+    if not cfg.ntfy_topic:
+        print("Phone notifications aren't set up yet. Run: python3 -m planespotter setup")
+        return 1
+    ok = PushNotifier(cfg).send(
+        f"planespotter is set up for {cfg.home_name}",
+        "Phone notifications are working. You'll get one when a plane flies over.",
+        tags=("white_check_mark", "airplane"))
+    print(f"✔ Sent a test notification to topic {cfg.ntfy_topic}." if ok else "Sending failed (see above).")
+    return 0 if ok else 1
 
 
 def cmd_test_email(cfg: Config, args) -> int:
@@ -184,7 +238,11 @@ def main(argv: list[str] | None = None) -> int:
     p_map.add_argument("--no-browser", action="store_true", help="don't open a browser")
     p_digest = sub.add_parser("digest", help="send the daily report now")
     p_digest.add_argument("--date", help="pretend today is YYYY-MM-DD")
+    p_weekly = sub.add_parser("weekly", help="send the weekly email now")
+    p_weekly.add_argument("--date", help="pretend today is YYYY-MM-DD")
     sub.add_parser("test-email", help="send a test email")
+    sub.add_parser("test-push", help="send a test phone notification")
+    sub.add_parser("test-special", help="send a sample special-plane alert")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -206,7 +264,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     commands = {"check": cmd_check, "watch": cmd_watch, "map": cmd_map, "digest": cmd_digest,
-                "test-email": cmd_test_email}
+                "test-email": cmd_test_email, "test-push": cmd_test_push, "weekly": cmd_weekly,
+                "test-special": cmd_test_special}
     try:
         return commands[args.command](cfg, args)
     except BrokenPipeError:  # output piped into e.g. `head`; not a network problem

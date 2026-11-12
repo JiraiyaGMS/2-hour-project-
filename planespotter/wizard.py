@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Callable
 
+from .adsb import get_json
+from .notify import new_topic
 from .config import KNOWN_KEYS, load_dotenv, parse_clock, parse_quiet_hours
 
 # Email providers whose outgoing server we can fill in automatically.
@@ -119,11 +121,30 @@ class Wizard:
         else:
             values.update(SMTP_USER="", SMTP_PASSWORD="")
 
-        print("\n5. ADSB.LOL KEY (optional)")
+        print("\n5. PHONE NOTIFICATIONS (optional)")
+        print("   Alerts on your phone with the free ntfy app (no account needed), as well as email.")
+        has_topic = bool(cur.get("NTFY_TOPIC"))
+        if self.yes("   Send alerts to your phone?", default=has_topic):
+            topic = cur.get("NTFY_TOPIC") or new_topic()
+            values["NTFY_TOPIC"] = topic
+            print("   1. Install \"ntfy\" from the App Store or Google Play.")
+            print("   2. Open it, tap + (Subscribe to topic), and type this topic name exactly:")
+            print(f"        {topic}")
+            print("      Keep it to yourself: anyone with this name could read your alerts.")
+        else:
+            values["NTFY_TOPIC"] = ""
+
+        print("\n6. ADSB.LOL KEY (optional)")
         print("   The flight data is free from adsb.lol: 500 requests a day without a key, which")
         print("   means checking for planes about every 4 minutes. A free key doubles that (every")
         print("   2 minutes). Ask for one at https://www.adsb.lol/request, or press Enter to skip.")
         values["ADSB_API_KEY"] = self.ask("   adsb.lol key", cur.get("ADSB_API_KEY", ""))
+
+        print("\n7. YOUR OWN ADS-B RECEIVER (optional)")
+        print("   If you have a receiver (e.g. a Raspberry Pi with a radio stick running adsb.im,")
+        print("   readsb or dump1090), paste the address of its aircraft.json for unlimited, live data.")
+        print("   For example: http://adsb-feeder.local:8080/data/aircraft.json  (Enter to skip)")
+        values["RECEIVER_URL"] = self.ask("   Receiver address", cur.get("RECEIVER_URL", ""), check_receiver)
 
         # Keep any advanced settings the person added by hand.
         for key, value in cur.items():
@@ -198,6 +219,23 @@ def check_email_required(text: str) -> str | None:
     return "Enter an email address." if not text else check_email(text)
 
 
+def check_receiver(text: str) -> str | None:
+    """Blank is fine; otherwise it must answer with aircraft."""
+    if not text:
+        return None
+    if not text.startswith(("http://", "https://")):
+        return "Start the address with http://"
+    try:
+        data = get_json(text, timeout=5)
+    except (OSError, ValueError) as exc:
+        return f"Couldn't read it ({exc}). Check the address, or press Enter with it blank to skip."
+    planes = data.get("aircraft", data.get("ac")) if isinstance(data, dict) else None
+    if planes is None:
+        return "That address answered, but not with aircraft.json data."
+    print(f"  ✔ Your receiver can see {len(planes)} aircraft right now.")
+    return None
+
+
 def check_required(text: str) -> str | None:
     return None if text else "This one is needed."
 
@@ -226,6 +264,12 @@ SMTP_USER={SMTP_USER}
 SMTP_PASSWORD={SMTP_PASSWORD}
 SMTP_HOST={SMTP_HOST}
 SMTP_PORT={SMTP_PORT}
+
+# Phone notifications: the ntfy topic your phone subscribes to (blank = off)
+NTFY_TOPIC={NTFY_TOPIC}
+
+# Your own ADS-B receiver's aircraft.json (blank = use adsb.lol only)
+RECEIVER_URL={RECEIVER_URL}
 
 # adsb.lol key (blank = 500 requests a day; a free key = 1,000; feeders get 7,200
 # and can set ADSB_DAILY_LIMIT=7200)

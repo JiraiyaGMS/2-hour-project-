@@ -48,6 +48,9 @@ class Aircraft:
     track: float | None
     squawk: str = ""
     seen_pos: float = 0.0  # seconds since the position was received
+    category: str = ""     # ADS-B emitter category: A1 light ... A5 heavy, A7 helicopter
+    db_flags: int = 0      # adsb.lol's aircraft database: 1 = military
+    emergency: str = ""    # "general", "lifeguard", "nordo"... when the crew declares one
 
     @property
     def label(self) -> str:
@@ -88,6 +91,9 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
         track=num("track") if num("track") is not None else num("true_heading"),
         squawk=str(raw.get("squawk") or ""),
         seen_pos=float(raw.get("seen_pos") or 0),
+        category=str(raw.get("category") or ""),
+        db_flags=int(raw.get("dbFlags") or 0) if str(raw.get("dbFlags") or 0).isdigit() else 0,
+        emergency="" if raw.get("emergency") in (None, "none") else str(raw.get("emergency")),
     )
 
 
@@ -174,6 +180,62 @@ class SharedFeed:
     def paused_for(self) -> float:
         """Seconds until we may ask again after a 429, or 0."""
         return max(0.0, self.blocked_until - self.clock())
+
+
+class ReceiverFeed:
+    """Planes from your own ADS-B receiver (readsb, dump1090-fa, tar1090...): unlimited and real-time.
+
+    ``url`` is its aircraft.json, e.g. http://raspberrypi.local/tar1090/data/aircraft.json
+    """
+
+    def __init__(self, url: str, timeout: float = 5):
+        self.url = url
+        self.timeout = timeout
+
+    def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
+        data = get_json(self.url, self.timeout)
+        found = (parse_aircraft(raw) for raw in (data.get("aircraft") or data.get("ac") or []))
+        limit = radius_nm * 1.15078 + 0.5  # nautical miles -> statute miles, a little slack
+        return [ac for ac in found if ac and ac.hex and distance_miles(lat, lon, ac.lat, ac.lon) <= limit]
+
+
+class FeedWithReceiver:
+    """Your receiver first; adsb.lol (within its daily budget) only if the receiver can't be reached."""
+
+    def __init__(self, receiver: ReceiverFeed, fallback, clock=time.time):
+        self.receiver = receiver
+        self.fallback = fallback
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.data: list[Aircraft] | None = None
+        self.fetched_at = 0.0
+        self.uses_receiver = True
+        self.warned = False
+
+    def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
+        try:
+            data = self.receiver.aircraft_near(lat, lon, radius_nm)
+            source = True
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            if not self.warned:
+                log.warning("your receiver isn't answering (%s); using adsb.lol until it's back", exc)
+                self.warned = True
+            data = self.fallback.aircraft_near(lat, lon, radius_nm)
+            source = False
+        with self.lock:
+            if source and not self.uses_receiver:
+                log.info("your receiver is back")
+            self.uses_receiver = source
+            self.warned = self.warned and not source
+            self.data, self.fetched_at = data, self.clock()
+        return data
+
+    def latest(self) -> tuple[list[Aircraft] | None, float]:
+        with self.lock:
+            return self.data, self.fetched_at
+
+    def paused_for(self) -> float:
+        return 0.0 if self.uses_receiver else self.fallback.paused_for()
 
 
 class PositionLookup:

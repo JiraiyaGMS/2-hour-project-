@@ -9,6 +9,8 @@ from datetime import date, datetime, time, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .specials import SPECIAL_TYPES
+
 # The folder that holds README.md, .env and the planespotter/ package.
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ENV = PROJECT_DIR / ".env"
@@ -68,6 +70,15 @@ def parse_quiet_hours(text: str) -> tuple[time, time] | None:
     return start, end
 
 
+def weekday(text: str) -> int:
+    """'sun', 'Sunday' -> 6."""
+    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    key = text.strip().lower()[:3]
+    if key not in days:
+        raise ConfigError(f"WEEKLY_DAY must be a day like sun or monday, got {text!r}")
+    return days.index(key)
+
+
 def fmt_clock_range(hours: tuple[time, time]) -> str:
     return f"{hours[0]:%H:%M}–{hours[1]:%H:%M}"
 
@@ -103,6 +114,15 @@ class Config:
     whole_flights: bool = True  # look up the complete flight of planes that crossed the zone
     adsb_api_key: str = ""      # optional free key from adsb.lol: raises the daily limit
     adsb_daily_limit: int = 500  # adsb.lol requests allowed per day (500 without a key)
+    ntfy_topic: str = ""         # phone notifications through ntfy (blank = off)
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_token: str = ""         # only for a private ntfy server
+    special_alerts: bool = True  # emergencies, military, A380s/747s, helicopters overhead, firsts
+    special_types: frozenset = frozenset(SPECIAL_TYPES)
+    special_helicopters: bool = True
+    weekly_report: bool = True   # a summary email once a week
+    weekly_day: int = 6          # 0 = Monday ... 6 = Sunday
+    receiver_url: str = ""       # your own ADS-B receiver's aircraft.json (blank = adsb.lol only)
 
     @property
     def view_radius_miles(self) -> float:
@@ -190,9 +210,9 @@ class Config:
             raise ConfigError("RADIUS_MILES must be between 0 and 100")
 
         max_alt = get("MAX_ALTITUDE_FT")
-        poll = number("POLL_SECONDS", "20", int)
-        if poll < 10:
-            raise ConfigError("POLL_SECONDS must be at least 10 (be kind to the free API)")
+        poll = number("POLL_SECONDS", "5" if get("RECEIVER_URL") else "20", int)
+        if poll < (2 if get("RECEIVER_URL") else 10):
+            raise ConfigError("POLL_SECONDS must be at least 10 (2 with your own receiver)")
 
         digest_raw = get("DIGEST_TIME", "07:00")
         try:
@@ -250,6 +270,16 @@ class Config:
             adsb_api_key=get("ADSB_API_KEY"),
             # Without a key adsb.lol allows 500 a day; a free key 1,000; feeders 7,200.
             adsb_daily_limit=number("ADSB_DAILY_LIMIT", "1000" if get("ADSB_API_KEY") else "500", int),
+            ntfy_topic=get("NTFY_TOPIC"),
+            ntfy_server=get("NTFY_SERVER", "https://ntfy.sh"),
+            ntfy_token=get("NTFY_TOKEN"),
+            special_alerts=flag("SPECIAL_ALERTS", True),
+            special_types=frozenset(
+                t.strip().upper() for t in get("SPECIAL_TYPES", ",".join(SPECIAL_TYPES)).split(",") if t.strip()),
+            special_helicopters=flag("SPECIAL_HELICOPTERS", True),
+            weekly_report=flag("WEEKLY_REPORT", True),
+            weekly_day=weekday(get("WEEKLY_DAY", "sun")),
+            receiver_url=get("RECEIVER_URL"),
         )
 
 
@@ -258,5 +288,6 @@ KNOWN_KEYS = {
     "POLL_SECONDS", "PASS_GAP_MINUTES", "MAX_ALERTS_PER_HOUR", "ALERTS_ENABLED",
     "QUIET_HOURS", "DIGEST_ENABLED", "DIGEST_TIME", "TIMEZONE", "EMAIL_TO",
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
-    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT",
+    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
+    "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
 }

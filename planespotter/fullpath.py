@@ -22,6 +22,7 @@ from datetime import date, datetime, timezone
 from typing import Callable, NamedTuple
 
 from .adsb import USER_AGENT, key_header
+from .airports import route_from_path
 from .heat import route_cells
 
 log = logging.getLogger(__name__)
@@ -232,6 +233,23 @@ class FlightLookup:
         return []
 
 
+def save_flight(store, cfg, pass_id: int, first_seen: float, points: list[Point], finished: bool,
+                tries: int, now: float) -> None:
+    """Store a flight's path (so far), and its real departure/arrival airports."""
+    # Where it started, plus its last five minutes (enough to tell if it's coming in to land).
+    tail = [p for p in points[1:] if points[-1].t - p.t <= 300]
+    origin, destination = route_from_path(as_path(points[:1] + tail), landed=finished)
+    store.set_route(pass_id, origin, destination)
+    path = as_path(simplify(points))
+    if finished or tries >= MAX_TRIES:
+        day = cfg.local(first_seen).date().isoformat()
+        store.update_full_path(pass_id, path=path, state=DONE, tries=tries,
+                               route_heat=(day, route_cells(cfg, path)))
+    else:
+        # Still flying: keep what we have so far, and look again later.
+        store.update_full_path(pass_id, path=path, tries=tries, next_try=now + retry_delay(tries))
+
+
 class FullPathFetcher:
     """Background worker: looks up whole flights for passes, one at a time."""
 
@@ -282,14 +300,7 @@ class FullPathFetcher:
             state = UNAVAILABLE if tries >= 2 else WAITING
             self.store.update_full_path(row["id"], state=state, tries=tries, next_try=now + retry_delay(tries))
             return True
-        path = as_path(simplify(points))
-        if finished or tries >= MAX_TRIES:
-            day = self.cfg.local(row["first_seen"]).date().isoformat()
-            self.store.update_full_path(row["id"], path=path, state=DONE, tries=tries,
-                                        route_heat=(day, route_cells(self.cfg, path)))
-        else:
-            # Still flying: keep what we have so far, and look again later.
-            self.store.update_full_path(row["id"], path=path, tries=tries, next_try=now + retry_delay(tries))
+        save_flight(self.store, self.cfg, row["id"], row["first_seen"], points, finished, tries, now)
         return True
 
     def run_forever(self) -> None:

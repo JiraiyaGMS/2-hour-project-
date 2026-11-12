@@ -120,6 +120,8 @@ button { font: inherit; color: inherit; }
   color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 1px 5px;
 }
 .empty { color: var(--muted); padding: 28px 12px; text-align: center; }
+.badge.special { color: #a855f7; background: color-mix(in srgb, #a855f7 14%, transparent); }
+.badge.sos { color: #fff; background: #e5484d; }
 .badge.air { color: var(--blue); background: color-mix(in srgb, var(--blue) 14%, transparent); }
 
 /* Airline logos sit on a white tile so dark logos stay visible in dark mode. */
@@ -137,11 +139,51 @@ button { font: inherit; color: inherit; }
 .airline-logo.big { width: 44px; height: 44px; border-radius: 11px; }
 .airline-logo.big .code { font-size: 12px; }
 .title-row { display: flex; gap: 12px; align-items: center; }
+.checked { color: #2fbf71; font-weight: 700; }
 .list-section {
   font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
   padding: 16px 8px 6px; border-top: 1px solid var(--line); margin-top: 8px;
 }
 .more { display: block; margin: 8px auto; }
+
+/* ---------- collection ---------- */
+.tools[hidden] { display: none; }
+.collection { padding: 4px 8px 20px; }
+.collection h3 {
+  font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  margin: 22px 0 8px; display: flex; justify-content: space-between;
+}
+.collection h3 span { font-weight: 600; text-transform: none; letter-spacing: 0; }
+.csub { color: var(--muted); font-size: 13px; margin: 10px 0; }
+.ctiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ctile { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+.ctile .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.ctile .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cbadges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.cbadge { border: 1px solid var(--line); border-radius: 10px; padding: 8px 6px; text-align: center; }
+.cbadge .emoji { font-size: 22px; filter: grayscale(1); opacity: .35; }
+.cbadge.earned .emoji { filter: none; opacity: 1; }
+.cbadge .name { font-size: 12px; font-weight: 650; margin-top: 2px; }
+.cbadge .how { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.cbadge:not(.earned) .name { color: var(--muted); }
+.crow { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.crow .airline-logo { width: 26px; height: 26px; }
+.cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cnum { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
+.ccode { width: 38px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.cflag { font-size: 18px; width: 26px; text-align: center; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .col { fill: var(--accent); }
+.chart .slot.on .col { fill: color-mix(in srgb, var(--accent) 75%, var(--ink)); }
+.chart .hit { fill: transparent; }
+.chart .base { stroke: var(--line); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+.chart-tip {
+  position: absolute; top: -6px; pointer-events: none; white-space: nowrap; font-size: 12px;
+  background: var(--ink); color: var(--panel); padding: 4px 8px; border-radius: 6px;
+}
+.chart-tip[hidden] { display: none; }
 
 /* ---------- map ---------- */
 #map-wrap { position: relative; flex: 1; min-width: 0; }
@@ -178,6 +220,54 @@ button { font: inherit; color: inherit; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
 
 .round[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+
+/* ---------- look up! ---------- */
+.lookup {
+  position: absolute; z-index: 3; top: 62px; left: 50%; transform: translateX(-50%);
+  width: min(460px, calc(100% - 24px)); display: flex; gap: 12px; align-items: center; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 10px 14px;
+}
+.lookup[hidden] { display: none; }
+.lookup .dial {
+  flex: none; position: relative; width: 52px; height: 52px; border-radius: 50%;
+  border: 2px solid var(--line); background: var(--panel-2);
+}
+.lookup .dial .n { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); font-size: 10px; font-weight: 800; color: var(--muted); }
+.lookup .dial .arrow {
+  /* Points north at 0°; rotated (inline) to the compass bearing of the plane. */
+  position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; fill: var(--accent);
+}
+.lookup .head { font-size: 15px; }
+.lookup .head strong { color: var(--accent); }
+.lookup .sub { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.lookup .sub strong { color: var(--ink); }
+.lookup .airline-logo { width: 24px; height: 24px; }
+.chime {
+  margin-top: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+  border-radius: 99px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+.chime[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); }
+.replaying .lookup { display: none; }
+
+/* ---------- day replay ---------- */
+.replay {
+  position: absolute; z-index: 3; left: 50%; bottom: 28px; transform: translateX(-50%);
+  width: min(560px, calc(100% - 24px)); background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px 14px 12px;
+}
+.replay[hidden] { display: none; }
+.replay-row { display: flex; align-items: center; gap: 8px; }
+.replay-row select {
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  border-radius: 8px; padding: 5px 6px; font: inherit; font-size: 13px;
+}
+.replay-row .round { width: 34px; height: 34px; box-shadow: none; font-size: 13px; }
+.replay-clock { margin-left: auto; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.replay .close { position: static; background: none; border: 0; font-size: 20px; cursor: pointer; color: var(--muted); }
+.replay input[type=range] { width: 100%; margin: 10px 0 2px; accent-color: var(--accent); }
+.replay-note { font-size: 12px; color: var(--muted); }
+.replaying .legend, .replaying .heat-panel, .replaying .detail { display: none; }
 
 /* ---------- heat map panel ---------- */
 .heat-panel {
@@ -264,6 +354,11 @@ button { font: inherit; color: inherit; }
   .links { margin-top: 8px; }
   .status { top: 8px; left: 8px; max-width: calc(100% - 200px); }
   .heat-panel { left: 8px; right: 8px; bottom: 8px; width: auto; padding: 10px 12px; }
+  .replay { bottom: 8px; padding: 8px 10px 10px; }
+  .lookup { top: 52px; padding: 8px 10px; gap: 10px; }
+  .lookup .dial { width: 42px; height: 42px; }
+  .chime { margin-top: 0; }
+  .replay-clock { font-size: 16px; }
   .heat-routes, .heat-note { display: none; }
   .detail:not([hidden]) ~ .heat-panel { display: none; }
   #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
