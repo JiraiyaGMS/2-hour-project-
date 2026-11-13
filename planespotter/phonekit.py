@@ -34,12 +34,14 @@ def kit_email(cfg, k: dict) -> Email:
             "Home screen: press and hold an empty spot → Edit → Add Widget → Scriptable → Add Widget. "
             "Press and hold the widget → Edit Widget → Script: planespotter.",
         ]),
-        ("2. Siri: \"What's that plane?\" (works anywhere)", [
+        ("2. Siri (works anywhere; set up the widget script first)", [
             "Open Shortcuts and tap +.",
-            f"Add Get Contents of URL and set the URL to: {k['siri_url']}",
-            "Add Get Dictionary from Input.",
-            "Add Get Dictionary Value, and set Key to: siri",
-            "Add Speak Text. Rename the shortcut What's that plane, then say \"Hey Siri, what's that plane?\"",
+            "Tap Add Action (or the search bar), type Run Script, and choose the one from Scriptable. "
+            "Tap Script and choose planespotter.",
+            "Search for Speak Text and add it underneath. It should say Speak Script Result (if not, tap the "
+            "blank and choose Script Result).",
+            "Tap the name at the top, rename the shortcut Planespotter, and tap Done. "
+            "Then say \"Hey Siri, Planespotter\".",
         ]),
         ("3. Commands from your phone (travel mode, your flight)", [
             f"Open this page in Safari and bookmark it: {k['cmd_url']}",

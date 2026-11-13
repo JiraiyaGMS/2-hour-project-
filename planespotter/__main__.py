@@ -305,9 +305,16 @@ def phone_test(cfg: Config) -> int:
     except ValueError:
         print(f"The status isn't readable: {body[:200]}")
         return 1
-    age = (time.time() - status.get("updated", 0)) / 60
-    print(f"✔ Siri would say: {status.get('siri')}")
-    print(f"  (posted {age:.0f} min ago; planespotter updates it every few minutes while it runs)")
+    from .relay import clock as clock_text
+    from .relay import spoken_now
+
+    now = time.time()
+    age = (now - status.get("updated", 0)) / 60
+    print(f"✔ Siri would say right now: {spoken_now(status, now, lambda at: clock_text(cfg, at))}")
+    print(f"  (from the status posted {age:.0f} min ago; planespotter posts a new one whenever the next plane changes)")
+    print("  If Siri says something else, make sure your shortcut uses Scriptable's Run Script action")
+    print("  (see the Siri steps in the README), and that the planespotter script in Scriptable is up to date:")
+    print("        python3 -m planespotter phone --copy widget")
     return 0
 
 
@@ -335,13 +342,13 @@ def cmd_phone(cfg: Config, args) -> int:
         if copy_to_clipboard(what):
             print(f"✔ Copied the {args.copy} {'script' if args.copy == 'widget' else 'link'} to this Mac's clipboard.")
             print("  On your iPhone (same Apple ID, Bluetooth on), paste it within a couple of minutes:")
-            print("  in Scriptable for the widget, or in the Shortcuts URL box for Siri.")
+            print("  in Scriptable for the widget script (Siri uses the same script), or wherever the link goes.")
         else:
             print(what)
         return 0
 
     print(f"Your phone setup is saved in {folder}\n")
-    print(f"  Siri / widget status:  {k['siri_url']}")
+    print(f"  Status link (advanced): {k['siri_url']}")
     print(f"  Commands page:         {k['cmd_url']}")
     print(f"  Family topic:          {k['family_topic']}")
     print(f"  Your friend code:      {k['friend_code']}\n")
@@ -350,10 +357,8 @@ def cmd_phone(cfg: Config, args) -> int:
     except SEND_ERRORS as exc:
         print(f"Couldn't email it: {exc}")
         print("Hotel, school and work Wi-Fi often block sending email. Other ways to get it onto your phone:")
-        print("  • Copy the widget script, then paste it in Scriptable on your iPhone (Universal Clipboard):")
-        print("        python3 -m planespotter phone --copy widget")
-        print("  • Copy the Siri link, then paste it into the shortcut's URL box:")
-        print("        python3 -m planespotter phone --copy siri")
+        print("  • Copy the widget script (Siri uses it too), then paste it in Scriptable on your iPhone")
+        print("    (Universal Clipboard):  python3 -m planespotter phone --copy widget")
         print(f"  • Or AirDrop the files in {folder} to your iPhone.")
         print("  • Or try the other email port:  SMTP_PORT=465 python3 -m planespotter phone")
         return 1

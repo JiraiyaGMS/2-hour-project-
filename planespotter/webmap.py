@@ -38,7 +38,7 @@ from .myflight import add_flight, my_flights, parse_day, remove_flight
 from .noise import build_noise, loudness, noise_csv
 from .notify import derived_topic
 from .outlook import Outlook, best_time, best_time_text, contrail_text, daily_best
-from .predict import crossings, describe, glide
+from .predict import crossings, describe, glide, say_name
 from .schedule import delays_for, today_board
 from .space import SpaceWatch, pass_text
 from .noise import settle as settle_noise
@@ -591,13 +591,16 @@ class MapApp:
             out.append({"hex": c.ac.hex, "label": c.ac.label, "airline": info.airline,
                         "route": f"{info.origin or '?'} → {info.destination or '?'}" if info.origin or info.destination else "",
                         "eta_s": round(c.eta), "at": round(now + c.eta), "direction": compass(c.az), "up": round(c.up),
-                        "alt_ft": c.ac.alt_ft, "sky": note, "text": describe(c, info, note)})
+                        "alt_ft": c.ac.alt_ft, "sky": note, "text": describe(c, info, note),
+                        "say": say_name(c.ac.callsign, c.ac.label, info.airline, info.origin_city)})
         last = self.store().recent_passes(0, limit=1)
         from .jobs import regulars_due
         hour_count = self.store().db.execute("SELECT COUNT(*) FROM passes WHERE first_seen >= ?",
                                              (now - 3600,)).fetchone()[0]
         return {"home": self.cfg.home_name, "time": now, "updated": round(now), "next": out,
-                "last": {"label": label_of(last[0]), "at": last[0]["first_seen"]} if last else None,
+                "last": {"label": label_of(last[0]), "at": last[0]["first_seen"],
+                         "say": say_name(last[0]["callsign"], label_of(last[0]), last[0]["airline"],
+                                         last[0]["origin_city"])} if last else None,
                 "hour_count": hour_count, "regulars": regulars_due(self.store(), self.cfg, now)}
 
     def now_text(self) -> str:

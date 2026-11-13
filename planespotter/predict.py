@@ -54,16 +54,24 @@ def crossings(cfg, planes, ground_ft: int = 0, horizon: float = 900) -> list[Cro
     return sorted(out, key=lambda c: (c.eta, c.miles))
 
 
-def spoken_name(ac, info) -> str:
-    """'Delta flight 573' (or the callsign, if we don't know the airline)."""
-    airline = (getattr(info, "airline", "") or "").strip()
+def say_name(callsign: str, label: str, airline: str = "", city: str = "") -> str:
+    """'Delta flight 573 from Atlanta' (or the callsign, if we don't know the airline): how Siri says a flight."""
+    airline = (airline or "").strip()
     for suffix in (" Air Lines", " Airlines", " Airways"):
         if airline.endswith(suffix):
             airline = airline[: -len(suffix)]
-    number = ac.callsign[3:] if len(ac.callsign) > 3 and ac.callsign[:3].isalpha() and ac.callsign[3:4].isdigit() else ""
+    callsign = callsign or ""
+    number = callsign[3:] if len(callsign) > 3 and callsign[:3].isalpha() and callsign[3:4].isdigit() else ""
     if airline and number:
-        return f"{airline} flight {number}"
-    return f"{airline}, {ac.label}" if airline else ac.label
+        name = f"{airline} flight {number}"
+    else:
+        name = f"{airline}, {label}" if airline else label
+    return f"{name} from {city}" if city else name
+
+
+def spoken_name(ac, info) -> str:
+    """'Delta flight 573' (or the callsign, if we don't know the airline)."""
+    return say_name(ac.callsign, ac.label, getattr(info, "airline", "") or "")
 
 
 def describe(c: Crossing, info=None, sky: str = "") -> str:

@@ -42,7 +42,7 @@ def derived_topic(main_topic: str, kind: str) -> str:
 
 # ntfy.sh allows 250 messages a day from one internet connection (reading is free). Plane alerts
 # always come first; the extras below only use what's left, and never more than these each day.
-EXTRA_CAPS = {"relay": 70, "family": 20, "share": 30, "reply": 20}
+EXTRA_CAPS = {"relay": 96, "family": 20, "share": 30, "reply": 20}
 KEEP_FOR_ALERTS = 80   # stop the extras when ntfy says fewer than this are left today
 
 
@@ -105,6 +105,7 @@ class PushNotifier:
         self.post = post or self._post
         self.quota = quota
         self.retry_wait = 8.0  # seconds before trying again when ntfy says "too many requests"
+        self.refused_at: dict[str, float] = {}  # when we last logged holding back each kind of extra
 
     def topic(self, kind: str) -> str:
         """The private topic for the widget ("relay"), commands ("cmd"), family ("family") or friends ("share")."""
@@ -118,7 +119,9 @@ class PushNotifier:
         if not self.enabled:
             return False
         if self.quota is not None and not self.quota.allow(kind):
-            log.info("not sending to ntfy (%s): saving today's messages for plane alerts", kind)
+            if time.time() - self.refused_at.get(kind, -1e12) > 3600:  # say so once an hour, not every check
+                self.refused_at[kind] = time.time()
+                log.info("not sending to ntfy (%s): saving today's messages for plane alerts", kind)
             return False
         payload = {"topic": self.topic(kind), "message": message, **{k: v for k, v in extra.items() if v}}
         if title:

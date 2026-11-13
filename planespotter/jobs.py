@@ -51,6 +51,8 @@ def regulars_due(store, cfg, now: float, limit: int = 3) -> list[dict]:
     """Your regular flights still to come today, with the time they usually come over."""
     from datetime import time as clock_time
 
+    from .airports import airports
+    from .predict import say_name
     from .schedule import today_board
 
     out = []
@@ -62,9 +64,12 @@ def regulars_due(store, cfg, now: float, limit: int = 3) -> list[dict]:
         at = cfg.at(today, clock_time(h, m))
         if at < now - 20 * 60:
             continue  # long overdue: probably not coming today
+        origin = airports().get(f["origin"]) if f["origin"] else None
         out.append({"label": f["callsign"], "at": round(at), "usual": f["usual"],
                     "route": f"{f['origin']} → {f['destination']}" if f["origin"] and f["destination"] else "",
-                    "airline": f["airline"]})
+                    "airline": f["airline"],
+                    "say": say_name(f["callsign"], f["callsign"], f["airline"],
+                                    (origin.city or origin.name) if origin else "")})
     return sorted(out, key=lambda r: r["at"])[:limit]
 
 

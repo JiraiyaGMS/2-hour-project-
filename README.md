@@ -48,7 +48,7 @@ overhead today, and a live 3D/2D map of the sky around you.
   what that means for you, whether your regular flights are **late or
   early**, a **rush alert** when lots of planes are about to come over, and
   **follow a flight** to get told when it lands.
-- **On your phone:** *"Hey Siri, what's that plane?"*, a **home-screen
+- **On your phone:** *"Hey Siri, Planespotter"*, a **home-screen
   widget** with a countdown, and **kiosk mode** for an old tablet or a TV.
 - **Space station passes:** when the ISS will fly over and be visible, with
   a notification beforehand.
@@ -460,10 +460,16 @@ The email has the widget script attached, and links and short steps for
 each part below. (It's also saved in the `phone-setup` folder.)
 
 The widget and Siri **work anywhere**, not just on your home Wi-Fi:
-planespotter posts a small status message (the next planes due, the last
-one, the space station...) to a private ntfy topic every few minutes, and they
-read the latest one from there. Your Mac just needs to be running
-planespotter.
+planespotter posts a small status message (the next planes due with their
+times, the last one, your regular flights, the space station...) to a private
+ntfy topic, and they read the latest one from there. Your Mac just needs to
+be running planespotter.
+
+Your phone works out what's true *when you look or ask*: planes whose time
+has passed are dropped, and the countdowns tick by themselves. So
+planespotter only needs to post a new status when a new plane is next (or one
+changes course), and it spreads its share of ntfy's daily messages evenly
+through the day.
 
 ### Home-screen widget (iPhone)
 
@@ -498,20 +504,31 @@ To update the widget after updating planespotter, run
 `python3 -m planespotter phone --copy widget` on your Mac, then in Scriptable
 open **planespotter**, select all, paste over it, and tap **Done**.
 
-### Siri: "What's that plane?"
+### Siri: "Hey Siri, Planespotter"
 
-Siri answers: *"Delta flight 573 from Atlanta is due over about 4:15 pm,
-coming from the south-east. 2 more after that."*
+Siri answers: *"Air Canada flight 791 from Montreal is due in about 4
+minutes, look to the east. Then Delta flight 573 from Atlanta in about 9
+minutes."* When nothing is due, it tells you your next regular flight and the
+last plane over.
+
+Siri uses the planespotter script in Scriptable, so set up the widget first
+(above). Then:
 
 1. Open the **Shortcuts** app and tap **+**.
-2. Add **Get Contents of URL**, and set the URL to the *Siri / widget
-   status* link from the phone setup email (it starts with
-   `https://ntfy.sh/planespotter-relay-`).
-3. Add **Get Dictionary from Input**.
-4. Add **Get Dictionary Value**, and set **Key** to `siri`.
-5. Add **Speak Text**.
-6. Rename the shortcut **What's that plane** and say *"Hey Siri, what's that
-   plane?"*
+2. Tap **Add Action** (or the search bar at the bottom), type **Run Script**,
+   and choose the one from **Scriptable**. Tap **Script** and choose
+   **planespotter**.
+3. Search for **Speak Text** and add it underneath. It should say **Speak
+   Script Result**. If the blank isn't filled in, tap it and choose **Script
+   Result**.
+4. Tap the name at the top, rename the shortcut **Planespotter** (a name
+   that isn't an everyday phrase, or Siri answers the question itself), and
+   tap **Done**.
+5. Say *"Hey Siri, Planespotter"*.
+
+Older shortcuts that read the status link directly (Get Contents of URL,
+key `siri`) still work, but they can mention a plane that has already gone
+by. Switch to the steps above.
 
 ### Commands from your phone
 
@@ -829,15 +846,16 @@ carries on by itself once adsb.lol allows more requests.
 | The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
 | The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
-| `phone` says *timed out* or *Couldn't email it* | The Wi-Fi (hotels, schools, offices) is blocking email. Run `python3 -m planespotter phone --copy widget` and paste on your iPhone (Universal Clipboard: same Apple ID, Bluetooth on), then `--copy siri` for the Siri link. Or AirDrop the files in the `phone-setup` folder. |
+| `phone` says *timed out* or *Couldn't email it* | The Wi-Fi (hotels, schools, offices) is blocking email. Run `python3 -m planespotter phone --copy widget` and paste on your iPhone (Universal Clipboard: same Apple ID, Bluetooth on), (Siri uses the same script). Or AirDrop the files in the `phone-setup` folder. |
 | The widget says *Can't reach planespotter* | planespotter must be running on your Mac. Check the widget uses the script from `python3 -m planespotter phone` (older copies only work on home Wi-Fi). |
-| Siri just says *Done* or *OK* | Run `python3 -m planespotter phone --test` on the Mac. If it says nothing has been posted, planespotter isn't running (or the Mac is asleep): start it and wait 5 minutes. If it shows a sentence, the shortcut needs fixing: check the URL is the *Siri / widget status* link, the steps include **Get Dictionary from Input**, and the key is `siri`. |
+| Siri just says *Done* or *OK* | Run `python3 -m planespotter phone --test` on the Mac. If it says nothing has been posted, planespotter isn't running (or the Mac is asleep): start it and wait 5 minutes. If it shows a sentence, the shortcut needs fixing: it should be just **Run Script** (Scriptable, script **planespotter**) and **Speak Text** with **Script Result**. |
+| Siri keeps talking about a plane that has already gone by | Your shortcut reads the status link directly. Rebuild it with Scriptable's **Run Script** (see *Siri* above), and update the planespotter script in Scriptable (`python3 -m planespotter phone --copy widget`, then paste over the old one). |
 | Commands get no answer | Check you're on the *Commands page* from the phone setup email, and planespotter is running (`watch`). Answers come in the ntfy app within a minute. |
 | *Not sending to ntfy: saving today's messages for plane alerts* in the log | ntfy's 250 a day are nearly used; the extras pause until tomorrow. Plane alerts carry on. |
 | No Moon-crossing alerts | They need the Moon well up and bright, a plane heading right across it, phone notifications, and it not to be quiet hours. They're rare, so don't expect many. |
 | *couldn't get the forecast / the weather / the orbit of...* in the log | Harmless: those extras (contrails, clouds, the space station) couldn't download, often on hotel or public Wi-Fi. planespotter keeps trying quietly in the background; plane alerts aren't affected. |
 | The offline log found nothing | It only looks back about 20 hours, and can't find planes that have since landed far away. Check the weekly email for how much it covered. |
-| Siri says it can't connect | Your phone must be on your home Wi-Fi, planespotter running, and the address in the shortcut must be the *Map on your phone* one plus `/api/now.txt`. |
+| Siri says it can't reach planespotter | planespotter must be running on your Mac and the Mac awake (`caffeinate -i python3 -m planespotter watch` keeps it awake). Run `python3 -m planespotter phone --test` to check the status is being posted. |
 | The widget always says *Nothing due right now* | Planes only show a few minutes before they come over, and iPhone refreshes widgets rarely. Update the widget script (`python3 -m planespotter phone --copy widget`, then paste it over the old one in Scriptable): the new one also shows your next regular flight, the last plane over and the last hour's count. |
 | No runway line | It needs a big airport within about 60 miles and planes seen near it. The "planes an hour" part appears after a few days of watching. |
 | No space station notifications | They need phone notifications set up, and only come for visible passes (dark sky, station in sunlight) that climb above 20°. Some weeks there are none. |

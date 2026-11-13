@@ -15,10 +15,10 @@ from planespotter.friends import Friends, parse_friends
 from planespotter.geo import offset
 from planespotter.jobs import regulars_due, relay_job
 from planespotter.myflight import FlightWatch, add_flight, callsign_for, my_flights
-from planespotter.notify import NtfyQuota, PushNotifier, derived_topic
+from planespotter.notify import EXTRA_CAPS, NtfyQuota, PushNotifier, derived_topic
 from planespotter.outlook import best_time, best_time_text, contrail_kind, contrail_text, ice_humidity
 from planespotter.phonekit import kit, kit_email
-from planespotter.relay import Relay, build_status
+from planespotter.relay import BURST, MAX_BYTES, RETRY, Relay, build_status, compact, spoken_now
 from planespotter.predict import crossings
 from planespotter.store import Store
 from planespotter.travel import TravelMode, parse_where
@@ -116,7 +116,7 @@ class NtfyTests(unittest.TestCase):
         left = [200]
         q = NtfyQuota(":memory:", "https://ntfy.sh", clock=lambda: now[0], fetch_remaining=lambda: left[0])
         self.assertTrue(q.allow("relay"))
-        for _ in range(70):
+        for _ in range(EXTRA_CAPS["relay"]):
             q.record("relay")
         self.assertFalse(q.allow("relay"))   # its daily cap
         self.assertTrue(q.allow("family"))
@@ -145,6 +145,8 @@ class NtfyTests(unittest.TestCase):
         status = build_status(cfg, coming, {"aaa001": Info()}, None, now, {"space": "The space station flies over 6:02 pm."})
         self.assertEqual(status["next"][0]["label"], "DAL573")
         self.assertEqual(status["next"][0]["route"], "ATL → LAX")
+        self.assertEqual(status["next"][0]["say"], "Delta flight 573 from Atlanta")
+        self.assertNotIn("spoken", status["next"][0])
         self.assertGreater(status["next"][0]["at"], now)
         self.assertTrue(status["siri"].startswith("Delta flight 573 from Atlanta is due over about 4:0"), status["siri"])
         self.assertIn("space station", status["siri"])
@@ -179,6 +181,92 @@ class NtfyTests(unittest.TestCase):
         quiet = build_status(watcher.cfg, [], {}, None, now, {"hour_count": 0, "regulars": []})
         self.assertEqual(quiet["hour_count"], 0)  # "0 planes in the last hour" is still worth showing
         self.assertNotIn("regulars", quiet)
+
+    def status_at(self, posted, *planes):
+        return {"v": 1, "home": "Home", "updated": posted, "last": None,
+                "next": [{"label": label, "say": say, "at": posted + eta, "direction": "E"} for label, say, eta in planes]}
+
+    def test_siri_skips_a_plane_that_has_gone_by(self):
+        posted = ts(2026, 11, 13, 21)
+        status = self.status_at(posted, ("ACA791", "Air Canada flight 791 from Montreal", 240),
+                                ("DAL573", "Delta flight 573 from Atlanta", 540))
+        status["regulars"] = [{"label": "UAL1", "say": "United flight 1 from Denver", "at": posted + 3600}]
+        clock = lambda at: "10:00 pm"
+        self.assertTrue(spoken_now(status, posted, clock).startswith(
+            "Air Canada flight 791 from Montreal is due in about 4 minutes, look to the east. Then Delta"))
+        later = spoken_now(status, posted + 360, clock)   # 6 minutes on: Montreal has been and gone
+        self.assertNotIn("Montreal", later)
+        self.assertTrue(later.startswith("Delta flight 573 from Atlanta is due in about 3 minutes"), later)
+        quiet = spoken_now(status, posted + 20 * 60, clock)
+        self.assertIn("No planes are due over Home", quiet)
+        self.assertIn("Your next regular, United flight 1 from Denver, usually comes over at about 10:00 pm.", quiet)
+        self.assertIn("The last one over was Delta flight 573 from Atlanta, 11 minutes ago.", quiet)
+        self.assertIn("planespotter last updated 20 minutes ago.", quiet)
+        self.assertIn("Is it still running on your Mac", spoken_now(status, posted + 4 * 3600, clock))
+        self.assertIn("can't reach planespotter", spoken_now(None, posted, clock))
+
+    def test_relay_posts_when_the_phone_would_be_wrong(self):
+        cfg = make_config(ntfy_topic="planespotter-test")
+        post, clock = FakePost(), [ts(2026, 11, 13, 21)]
+        relay = Relay(PushNotifier(cfg, post=post), lambda: clock[0], per_day=2000)  # plenty: test the timing only
+        t0 = clock[0]
+        self.assertTrue(relay.maybe_send(self.status_at(t0, ("ACA791", "", 240), ("DAL573", "", 1500))))
+        # Six minutes on, Montreal has gone by and Delta is next: the phone works that out by itself.
+        clock[0] = t0 + 360
+        self.assertFalse(relay.maybe_send(self.status_at(t0, ("DAL573", "", 1500))))
+        # A new plane turns up ahead of Delta: the phone can't know, so post.
+        clock[0] = t0 + 420
+        self.assertTrue(relay.maybe_send(self.status_at(t0, ("UAL9", "", 800), ("DAL573", "", 1500))))
+        # A minute's drift doesn't matter; a plane due 5 minutes later does (but not within 4 minutes of the last post).
+        clock[0] = t0 + 480
+        self.assertFalse(relay.stale(self.status_at(t0, ("UAL9", "", 860), ("DAL573", "", 1500)), clock[0]))
+        moved = self.status_at(t0, ("UAL9", "", 1100), ("DAL573", "", 1500))
+        self.assertTrue(relay.stale(moved, clock[0]))
+        self.assertFalse(relay.maybe_send(moved))
+        clock[0] = t0 + 700
+        self.assertTrue(relay.maybe_send(moved))
+        self.assertEqual(len(post.sent), 3)
+
+    def test_relay_spreads_its_allowance_over_the_day(self):
+        cfg = make_config(ntfy_topic="planespotter-test")
+        post, clock = FakePost(), [ts(2026, 11, 13)]
+        relay = Relay(PushNotifier(cfg, post=post), lambda: clock[0], per_day=96)
+        start, first_hour = clock[0], None
+        for minute in range(0, 24 * 60, 1):   # a new plane is next every minute, all day
+            clock[0] = start + minute * 60
+            relay.maybe_send(self.status_at(clock[0], (f"AAA{minute}", "", 300)))
+            if minute == 59:
+                first_hour = len(post.sent)
+        self.assertLessEqual(len(post.sent), 96 + BURST)
+        self.assertGreaterEqual(len(post.sent), 90)       # it keeps posting all day, not just until lunch
+        self.assertLessEqual(first_hour, 4 + BURST)        # about every 15 minutes, plus a couple saved up
+
+    def test_relay_waits_after_a_failed_post(self):
+        cfg = make_config(ntfy_topic="planespotter-test")
+        clock, calls = [ts(2026, 11, 13, 21)], []
+
+        def refuse(url, payload):
+            calls.append(payload)
+            raise urllib.error.URLError("no network")
+        relay = Relay(PushNotifier(cfg, post=refuse), lambda: clock[0])
+        status = self.status_at(clock[0], ("ACA791", "", 240))
+        self.assertFalse(relay.maybe_send(status))
+        clock[0] += 60
+        self.assertFalse(relay.maybe_send(status))
+        self.assertEqual(len(calls), 1)                    # it doesn't hammer ntfy (or the log)
+        clock[0] += RETRY
+        relay.maybe_send(status)
+        self.assertEqual(len(calls), 2)
+
+    def test_status_fits_in_one_ntfy_message(self):
+        posted = ts(2026, 11, 13, 21)
+        big = self.status_at(posted, *[(f"ABC{i}", "Some Airline flight 1234 from Somewhere Far Away " * 3, 60 * i)
+                                       for i in range(6)])
+        big.update(best="x" * 900, sky="y" * 900, space="z" * 600, regulars=[{"label": "A", "at": posted}] * 3,
+                   siri="s" * 400)
+        body = compact(big)
+        self.assertLessEqual(len(body.encode()), MAX_BYTES)
+        self.assertEqual(len(json.loads(body)["next"]), 6)  # the planes always stay; the extras go first
 
 
 class FlightTests(unittest.TestCase):
