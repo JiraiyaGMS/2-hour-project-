@@ -815,6 +815,7 @@ carries on by itself once adsb.lol allows more requests.
 | The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
 | The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
+| `phone` says *timed out* or *Couldn't email it* | The Wi-Fi (hotels, schools, offices) is blocking email. Run `python3 -m planespotter phone --copy widget` and paste on your iPhone (Universal Clipboard: same Apple ID, Bluetooth on), then `--copy siri` for the Siri link. Or AirDrop the files in the `phone-setup` folder. |
 | The widget says *Can't reach planespotter* | planespotter must be running on your Mac. Check the widget uses the script from `python3 -m planespotter phone` (older copies only work on home Wi-Fi). |
 | Siri says nothing useful | Check the shortcut's URL is the *Siri / widget status* link from the phone setup email the steps include **Get Dictionary from Input**, and the key is `siri`. |
 | Commands get no answer | Check you're on the *Commands page* from the phone setup email, and planespotter is running (`watch`). Answers come in the ntfy app within a minute. |
@@ -860,7 +861,7 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter test-email` | Sends a test email. |
 | `python3 -m planespotter test-push` | Sends a test phone notification. |
 | `python3 -m planespotter test-special` | Sends a sample special-plane alert (email and phone). |
-| `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. |
+| `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. Add `--copy widget` (or `siri`, `commands`) to copy one part to the clipboard instead. |
 
 There are more settings (how often to check, the hourly alert limit and so
 on) in [`.env.example`](.env.example). Copy any of them into your `.env`.

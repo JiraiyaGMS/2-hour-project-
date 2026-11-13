@@ -268,6 +268,17 @@ def cmd_test_special(cfg: Config, args) -> int:
     return 0
 
 
+def copy_to_clipboard(text: str) -> bool:
+    """Put text on the Mac's clipboard (Universal Clipboard then lets you paste it on your iPhone)."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("pbcopy"):
+        return False
+    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+    return True
+
+
 def cmd_phone(cfg: Config, args) -> int:
     """Email yourself everything for the phone: widget, Siri, commands, family, friends, calendar."""
     from .phonekit import kit, kit_email
@@ -283,17 +294,36 @@ def cmd_phone(cfg: Config, args) -> int:
     (folder / "planespotter-widget.js").write_text(k["widget"], encoding="utf-8")
     email = kit_email(cfg, k)
     (folder / "phone-setup.txt").write_text(email.text, encoding="utf-8")
-    try:
-        saved = Mailer(cfg).send(email)
-    except SEND_ERRORS as exc:
-        print(f"Couldn't email it ({exc}), but it's saved in {folder}")
-        return 1
-    print(f"✔ Emailed your phone setup to {cfg.email_to}." if not saved else f"Saved: {saved}")
-    print(f"  (Also saved in {folder})\n")
+
+    if args.copy:
+        what = {"widget": k["widget"], "siri": k["siri_url"], "commands": k["cmd_url"], "family": k["family_topic"],
+                "friend": k["friend_code"]}[args.copy]
+        if copy_to_clipboard(what):
+            print(f"✔ Copied the {args.copy} {'script' if args.copy == 'widget' else 'link'} to this Mac's clipboard.")
+            print("  On your iPhone (same Apple ID, Bluetooth on), paste it within a couple of minutes:")
+            print("  in Scriptable for the widget, or in the Shortcuts URL box for Siri.")
+        else:
+            print(what)
+        return 0
+
+    print(f"Your phone setup is saved in {folder}\n")
     print(f"  Siri / widget status:  {k['siri_url']}")
     print(f"  Commands page:         {k['cmd_url']}")
     print(f"  Family topic:          {k['family_topic']}")
-    print(f"  Your friend code:      {k['friend_code']}")
+    print(f"  Your friend code:      {k['friend_code']}\n")
+    try:
+        saved = Mailer(cfg).send(email)
+    except SEND_ERRORS as exc:
+        print(f"Couldn't email it: {exc}")
+        print("Hotel, school and work Wi-Fi often block sending email. Other ways to get it onto your phone:")
+        print("  • Copy the widget script, then paste it in Scriptable on your iPhone (Universal Clipboard):")
+        print("        python3 -m planespotter phone --copy widget")
+        print("  • Copy the Siri link, then paste it into the shortcut's URL box:")
+        print("        python3 -m planespotter phone --copy siri")
+        print(f"  • Or AirDrop the files in {folder} to your iPhone.")
+        print("  • Or try the other email port:  SMTP_PORT=465 python3 -m planespotter phone")
+        return 1
+    print(f"✔ Emailed your phone setup to {cfg.email_to}." if not saved else f"Saved: {saved}")
     return 0
 
 
@@ -357,7 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("test-email", help="send a test email")
     sub.add_parser("test-push", help="send a test phone notification")
     sub.add_parser("test-special", help="send a sample special-plane alert")
-    sub.add_parser("phone", help="email yourself the phone setup (widget, Siri, commands, family, friends)")
+    p_phone = sub.add_parser("phone", help="email yourself the phone setup (widget, Siri, commands, family, friends)")
+    p_phone.add_argument("--copy", choices=["widget", "siri", "commands", "family", "friend"],
+                         help="copy one part to this Mac's clipboard instead (paste it on your iPhone)")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
