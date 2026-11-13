@@ -776,6 +776,20 @@ flight"* → *"Which flight?"* → *"Alaska 1349"* (or *"A S A 1349"*, *"UA 12"*
   leaves Seattle from gate C3, taking off in about 2 hours 20 minutes. It's
   running 25 minutes late."*
 
+**Where the answers come from, and how much to trust them.** The live
+position comes from adsb.lol's volunteer receivers: exact and seconds old,
+but they don't cover everywhere (oceans, and quiet stretches like rural
+Montana). FlightAware also uses radar and satellites, so with gate numbers
+set up (FlightAware AeroAPI is best for this), planespotter asks it whenever
+the free receivers can't see the flight, and says so: *"FlightAware says
+Alaska flight 1349 is in the air: it took off from Portland about 2 hours
+ago … Its last reported position was over Montana …"*. A flight number flies
+every day, often on a different aircraft, so planespotter only trusts what
+it saw of a flight in the last 12 hours (or since you picked it), never
+yesterday's trip. Route databases (adsbdb) are often out of date, so they're
+only used for planes that are flying and only when the route fits where the
+plane actually is.
+
 To set it up:
 
 1. In **Shortcuts**, tap **+** and add **Ask for Input**: type of input
