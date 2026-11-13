@@ -821,6 +821,7 @@ carries on by itself once adsb.lol allows more requests.
 | Commands get no answer | Check you're on the *Commands page* from the phone setup email, and planespotter is running (`watch`). Answers come in the ntfy app within a minute. |
 | *Not sending to ntfy: saving today's messages for plane alerts* in the log | ntfy's 250 a day are nearly used; the extras pause until tomorrow. Plane alerts carry on. |
 | No Moon-crossing alerts | They need the Moon well up and bright, a plane heading right across it, phone notifications, and it not to be quiet hours. They're rare, so don't expect many. |
+| *couldn't get the forecast / the weather / the orbit of...* in the log | Harmless: those extras (contrails, clouds, the space station) couldn't download, often on hotel or public Wi-Fi. planespotter keeps trying quietly in the background; plane alerts aren't affected. |
 | The offline log found nothing | It only looks back about 20 hours, and can't find planes that have since landed far away. Check the weekly email for how much it covered. |
 | Siri says it can't connect | Your phone must be on your home Wi-Fi, planespotter running, and the address in the shortcut must be the *Map on your phone* one plus `/api/now.txt`. |
 | The widget says *Can't reach planespotter* | Same as for Siri. The widget only works on your home Wi-Fi. |

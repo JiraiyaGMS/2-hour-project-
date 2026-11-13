@@ -355,6 +355,7 @@ class SpaceWatch:
         self._sats: dict[int, Satellite] = {}
         self._passes: list[dict] = []
         self._passes_at = -1e12
+        self._failing: set[int] = set()
 
     def satellite(self, number: int) -> Satellite | None:
         now = self.clock()
@@ -371,9 +372,12 @@ class SpaceWatch:
                     store.cache_put(f"tle:{number}", {"lines": list(lines)}, now, REFRESH_S)
                     break
                 except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, StopIteration) as exc:
-                    log.info("couldn't get the orbit of %s: %s", self.satellites.get(number, number), exc)
+                    (log.debug if number in self._failing else log.info)(
+                        "couldn't get the orbit of %s (will keep trying): %s", self.satellites.get(number, number), exc)
+                    self._failing.add(number)
         if lines is None:
             return sat  # keep using an older orbit if we have one
+        self._failing.discard(number)
         sat = Satellite(lines[0], lines[1], self.satellites.get(number, str(number)))
         sat.loaded_at = now
         self._sats[number] = sat
@@ -382,7 +386,7 @@ class SpaceWatch:
     def upcoming(self, hours: float = 72) -> list[dict]:
         """Passes over home in the next few days, soonest first (worked out at most hourly)."""
         now = self.clock()
-        if now - self._passes_at > 3600 or not self._passes:
+        if now - self._passes_at > (3600 if self._passes else 600):  # no orbits yet: try again every 10 minutes
             found = []
             for number in self.satellites:
                 sat = self.satellite(number)

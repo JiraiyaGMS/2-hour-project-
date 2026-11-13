@@ -49,12 +49,16 @@ def build(cfg: Config, budget=None, share: int = 1, quota=None) -> Watcher:
     return watcher
 
 
-def start_place(cfg: Config, budget, share: int, maps: list, quota=None, ready=None) -> threading.Thread:
+def start_place(cfg: Config, budget, share, maps: list, quota=None, ready=None) -> threading.Thread:
     """Watch one of your other places (or where you're travelling) in the background, with its own map."""
     holder: dict = {}
 
     def run():
-        watcher = build(cfg, budget=budget, share=share, quota=quota)  # built in its own thread (SQLite)
+        watcher = build(cfg, budget=budget, quota=quota)  # built in its own thread (SQLite)
+        if isinstance(share, dict):
+            watcher.shared = share  # one count for all places, so travel mode slows them all
+        else:
+            watcher.share = share
         server = None
         if cfg.map_enabled:
             try:
@@ -74,7 +78,7 @@ def start_place(cfg: Config, budget, share: int, maps: list, quota=None, ready=N
     return thread
 
 
-def launch_place(cfg: Config, budget, share: int, maps: list, quota=None):
+def launch_place(cfg: Config, budget, share, maps: list, quota=None):
     """Start a place and wait until it's running: (watcher, map server)."""
     ready = threading.Event()
     thread = start_place(cfg, budget, share, maps, quota, ready)
@@ -160,11 +164,13 @@ def print_map_urls(urls: list[str]) -> None:
 def cmd_watch(cfg: Config, args) -> int:
     places = cfg.place_configs()
     quota = NtfyQuota(cfg.db_path, cfg.ntfy_server) if cfg.ntfy_topic else None  # ntfy's 250 a day
-    watcher = build(cfg, share=1 + len(places), quota=quota)  # other places share adsb.lol's daily limit
+    shared = {"n": 1 + len(places)}  # how many places share adsb.lol's daily limit (travel mode adds one)
+    watcher = build(cfg, quota=quota)
+    watcher.shared = shared
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
     maps = [{"name": c.home_name, "port": c.map_port} for c in [cfg, *places]] if places else []
     travel = TravelMode(cfg, watcher, watcher.budget,
-                        lambda c: launch_place(c, watcher.budget, watcher.share, maps, quota))
+                        lambda c: launch_place(c, watcher.budget, shared, maps, quota))
     outlook = Outlook(cfg)
     friends = Friends(cfg, None, watcher.notifier)
     if cfg.map_enabled:
@@ -190,7 +196,7 @@ def cmd_watch(cfg: Config, args) -> int:
         start_friends_worker(friends)
     for c in places:
         print(f"Also watching {c.home_name} ({c.radius_miles:g} mi zone).")
-        start_place(c, watcher.budget, 1 + len(places), maps, quota)
+        start_place(c, watcher.budget, shared, maps, quota)
     try:
         travel.restore()  # carry on with a trip that was running before a restart
     except Exception as exc:

@@ -72,7 +72,7 @@ class WeatherTests(unittest.TestCase):
                 raise OSError("offline")
             return [metar("NEAR", lat, lon, [{"cover": "OVC", "base": 2000}], obs=now[0])]
 
-        sky = SkyWatch(make_config(), fetch=fetch, clock=lambda: now[0])
+        sky = SkyWatch(make_config(), fetch=fetch, clock=lambda: now[0], background=False)
         self.assertIsNone(sky.report()["weather"])     # offline: no weather, still the sun
         now[0] += 60
         sky.report()

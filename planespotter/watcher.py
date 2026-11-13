@@ -59,6 +59,7 @@ class Watcher:
     ):
         self.cfg = cfg
         self.share = 1  # how many places share adsb.lol's daily limit (each checks this much less often)
+        self.shared: dict | None = None  # {"n": places}, shared by all places so travel mode slows them all
         self.stopped = threading.Event()  # set to end run() (travel mode ending, say)
         self.after_poll = []  # extra jobs after each check: functions of (planes, now)
         self.space = space  # satellite passes, for "the space station flies over in 10 minutes" (None = off)
@@ -411,7 +412,7 @@ class Watcher:
         now = self.clock()
         try:
             passes = self.space.upcoming(hours=24 * 7) if self.space else []
-            hours = Outlook(self.cfg).hours() if self.sky else []  # weather checks on (and not in tests)
+            hours = Outlook(self.cfg, background=False).hours() if self.sky else []  # weather on (not in tests)
             return build_calendar(self.cfg, now, passes, daily_best(self.store, self.cfg, now, hours),
                                   my_flights(self.store))
         except Exception as exc:  # the calendar is an extra: never let it stop the weekly email
@@ -431,7 +432,7 @@ class Watcher:
         if self.sky:  # weather checks are on
             try:
                 from .outlook import Outlook, best_time, best_time_text, contrail_text
-                hours = Outlook(self.cfg).hours()
+                hours = Outlook(self.cfg, background=False).hours()  # the morning email can wait a moment
                 for text in (best_time_text(best_time(self.store, self.cfg, now, hours), self.cfg, now),
                              contrail_text(hours, self.cfg, now)):
                     if text:
@@ -479,7 +480,7 @@ class Watcher:
             else f", emailing {cfg.email_to}",
         )
         if self.budget:
-            every = self.budget.base_interval * self.share
+            every = self.budget.base_interval * (self.shared["n"] if self.shared else self.share)
             log.info("checking every %s to stay within adsb.lol's limit of %d requests a day%s",
                      f"{every / 60:.1f} min" if every >= 90 else f"{every:.0f} s", self.budget.limit,
                      "" if cfg.adsb_api_key else " (a free adsb.lol key raises it; see the README)")
@@ -493,7 +494,8 @@ class Watcher:
             now = self.clock()
             # Check on the budget's schedule; it speeds up while someone has the live map open.
             receiver = getattr(self.feed, "uses_receiver", False)  # your own receiver: no daily limit
-            interval = (self.budget.poll_interval() * self.share if self.budget and not receiver
+            share = self.shared["n"] if self.shared else self.share
+            interval = (self.budget.poll_interval() * share if self.budget and not receiver
                         else float(cfg.poll_seconds))
             if failures:
                 interval = max(interval, min(300, cfg.poll_seconds * 2 ** min(failures, 4)))

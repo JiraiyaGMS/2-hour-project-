@@ -70,11 +70,20 @@ class TravelMode:
             log.info("travel mode: watching %s until %s", trip["name"], self.cfg.local(trip["until"]).strftime("%a %H:%M"))
             return self.status()
 
+    def _share(self, change: int) -> None:
+        """One more (or one fewer) place sharing adsb.lol's daily limit: every place checks less (more) often."""
+        shared = getattr(self.home, "shared", None)
+        if shared:
+            shared["n"] = max(1, shared["n"] + change)
+        else:
+            self.home.share = max(1, self.home.share + change)
+
     def _run(self, trip: dict) -> None:
-        self.home.share += 1  # one more place sharing adsb.lol's daily limit
+        self._share(+1)
         self.trip = trip
         self.watcher, self.server = self.start_watcher(self.config_for(trip))
         self.watcher.share = self.home.share
+        self.watcher.shared = getattr(self.home, "shared", None)
 
     def stop(self) -> dict:
         with self.lock:
@@ -87,7 +96,7 @@ class TravelMode:
             self.watcher.stopped.set()
             if self.server is not None:
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
-            self.home.share = max(1, self.home.share - 1)
+            self._share(-1)
             log.info("travel mode: stopped watching %s", self.trip["name"] if self.trip else "")
         self.watcher = self.server = self.trip = None
 

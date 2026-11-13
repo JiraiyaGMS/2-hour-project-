@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -66,21 +67,38 @@ def contrail_kind(hour: dict) -> str:
 
 
 class Outlook:
-    """The hourly forecast near home (cached for an hour)."""
+    """The hourly forecast near home (cached for an hour).
 
-    def __init__(self, cfg, fetch=fetch_forecast, clock=time.time):
-        self.cfg, self.fetch, self.clock = cfg, fetch, clock
+    With ``background`` (the default) it downloads in a separate thread and answers straight away
+    with what it has, so a slow network (a hotel's, say) never holds anything up."""
+
+    def __init__(self, cfg, fetch=fetch_forecast, clock=time.time, background: bool = True):
+        self.cfg, self.fetch, self.clock, self.background = cfg, fetch, clock, background
         self._data, self._at = None, -1e12
+        self._busy = threading.Lock()
+        self._failing = False
+
+    def _refresh(self) -> None:
+        try:
+            self._data = self.fetch(self.cfg.home_lat, self.cfg.home_lon)
+            self._failing = False
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            # Say so once; keep trying quietly (every 10 minutes) after that.
+            (log.debug if self._failing else log.info)("couldn't get the forecast (will keep trying): %s", exc)
+            self._failing = True
+        finally:
+            if self._busy.locked():
+                self._busy.release()
 
     def hours(self) -> list[dict]:
         """[{t, temperature_250hPa, ..., cloud_cover_low, ...}, ...] for the next 3 days (or [] if offline)."""
         now = self.clock()
-        if now - self._at > (CACHE_S if self._data else 600):
+        if now - self._at > (CACHE_S if self._data else 600) and self._busy.acquire(blocking=False):
             self._at = now
-            try:
-                self._data = self.fetch(self.cfg.home_lat, self.cfg.home_lon)
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-                log.info("couldn't get the forecast: %s", exc)
+            if self.background:
+                threading.Thread(target=self._refresh, name="forecast", daemon=True).start()
+            else:
+                self._refresh()
         if not self._data:
             return []
         h = self._data.get("hourly") or {}

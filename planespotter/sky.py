@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -124,31 +125,45 @@ def nearest_report(metars: list[dict], lat: float, lon: float) -> dict | None:
 
 
 class SkyWatch:
-    """The weather near home (cached) and the sun right now."""
+    """The weather near home (cached) and the sun right now.
+
+    With ``background`` (the default) the weather downloads in a separate thread, so a slow network
+    never delays an alert; the alert just goes without the cloud note until it arrives."""
 
     def __init__(self, cfg, fetch: Callable[[float, float, float], list[dict]] = fetch_metars,
-                 clock: Callable[[], float] = time.time):
-        self.cfg, self.fetch, self.clock = cfg, fetch, clock
+                 clock: Callable[[], float] = time.time, background: bool = True):
+        self.cfg, self.fetch, self.clock, self.background = cfg, fetch, clock, background
         self._weather: dict | None = None
         self._checked = -1e12
         self._ok = False
+        self._failing = False
+        self._busy = threading.Lock()
+
+    def _refresh(self) -> None:
+        lat, lon = self.cfg.home_lat, self.cfg.home_lon
+        try:
+            report = None
+            for span in (0.5, 1.5):  # look nearby first, then farther out
+                report = nearest_report(self.fetch(lat, lon, span), lat, lon)
+                if report:
+                    break
+            self._weather, self._ok, self._failing = report, True, False
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as exc:
+            (log.debug if self._failing else log.info)("couldn't get the weather (will keep trying): %s", exc)
+            self._ok, self._failing = False, True  # keep the last report we had, try again in a while
+        finally:
+            if self._busy.locked():
+                self._busy.release()
 
     def weather(self) -> dict | None:
         now = self.clock()
         wait = CACHE_SECONDS if self._ok else RETRY_SECONDS
-        if now - self._checked >= wait:
+        if now - self._checked >= wait and self._busy.acquire(blocking=False):
             self._checked = now
-            lat, lon = self.cfg.home_lat, self.cfg.home_lon
-            try:
-                report = None
-                for span in (0.5, 1.5):  # look nearby first, then farther out
-                    report = nearest_report(self.fetch(lat, lon, span), lat, lon)
-                    if report:
-                        break
-                self._weather, self._ok = report, True
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as exc:
-                log.info("couldn't get the weather: %s", exc)
-                self._ok = False  # keep the last report we had, try again in a while
+            if self.background:
+                threading.Thread(target=self._refresh, name="weather", daemon=True).start()
+            else:
+                self._refresh()
         return self._weather
 
     def report(self) -> dict[str, Any]:
