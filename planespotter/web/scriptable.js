@@ -1,5 +1,5 @@
 // planespotter home-screen widget, for the free Scriptable app (https://scriptable.app).
-// Shows the next planes due over your house, with a live countdown.
+// Shows the planes due over your house next, your next regular flight, and the last one over.
 // It reads planespotter's latest status from your private ntfy topic, so it works anywhere
 // (home Wi-Fi, a hotel, mobile data) while planespotter is running on your Mac.
 
@@ -34,8 +34,23 @@ function text(stack, value, font, color) {
   t.font = font;
   t.textColor = color || Color.white();
   t.lineLimit = 1;
-  t.minimumScaleFactor = 0.7;
+  t.minimumScaleFactor = 0.6;
   return t;
+}
+
+function countdown(stack, at, size) {
+  // A clock that ticks by itself between the widget's refreshes (iPhone decides when those happen).
+  const d = stack.addDate(new Date(at * 1000));
+  d.applyTimerStyle();
+  d.font = Font.boldMonospacedSystemFont(size);
+  d.textColor = AMBER;
+  d.rightAlignText();
+  d.lineLimit = 1;
+}
+
+function clock(at) {
+  const d = new Date(at * 1000);
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 const data = await load();
@@ -47,53 +62,65 @@ w.refreshAfterDate = new Date(Date.now() + 5 * 60 * 1000);
 w.setPadding(12, 14, 12, 14);
 
 const head = w.addStack();
-text(head, "✈ ", Font.boldSystemFont(12), AMBER);
-text(head, data ? data.home : "planespotter", Font.boldSystemFont(12), AMBER);
-w.addSpacer(6);
-
-// Planes still to come (the status may be a few minutes old, so drop ones already gone).
-const next = data ? (data.next || []).filter((p) => p.at > now - 60) : [];
+text(head, "✈ " + (data ? data.home : "planespotter"), Font.boldSystemFont(12), AMBER);
+w.addSpacer(small ? 4 : 6);
 
 if (!data) {
   text(w, "Can't reach planespotter", Font.boldSystemFont(14));
   const t = w.addText("Is it running on your Mac?");
   t.font = Font.systemFont(11);
   t.textColor = MUTED;
-} else if (!next.length) {
-  text(w, "Nothing due", Font.boldSystemFont(16));
-  text(w, "right now", Font.systemFont(12), MUTED);
-  if (data.last) {
-    w.addSpacer(4);
+} else {
+  // 1. Planes about to come over (the status can be a few minutes old: drop ones already gone).
+  const next = (data.next || []).filter((p) => p.at > now - 60);
+  for (const p of next.slice(0, small ? 1 : 2)) {
     const row = w.addStack();
-    text(row, "Last: " + data.last.label + " · ", Font.systemFont(11), MUTED);
+    row.centerAlignContent();
+    text(row, p.label, Font.boldSystemFont(small ? 16 : 15));
+    row.addSpacer();
+    if (p.at <= now + 5) text(row, "overhead", Font.boldSystemFont(14), AMBER);
+    else countdown(row, p.at, small ? 15 : 14);
+    text(w, [p.route || p.airline, "look " + p.direction + ", " + p.up + "° up"].filter(Boolean).join(" · "),
+      Font.systemFont(11), MUTED);
+    w.addSpacer(3);
+  }
+
+  // 2. Otherwise (or as well, on a medium widget): your next regular flight.
+  const regular = (data.regulars || []).find((r) => r.at > now - 10 * 60);
+  if (regular && (!next.length || (!small && next.length < 2))) {  // only what fits
+    const row = w.addStack();
+    row.centerAlignContent();
+    text(row, "Next regular  ", Font.systemFont(11), MUTED);
+    text(row, regular.label, Font.boldSystemFont(small ? 14 : 14));
+    row.addSpacer();
+    if (regular.at > now) countdown(row, regular.at, small ? 13 : 13);
+    else text(row, "due now", Font.boldSystemFont(12), AMBER);
+    text(w, [regular.route, "usually " + clock(regular.at)].filter(Boolean).join(" · "), Font.systemFont(11), MUTED);
+    w.addSpacer(3);
+  } else if (!next.length) {
+    text(w, "Nothing due right now", Font.boldSystemFont(14));
+    w.addSpacer(3);
+  }
+
+  // 3. The last plane over, and how busy it's been.
+  if (data.last) {
+    const row = w.addStack();
+    row.centerAlignContent();
+    text(row, "Last over  ", Font.systemFont(11), MUTED);
+    text(row, data.last.label + " · ", Font.semiboldSystemFont(11));
     const d = row.addDate(new Date(data.last.at * 1000));
     d.applyRelativeStyle();
     d.font = Font.systemFont(11);
     d.textColor = MUTED;
   }
-  if (!small && data.space) text(w, "🛰️ " + data.space, Font.systemFont(11), MUTED);
-} else {
-  for (const p of next.slice(0, small ? 1 : 3)) {
-    const row = w.addStack();
-    row.centerAlignContent();
-    text(row, p.label, Font.boldSystemFont(small ? 17 : 15));
-    row.addSpacer();
-    if (p.at <= now + 5) {
-      text(row, "overhead", Font.boldSystemFont(small ? 15 : 14), AMBER);
-    } else {
-      const d = row.addDate(new Date(p.at * 1000));
-      d.applyTimerStyle();
-      d.font = Font.boldMonospacedSystemFont(small ? 15 : 14);
-      d.textColor = AMBER;
-      d.rightAlignText();
-    }
-    const where = "look " + p.direction + ", " + p.up + "° up";
-    text(w, [p.route || p.airline, where].filter(Boolean).join(" · "), Font.systemFont(11), MUTED);
-    w.addSpacer(small ? 2 : 5);
+  if (typeof data.hour_count === "number") {
+    const n = data.hour_count;
+    text(w, n + " plane" + (n === 1 ? "" : "s") + " in the last hour", Font.systemFont(11), MUTED);
   }
-}
-if (!small && data && data.updated && now - data.updated > 15 * 60) {
-  text(w, "updated " + Math.round((now - data.updated) / 60) + " min ago", Font.systemFont(9), MUTED);
+  if (!small && !next.length && data.space) text(w, "🛰️ " + data.space, Font.systemFont(10), MUTED);
+  if (data.updated && now - data.updated > 20 * 60) {
+    text(w, "updated " + Math.round((now - data.updated) / 60) + " min ago", Font.systemFont(9), MUTED);
+  }
 }
 
 if (config.runsInWidget) {

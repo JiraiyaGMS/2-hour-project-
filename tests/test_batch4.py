@@ -13,6 +13,7 @@ from planespotter.calendar_ics import build_calendar
 from planespotter.commands import Commands, handle
 from planespotter.friends import Friends, parse_friends
 from planespotter.geo import offset
+from planespotter.jobs import regulars_due, relay_job
 from planespotter.myflight import FlightWatch, add_flight, callsign_for, my_flights
 from planespotter.notify import NtfyQuota, PushNotifier, derived_topic
 from planespotter.outlook import best_time, best_time_text, contrail_kind, contrail_text, ice_humidity
@@ -23,7 +24,7 @@ from planespotter.store import Store
 from planespotter.travel import TravelMode, parse_where
 from planespotter.webmap import start_map_server
 
-from helpers import HOME, FakeFeed, make_config, plane, ts
+from helpers import HOME, FakeFeed, make_config, make_watcher, plane, ts
 
 REF_TS = 1794560400  # 13 Nov 2026 08:20 UTC; positions below from PyEphem (with refraction)
 
@@ -154,6 +155,30 @@ class NtfyTests(unittest.TestCase):
         clock[0] += 31 * 60
         self.assertTrue(relay.maybe_send(status))   # a heartbeat every half hour
         self.assertEqual(json.loads(post.sent[0]["message"])["home"], "Test House")
+
+    def test_widget_has_something_to_show_between_planes(self):
+        """No plane due right now: the status still carries the next regular, the last plane and the hour's count."""
+        watcher, _, _ = make_watcher(ntfy_topic="planespotter-test")
+        store = watcher.store
+        for d in range(1, 6):
+            for hex_code, callsign, hour in (("aaa001", "BAW1", 9), ("aaa002", "BAW2", 15), ("aaa003", "BAW3", 6),
+                                             ("aaa004", "BAW4", 10)):
+                store.record_sighting(plane(hex_code, callsign=callsign), 1.0, 0, ts(2026, 11, d, hour), gap=60)
+        now = ts(2026, 11, 6, 10, 15)
+        store.record_sighting(plane("aaa005", callsign="EZY9"), 1.0, 0, now - 1800, gap=60)
+        due = regulars_due(store, watcher.cfg, now)
+        self.assertEqual([r["label"] for r in due], ["BAW4", "BAW2"])  # BAW1 is long overdue, BAW3 was missed
+        self.assertEqual(due[1]["at"], ts(2026, 11, 6, 15))
+        post = FakePost()
+        relay_job(watcher, Relay(PushNotifier(watcher.cfg, post=post), lambda: now), None)([], now)
+        status = json.loads(post.sent[-1]["message"])
+        self.assertEqual(status["next"], [])
+        self.assertEqual(status["last"]["label"], "EZY9")
+        self.assertEqual(status["hour_count"], 1)
+        self.assertEqual([r["label"] for r in status["regulars"]], ["BAW4", "BAW2"])
+        quiet = build_status(watcher.cfg, [], {}, None, now, {"hour_count": 0, "regulars": []})
+        self.assertEqual(quiet["hour_count"], 0)  # "0 planes in the last hour" is still worth showing
+        self.assertNotIn("regulars", quiet)
 
 
 class FlightTests(unittest.TestCase):

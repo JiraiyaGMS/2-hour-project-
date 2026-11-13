@@ -593,8 +593,12 @@ class MapApp:
                         "eta_s": round(c.eta), "at": round(now + c.eta), "direction": compass(c.az), "up": round(c.up),
                         "alt_ft": c.ac.alt_ft, "sky": note, "text": describe(c, info, note)})
         last = self.store().recent_passes(0, limit=1)
-        return {"home": self.cfg.home_name, "time": now, "next": out,
-                "last": {"label": label_of(last[0]), "at": last[0]["first_seen"]} if last else None}
+        from .jobs import regulars_due
+        hour_count = self.store().db.execute("SELECT COUNT(*) FROM passes WHERE first_seen >= ?",
+                                             (now - 3600,)).fetchone()[0]
+        return {"home": self.cfg.home_name, "time": now, "updated": round(now), "next": out,
+                "last": {"label": label_of(last[0]), "at": last[0]["first_seen"]} if last else None,
+                "hour_count": hour_count, "regulars": regulars_due(self.store(), self.cfg, now)}
 
     def now_text(self) -> str:
         """What Siri says: the plane overhead or coming next."""

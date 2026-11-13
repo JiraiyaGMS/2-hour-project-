@@ -481,8 +481,22 @@ A widget with the next planes due over your house and a live countdown:
 5. Press and hold the new widget, tap **Edit Widget**, and set **Script**
    to **planespotter**.
 
-The countdown ticks by itself; iPhone refreshes the list every few minutes.
-Tapping the widget opens the map (on your home Wi-Fi).
+What it shows:
+
+- **Planes due in the next few minutes**, with a countdown, a route and
+  where to look.
+- **Your next regular flight** when nothing is due yet (a flight that comes
+  over at about the same time most days), counting down to its usual time.
+- **The last plane over** (how long ago) and **how many came over in the
+  last hour**.
+
+iPhone decides when widgets refresh (often only every 15 to 30 minutes), so
+the countdowns tick by themselves in between. Tapping the widget opens the
+map (on your home Wi-Fi).
+
+To update the widget after updating planespotter, run
+`python3 -m planespotter phone --copy widget` on your Mac, then in Scriptable
+open **planespotter**, select all, paste over it, and tap **Done**.
 
 ### Siri: "What's that plane?"
 
@@ -824,7 +838,7 @@ carries on by itself once adsb.lol allows more requests.
 | *couldn't get the forecast / the weather / the orbit of...* in the log | Harmless: those extras (contrails, clouds, the space station) couldn't download, often on hotel or public Wi-Fi. planespotter keeps trying quietly in the background; plane alerts aren't affected. |
 | The offline log found nothing | It only looks back about 20 hours, and can't find planes that have since landed far away. Check the weekly email for how much it covered. |
 | Siri says it can't connect | Your phone must be on your home Wi-Fi, planespotter running, and the address in the shortcut must be the *Map on your phone* one plus `/api/now.txt`. |
-| The widget says *Can't reach planespotter* | Same as for Siri. The widget only works on your home Wi-Fi. |
+| The widget always says *Nothing due right now* | Planes only show a few minutes before they come over, and iPhone refreshes widgets rarely. Update the widget script (`python3 -m planespotter phone --copy widget`, then paste it over the old one in Scriptable): the new one also shows your next regular flight, the last plane over and the last hour's count. |
 | No runway line | It needs a big airport within about 60 miles and planes seen near it. The "planes an hour" part appears after a few days of watching. |
 | No space station notifications | They need phone notifications set up, and only come for visible passes (dark sky, station in sunlight) that climb above 20°. Some weeks there are none. |
 | No rush alerts | They need phone notifications set up, and 5 planes (`RUSH_COUNT`) due within 15 minutes. |

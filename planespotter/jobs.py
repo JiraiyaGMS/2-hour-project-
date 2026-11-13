@@ -47,8 +47,30 @@ def transit_job(watcher):
     return job
 
 
+def regulars_due(store, cfg, now: float, limit: int = 3) -> list[dict]:
+    """Your regular flights still to come today, with the time they usually come over."""
+    from datetime import time as clock_time
+
+    from .schedule import today_board
+
+    out = []
+    today = cfg.local(now).date()
+    for f in today_board(store, cfg, now)["flights"]:
+        if f["state"] not in ("due", "late"):
+            continue
+        h, m = (int(x) for x in f["usual"].split(":"))
+        at = cfg.at(today, clock_time(h, m))
+        if at < now - 20 * 60:
+            continue  # long overdue: probably not coming today
+        out.append({"label": f["callsign"], "at": round(at), "usual": f["usual"],
+                    "route": f"{f['origin']} → {f['destination']}" if f["origin"] and f["destination"] else "",
+                    "airline": f["airline"]})
+    return sorted(out, key=lambda r: r["at"])[:limit]
+
+
 def relay_job(watcher, relay, outlook):
     """Post the latest status (next planes, last one, the space station...) for the widget and Siri."""
+    slow = {"at": -1e12, "regulars": []}  # worked out every 10 minutes, not every check
 
     def job(planes, now: float) -> None:
         if not relay.enabled():
@@ -75,6 +97,16 @@ def relay_job(watcher, relay, outlook):
                                        f"from the {p['start_dir']}.")
             except Exception as exc:
                 log.debug("no space station for the widget: %s", exc)
+        # Things that stay true for a while, so the widget is useful between its (rare) refreshes.
+        extras["hour_count"] = watcher.store.db.execute(
+            "SELECT COUNT(*) FROM passes WHERE first_seen >= ?", (now - 3600,)).fetchone()[0]
+        if now - slow["at"] > 600:
+            slow["at"] = now
+            try:
+                slow["regulars"] = regulars_due(watcher.store, cfg, now)
+            except Exception as exc:
+                log.debug("no regulars for the widget: %s", exc)
+        extras["regulars"] = [r for r in slow["regulars"] if r["at"] > now - 20 * 60]
         active = [f for f in my_flights(watcher.store) if f["state"] in ("waiting", "airborne")]
         if active:
             f = active[0]
