@@ -56,12 +56,25 @@ def from_aeroapi(body: dict, now: float) -> dict | None:
     if not f:
         return None
     o, d = f.get("origin") or {}, f.get("destination") or {}
+    t = {k: _when(f.get(k)) for k in ("scheduled_out", "estimated_out", "actual_out", "scheduled_off", "estimated_off",
+                                       "actual_off", "scheduled_on", "estimated_on", "actual_on", "scheduled_in",
+                                       "estimated_in", "actual_in")}
+
+    def late(secs, est, sch):
+        return round(secs / 60) if isinstance(secs, (int, float)) else round((est - sch) / 60) if est and sch else None
+    phase = ("cancelled" if f.get("cancelled") else "landed" if t["actual_in"] or t["actual_on"] else
+             "air" if t["actual_off"] else "taxi" if t["actual_out"] else "scheduled")
     return {"dep": {"code": o.get("code_iata") or o.get("code") or "", "gate": f.get("gate_origin") or "",
-                    "terminal": f.get("terminal_origin") or ""},
+                    "terminal": f.get("terminal_origin") or "", "scheduled": t["scheduled_out"],
+                    "estimated": t["estimated_out"], "actual": t["actual_out"],
+                    "delay": late(f.get("departure_delay"), t["estimated_out"], t["scheduled_out"])},
+            "takeoff": {"scheduled": t["scheduled_off"], "estimated": t["estimated_off"], "actual": t["actual_off"]},
             "arr": {"code": d.get("code_iata") or d.get("code") or "", "city": d.get("city") or "",
                     "gate": f.get("gate_destination") or "", "terminal": f.get("terminal_destination") or "",
-                    "baggage": f.get("baggage_claim") or ""},
-            "status": f.get("status") or ""}
+                    "baggage": f.get("baggage_claim") or "", "scheduled": t["scheduled_in"],
+                    "estimated": t["estimated_in"], "actual": t["actual_in"],
+                    "delay": late(f.get("arrival_delay"), t["estimated_in"], t["scheduled_in"])},
+            "status": f.get("status") or "", "phase": phase}
 
 
 def pick_aviationstack(data: list[dict], today: str) -> dict | None:
@@ -78,10 +91,19 @@ def from_aviationstack(body: dict, today: str) -> dict | None:
     if not f:
         return None
     dep, arr = f.get("departure") or {}, f.get("arrival") or {}
-    return {"dep": {"code": dep.get("iata") or "", "gate": dep.get("gate") or "", "terminal": dep.get("terminal") or ""},
+    st = f.get("flight_status") or ""
+    phase = ("cancelled" if st == "cancelled" else "landed" if st in ("landed", "diverted") else
+             "air" if st in ("active", "incident") else "taxi" if _when(dep.get("actual")) else "scheduled")
+    return {"dep": {"code": dep.get("iata") or "", "gate": dep.get("gate") or "", "terminal": dep.get("terminal") or "",
+                    "scheduled": _when(dep.get("scheduled")), "estimated": _when(dep.get("estimated")),
+                    "actual": _when(dep.get("actual")), "delay": dep.get("delay")},
+            "takeoff": {"scheduled": None, "estimated": _when(dep.get("estimated_runway")),
+                        "actual": _when(dep.get("actual_runway"))},
             "arr": {"code": arr.get("iata") or "", "city": arr.get("airport") or "", "gate": arr.get("gate") or "",
-                    "terminal": arr.get("terminal") or "", "baggage": arr.get("baggage") or ""},
-            "status": f.get("flight_status") or ""}
+                    "terminal": arr.get("terminal") or "", "baggage": arr.get("baggage") or "",
+                    "scheduled": _when(arr.get("scheduled")), "estimated": _when(arr.get("estimated")),
+                    "actual": _when(arr.get("actual")), "delay": arr.get("delay")},
+            "status": st, "phase": phase}
 
 
 def lookup(api: str, key: str, callsign: str, now: float | None = None, fetch=None) -> dict:
@@ -136,6 +158,12 @@ def describe(info: dict) -> str:
         return f"{verb} gate {g}" + (f" (terminal {t})" if t else "") if g else f"{verb} gate: not known yet"
     dep, arr = info["dep"], info["arr"]
     parts = [f"{dep['code'] or '?'} → {arr['code'] or '?'}", gate(dep, "leaves from"), gate(arr, "arrives at")]
+    leaves = (info.get("takeoff") or {}).get("estimated") or dep.get("estimated") or dep.get("scheduled")
+    if leaves:
+        parts.append("leaves " + datetime.fromtimestamp(leaves).strftime("%a %H:%M"))
+    if isinstance(dep.get("delay"), (int, float)):
+        d = dep["delay"]
+        parts.append(f"{d} min late" if d >= 5 else f"{-d} min early" if d <= -5 else "on time")
     if arr.get("baggage"):
         parts.append(f"bags at carousel {arr['baggage']}")
     if info.get("status"):

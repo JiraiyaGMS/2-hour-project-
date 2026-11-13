@@ -269,6 +269,7 @@ async function livePlanes(where, cache) {
   if (last && now - last.updated < 60 && miles(last.lat, last.lon, where.lat, where.lon) < 1) return last;
   const got = await fetchPlanes(where, cache);
   if (!got || got.limited) return null;
+  remember(cache, got.planes);
   const next = (await comingOver(got.planes, where, cache)).map(({ hex, ...rest }) => rest);
   const nearby = got.planes.filter((p) => miles(where.lat, where.lon, p.lat, p.lon) <= NEARBY_MILES).length;
   // Something staying in your zone (a helicopter hovering): worth a mention, but it isn't "coming over".
@@ -627,9 +628,21 @@ async function allAirports() {
   return out;
 }
 
+function spoken(words) {
+  // Siri's dictation: "a s a 1349" -> "asa 1349"; "where is alaska airlines flight 1349" -> "alaska airlines 1349".
+  const out = [];
+  for (const w of words) {
+    if (["where", "is", "the", "flight", "number", "plane", "find", "track", "my", "please"].includes(w)) continue;
+    if (w.length === 1 && /[a-z]/.test(w) && out.length && /^[a-z]{1,2}$/.test(out[out.length - 1]) &&
+        out[out.length - 1].length < 3) out[out.length - 1] += w;
+    else out.push(w);
+  }
+  return out;
+}
+
 function readQuery(q, airports) {
   // What the words ask for: flight numbers (as planes broadcast them), a registration, an airline, an airport.
-  const words = norm(q).split(" ").filter(Boolean);
+  const words = spoken(norm(q).split(" ").filter(Boolean));
   const airlines = airlineMatches(words);
   const airlineWords = new Set();
   if (airlines.length && airlines[0].score >= 70) {
@@ -709,6 +722,7 @@ async function search(q, where, cache) {
     understood = understood || (ask.airline ? ask.airline[2] : "Planes") + (ask.airport ? " near " + code + " (" + ask.airport[3] + ")" : " near you");
   }
   let results = [...found.values()].sort((a, b) => b.score - a.score);
+  remember(cache, results.map((r) => ({ callsign: r.cs, hex: r.hex })));
   if (ask.airport) {  // flights really going to or from that airport go first
     const code = ask.airport[0];
     const top = results.slice(0, 20);
@@ -762,10 +776,20 @@ function fromAeroApi(body) {
   }
   if (!f) return null;
   const o = f.origin || {}, d = f.destination || {};
-  return { dep: { code: o.code_iata || o.code || "", gate: f.gate_origin || "", terminal: f.terminal_origin || "" },
+  const t = (k) => { const v = isoTime(f[k]); return isNaN(v) ? null : v; };
+  const late = (secs, est, sch) => (typeof secs === "number" ? Math.round(secs / 60) : est && sch ? Math.round((est - sch) / 60) : null);
+  const phase = f.cancelled ? "cancelled" : t("actual_in") || t("actual_on") ? "landed" : t("actual_off") ? "air"
+    : t("actual_out") ? "taxi" : "scheduled";
+  return { dep: { code: o.code_iata || o.code || "", city: o.city || "", gate: f.gate_origin || "", terminal: f.terminal_origin || "",
+                  scheduled: t("scheduled_out"), estimated: t("estimated_out"), actual: t("actual_out"),
+                  delay: late(f.departure_delay, t("estimated_out"), t("scheduled_out")) },
+           takeoff: { scheduled: t("scheduled_off"), estimated: t("estimated_off"), actual: t("actual_off") },
+           landing: { scheduled: t("scheduled_on"), estimated: t("estimated_on"), actual: t("actual_on") },
            arr: { code: d.code_iata || d.code || "", city: d.city || "", gate: f.gate_destination || "",
-                  terminal: f.terminal_destination || "", baggage: f.baggage_claim || "" },
-           status: f.status || "" };
+                  terminal: f.terminal_destination || "", baggage: f.baggage_claim || "",
+                  scheduled: t("scheduled_in"), estimated: t("estimated_in"), actual: t("actual_in"),
+                  delay: late(f.arrival_delay, t("estimated_in"), t("scheduled_in")) },
+           status: f.status || "", phase };
 }
 
 function fromAviationstack(body) {
@@ -775,18 +799,29 @@ function fromAviationstack(body) {
   const f = data.find((x) => x.flight_status === "active") || data.find((x) => x.flight_date === day) || data[0];
   if (!f) return null;
   const dep = f.departure || {}, arr = f.arrival || {};
-  return { dep: { code: dep.iata || "", gate: dep.gate || "", terminal: dep.terminal || "" },
+  const t = (text) => { const v = isoTime(text); return isNaN(v) ? null : v; };
+  const st = f.flight_status || "";
+  const phase = st === "cancelled" ? "cancelled" : st === "landed" || st === "diverted" ? "landed"
+    : st === "active" || st === "incident" ? "air" : t(dep.actual) ? "taxi" : "scheduled";
+  return { dep: { code: dep.iata || "", city: dep.airport || "", gate: dep.gate || "", terminal: dep.terminal || "",
+                  scheduled: t(dep.scheduled), estimated: t(dep.estimated), actual: t(dep.actual),
+                  delay: typeof dep.delay === "number" ? dep.delay : null },
+           takeoff: { scheduled: null, estimated: t(dep.estimated_runway), actual: t(dep.actual_runway) },
+           landing: { scheduled: null, estimated: t(arr.estimated_runway), actual: t(arr.actual_runway) },
            arr: { code: arr.iata || "", city: arr.airport || "", gate: arr.gate || "", terminal: arr.terminal || "",
-                  baggage: arr.baggage || "" },
-           status: f.flight_status || "" };
+                  baggage: arr.baggage || "", scheduled: t(arr.scheduled), estimated: t(arr.estimated), actual: t(arr.actual),
+                  delay: typeof arr.delay === "number" ? arr.delay : null },
+           status: st, phase };
 }
 
-async function gateLookup(cs, cache) {
+async function gateLookup(cs, cache, opts) {
+  // opts.force: ask again now; opts.anyAge: whatever we last heard (the map uses that, to save lookups).
   const g = SETTINGS.gates;
   if (!g || !cs) return { off: true };
   cache.gates = cache.gates || {};
   const hit = cache.gates[cs];
-  if (hit && now - hit.at < (hit.info && !hit.info.none ? 2 * 3600 : 30 * 60)) return hit.info;  // asked lately: free
+  const keep = hit && hit.info && hit.info.phase === "landed" ? 2 * 3600 : 30 * 60;
+  if (hit && !(opts && opts.force) && ((opts && opts.anyAge) || now - hit.at < keep)) return hit.info;  // asked lately: free
   const d = new Date(now * 1000), month = d.getFullYear() + "-" + (d.getMonth() + 1);
   if (!cache.gateUsage || cache.gateUsage.month !== month) cache.gateUsage = { month, n: 0 };
   if (cache.gateUsage.n >= (g.monthly || 90)) return { error: "limit" };
@@ -930,7 +965,11 @@ async function landingFromTrace(mine, cache) {
     const last = pts[pts.length - 1];
     if (last.t >= seen - 60 && last.alt !== null && last.alt < 3000 && now - last.t > 10 * 60) landing = last;
   }
-  if (!landing) return null;
+  if (!landing) {
+    const last = [...pts].reverse().find((p) => !p.ground && p.alt !== null);
+    if (last && last.t >= seen - 60) mine.lastSeen = { at: last.t, lat: last.lat, lon: last.lon, alt: last.alt };
+    return null;
+  }
   const ap = await landedAt(landing.lat, landing.lon);
   return { at: landing.t, lat: landing.lat, lon: landing.lon, code: ap ? ap[0] || ap[1] : "", town: ap ? ap[3] || ap[2] : "" };
 }
@@ -940,7 +979,169 @@ function flightName(mine) {
   return sayName(mine.cs || "", mine.label || mine.cs || "your plane", airline, "");
 }
 
-async function wheresMyPlane(cache) {
+function remember(cache, planes) {
+  // Which aircraft each flight number was flying (so a flight that's out of sight can still be found in
+  // adsb.lol's record of that aircraft).
+  cache.hexes = cache.hexes || {};
+  for (const p of planes || []) if (p.callsign && p.hex) cache.hexes[p.callsign] = { hex: p.hex, at: now };
+  const keys = Object.keys(cache.hexes);
+  if (keys.length > 600) {
+    keys.sort((a, b) => cache.hexes[a].at - cache.hexes[b].at).slice(0, keys.length - 500).forEach((k) => delete cache.hexes[k]);
+  }
+  for (const k of keys) if (cache.hexes[k] && now - cache.hexes[k].at > 3 * 86400) delete cache.hexes[k];
+}
+
+async function planFor(cs, cache) {
+  // Where a flight number usually flies from and to (adsbdb; not checked against a position, so it may be
+  // another leg of the same flight number).
+  cache.plans = cache.plans || {};
+  const hit = cache.plans[cs];
+  if (hit && now - hit.at < 12 * 3600) return hit.r;
+  const body = await getJSON(SETTINGS.adsbdb + "/v0/callsign/" + encodeURIComponent(cs), 6);
+  if (body === null) return null;
+  const fr = body.response && body.response.flightroute;
+  const r = fr ? { airline: (fr.airline && fr.airline.name) || "", origin: (fr.origin && (fr.origin.iata_code || fr.origin.icao_code)) || "",
+                   destination: (fr.destination && (fr.destination.iata_code || fr.destination.icao_code)) || "" } : null;
+  cache.plans[cs] = { at: now, r };
+  return r;
+}
+
+function townOf(code) {
+  const ap = AIRPORTS.find((a) => a[0] === code || a[1] === code);
+  return ap ? ap[3] || ap[2] : code;
+}
+
+function lateText(min) {
+  const m = Math.abs(Math.round(min));
+  const t = m < 60 ? m + " minute" + (m === 1 ? "" : "s") : Math.floor(m / 60) + " hour" + (m >= 120 ? "s" : "") +
+    (m % 60 ? " " + (m % 60) + " minutes" : "");
+  return min > 0 ? t + " late" : t + " early";
+}
+
+function takeoffAt(info) {
+  // When it should take off: the runway time if known, else about 15 minutes after leaving the gate.
+  const k = info.takeoff || {}, d = info.dep || {};
+  return k.estimated || k.scheduled || ((d.estimated || d.scheduled) ? (d.estimated || d.scheduled) + 15 * 60 : null);
+}
+
+function scheduleSentence(name, info) {
+  // From the gate service: not taken off yet, in the air but out of sight, landed, or cancelled.
+  const d = info.dep, a = info.arr;
+  if (info.phase === "cancelled") return name + " is cancelled.";
+  if (info.phase === "scheduled" || info.phase === "taxi") {
+    const off = takeoffAt(info);
+    let text = name + (info.phase === "taxi" ? " has left the gate" : " hasn't taken off yet") + ". It leaves " +
+      (townOf(d.code) || "its airport") + (d.gate ? " from gate " + d.gate + (d.terminal ? ", terminal " + d.terminal : "") : "") +
+      (off ? (off > now + 60 ? ", taking off " + inTime(off - now).replace("about ", "in about ") : ", taking off any minute now") : "") + ".";
+    if (typeof d.delay === "number" && Math.abs(d.delay) >= 5) text += " It's running " + lateText(d.delay) + ".";
+    else if (typeof d.delay === "number") text += " It's on time.";
+    return text;
+  }
+  if (info.phase === "air") {
+    const due = (info.landing && (info.landing.estimated || info.landing.scheduled)) || a.estimated || a.scheduled;
+    return name + " is in the air, but out of range of the receivers right now (over an ocean, say)." +
+      (a.code ? " It's due in " + townOf(a.code) + (due && due > now ? " " + inTime(due - now).replace("about ", "in about ") : "") + "." : "") +
+      (a.gate ? " It arrives at gate " + a.gate + (a.terminal ? ", terminal " + a.terminal : "") + "." : "");
+  }
+  return "";  // landed: said elsewhere
+}
+
+async function describeFlight(f, cache, where) {
+  // Where a flight is: in the air (and where to look, if it's near you), on the ground, landed, not yet
+  // flying, or last seen. f: { cs, label, hex, seen, landed }.
+  const name = flightName(f);
+  if (!f.hex && f.cs && cache.hexes && cache.hexes[f.cs]) {
+    f.hex = cache.hexes[f.cs].hex;
+    f.seen = f.seen || cache.hexes[f.cs].at;
+  }
+  // 1. Right now, as this flight (anywhere in the world)?
+  {
+    // The aircraft we know it flies (it may not be sending its flight number yet on the ground), then the
+    // flight number anywhere in the world.
+    const ours = (a) => !f.cs || String(a.flight || "").trim() === f.cs || (f.hex && a.hex === f.hex && !String(a.flight || "").trim());
+    let body = null, raw = null;
+    if (f.hex && counted(cache)) {
+      body = await getJSON(SETTINGS.adsb + "/v2/hex/" + f.hex, 8);
+      raw = body && Array.isArray(body.ac) ? body.ac.find(ours) : null;
+    }
+    if (!raw && f.cs && counted(cache)) {
+      body = await getJSON(SETTINGS.adsb + "/v2/callsign/" + f.cs, 8);
+      raw = body && Array.isArray(body.ac) ? body.ac.find(ours) : null;
+    }
+    if (raw && raw.hex) { f.hex = raw.hex; remember(cache, [{ callsign: f.cs, hex: raw.hex }]); }
+    if (raw && raw.alt_baro === "ground" && typeof raw.lat === "number") {
+      const ap = await landedAt(raw.lat, raw.lon);
+      return name + " is on the ground" + (ap ? " at " + (ap[3] || ap[2]) : " " + whereIs(raw.lat, raw.lon)) +
+        ((raw.gs || 0) > 5 ? ", taxiing" : "") + "." + (await gateSentence(f, cache, "ground"));
+    }
+    const age = Math.min(300, Math.max(0, body && body.now ? now - body.now / 1000 : 0));
+    const p = raw ? parsePlane(raw, age) : null;
+    if (p) {
+      f.seen = now;
+      f.landed = null;
+      let text = name + " is in the air";
+      if (where) {  // where it is from you
+        const l = lookAt(where, p, where.groundFt || 0);
+        text += " " + (l.miles < 1.5 ? "right over you" : "about " + feet(Math.round(l.miles)) + " miles " + WORDS[compass(l.az)] + " of you");
+        const near = whereIs(p.lat, p.lon);
+        if (near && l.miles > 15) text += ", " + near;
+      } else text += " " + whereIs(p.lat, p.lon);
+      if (p.alt) text += ", at " + feet(Math.round(p.alt / 100) * 100) + " feet";
+      const r = await routeFor(p, cache);
+      const dest = r && r.destination ? await airportByCode(r.destination) : null;
+      if (dest) {
+        const d = miles(p.lat, p.lon, dest[4], dest[5]);
+        const speed = d > 150 ? Math.max(p.gs || 0, 450) : p.gs;  // still climbing? it'll speed up to cruise
+        text += ", heading to " + (dest[3] || dest[2]) + (speed > 80 && d > 3 ? ", " + inTime(d / (speed * 1.15078) * 3600) + " away" : "");
+      }
+      if (p.vr !== null && p.vr < -600 && p.alt !== null && p.alt < 12000) text += ". It's coming down to land";
+      text += ".";
+      if (where) {  // close enough to see: which way to look
+        const l = lookAt(where, p, where.groundFt || 0);
+        if (l.miles <= 60 && l.up >= 1) text += " Look " + WORDS[compass(l.az)] + ", about " + Math.round(l.up) + "° up.";
+      }
+      return text + (await gateSentence(f, cache, "air"));
+    }
+  }
+  // 2. Not in sight: landed (from the aircraft's record), or last seen in the air.
+  const landing = (await landingFromTrace(f, cache)) || f.landed;
+  if (landing && landing.at && landing.at > now - 7 * 86400) {
+    f.landed = landing;
+    let town = landing.town;
+    if (!town && typeof landing.lat === "number") {
+      const ap = await landedAt(landing.lat, landing.lon);
+      town = ap ? ap[3] || ap[2] : "";
+    }
+    return name + " has landed" + (town ? " in " + town : "") + ", " + agoLong(now - landing.at) + "." +
+      (await gateSentence(f, cache, "landed"));
+  }
+  // 3. What the gate service knows (schedules, delays, out of sight over an ocean).
+  if (SETTINGS.gates && f.cs) {
+    const info = await gateLookup(f.cs, cache);
+    if (info && !info.error && !info.none && info.phase !== "landed") {
+      let text = scheduleSentence(name, info);
+      if (info.phase === "air" && f.lastSeen) {
+        text += " Last seen " + agoLong(now - f.lastSeen.at) + ", " + whereIs(f.lastSeen.lat, f.lastSeen.lon) + ".";
+      }
+      if (text) return text;
+    }
+    if (info && info.phase === "landed") {
+      const at = info.arr.actual || (info.landing && info.landing.actual);
+      return name + " has landed" + (info.arr.code ? " in " + townOf(info.arr.code) : "") + (at ? ", " + agoLong(now - at) : "") +
+        "." + (await gateSentence(f, cache, "landed"));
+    }
+  }
+  if (f.lastSeen) {
+    return name + " isn't showing right now. It was last seen " + agoLong(now - f.lastSeen.at) + ", " +
+      whereIs(f.lastSeen.lat, f.lastSeen.lon) + (f.lastSeen.alt ? ", at " + feet(Math.round(f.lastSeen.alt / 100) * 100) + " feet" : "") +
+      ": probably out of range of the receivers (over an ocean, say).";
+  }
+  return "I can't see " + name + " right now. It may not have taken off yet, it may be out of range of the receivers " +
+    "(over an ocean, say), or it may have landed somewhere I can't tell." +
+    (SETTINGS.gates ? "" : " Set up gate numbers in planespotter to hear its schedule too.");
+}
+
+async function wheresMyPlane(cache, where) {
   // The flight you picked in Track a flight (or one planespotter on your Mac is following).
   let mine = cache.mine;
   if (!mine && SETTINGS.relay) {
@@ -955,51 +1156,21 @@ async function wheresMyPlane(cache) {
     return "I don't know which plane is yours yet. Open the planespotter map, tap Track a flight, search for your " +
       "flight, and tap it.";
   }
-  const name = flightName(mine);
-  // In the air (or on the ground) right now, as your flight?
-  if (counted(cache)) {
-    const path = mine.hex ? "/v2/hex/" + mine.hex : "/v2/callsign/" + mine.cs;
-    const body = await getJSON(SETTINGS.adsb + path, 8);
-    const raw = body && Array.isArray(body.ac) ? body.ac.find((a) => !mine.cs || String(a.flight || "").trim() === mine.cs) : null;
-    if (raw && raw.alt_baro === "ground" && typeof raw.lat === "number") {
-      const ap = await landedAt(raw.lat, raw.lon);
-      const there = ap ? (ap[3] || ap[2]) : whereIs(raw.lat, raw.lon);
-      return name + " is on the ground" + (ap ? " at " + there : " " + there) + ((raw.gs || 0) > 5 ? ", taxiing" : "") + "." +
-        (await gateSentence(mine, cache, "ground"));
-    }
-    const age = Math.min(300, Math.max(0, body && body.now ? now - body.now / 1000 : 0));
-    const p = raw ? parsePlane(raw, age) : null;
-    if (p) {
-      mine.hex = p.hex;
-      mine.seen = now;
-      mine.landed = null;
-      let text = name + " is in the air " + whereIs(p.lat, p.lon) +
-        (p.alt ? ", at " + feet(Math.round(p.alt / 100) * 100) + " feet" : "");
-      const r = await routeFor(p, cache);
-      const dest = r && r.destination ? await airportByCode(r.destination) : null;
-      if (dest) {
-        const d = miles(p.lat, p.lon, dest[4], dest[5]);
-        const speed = d > 150 ? Math.max(p.gs || 0, 450) : p.gs;  // still climbing? it'll speed up to cruise
-        text += ", heading to " + (dest[3] || dest[2]) + (speed > 80 && d > 3 ? ", " + inTime(d / (speed * 1.15078) * 3600) + " away" : "");
-      }
-      if (p.vr !== null && p.vr < -600 && p.alt !== null && p.alt < 12000) text += ". It's coming down to land";
-      return text + "." + (await gateSentence(mine, cache, "air"));
-    }
+  return describeFlight(mine, cache, where);
+}
+
+async function flightAnswer(q, cache, where) {
+  // "Hey Siri, find a flight" ... "Alaska 1349": where that flight is.
+  let ask = readQuery(q, AIRPORTS);
+  if (!ask.callsigns.length && !ask.reg) {
+    return "I didn't catch a flight number. Try something like Alaska 1349, or A S A 1349.";
   }
-  // Not flying: when and where it landed.
-  const landing = (await landingFromTrace(mine, cache)) || mine.landed;
-  if (landing && landing.at) {
-    mine.landed = landing;
-    let where = landing.town;
-    if (!where && typeof landing.lat === "number") {
-      const ap = await landedAt(landing.lat, landing.lon);
-      where = ap ? ap[3] || ap[2] : "";
-    }
-    return name + " has landed" + (where ? " in " + where : "") + ", " + agoLong(now - landing.at) + "." +
-      (await gateSentence(mine, cache, "landed"));
+  for (const cs of ask.callsigns.slice(0, 2)) {  // "DL 12": the first reading that's flying or known
+    const f = { cs, label: cs };
+    const said = await describeFlight(f, cache, where);
+    if (!said.startsWith("I can't see") || cs === ask.callsigns.slice(0, 2).slice(-1)[0]) return said;
   }
-  return "I can't see " + name + " right now. It may be out of range of the receivers (over an ocean, say), " +
-    "it may not have taken off yet, or it may have landed somewhere I can't tell.";
+  return describeFlight({ cs: ask.reg, label: ask.reg }, cache, where);
 }
 
 // --- the live map (tap the widget, or run the script in Scriptable) ---
@@ -1102,7 +1273,7 @@ const MAP_PAGE = `<!doctype html>
 var state = { planes: [], at: 0, me: null, radius: 3, next: [], due: {}, status: "", where: "", ground: 0,
               tracked: null, canFollow: false };
 var routes = {}, asks = [], popup = null, popupHex = null, ready = false, centred = false, map = null;
-var search = { results: [], shown: 0, notFlying: [], busy: false }, trail = [], movedAt = 0, followed = {}, gates = {};
+var search = { results: [], shown: 0, notFlying: [], busy: false }, trail = [], movedAt = 0, followed = {}, gates = {}, pinFor = "";
 var R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] }, NL = String.fromCharCode(10);
 var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
 function $(id) { return document.getElementById(id); }
@@ -1219,13 +1390,52 @@ function trackIt(hex) {
   ask({ kind: "track", hex: p.hex, label: p.label, cs: p.cs });
   draw();
 }
-function stopTracking() { state.tracked = null; trail = []; ask({ kind: "untrack" }); draw(); }
+function stopTracking() { state.tracked = null; trail = []; pinFor = ""; ask({ kind: "untrack" }); draw(); }
+function trackWaiting(cs) {
+  // A flight that isn't in the air yet: pinned at its airport (or where it is on the ground) until it takes off.
+  trail = []; pinFor = "";
+  state.tracked = { waiting: true, cs: cs, label: cs, pending: true };
+  $("sheet").classList.add("hidden");
+  ask({ kind: "track", hex: "", label: cs, cs: cs });
+  draw();
+}
+function refreshTimes(cs) { gates[cs] = "asking"; ask({ kind: "gaterefresh", cs: cs }); draw(); }
+function hms(s) {
+  s = Math.max(0, Math.round(s));
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return (h ? h + ":" + ("0" + m).slice(-2) : m) + ":" + ("0" + x).slice(-2);
+}
+function clockAt(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+function waitingCard(t) {
+  var i = t.info || {}, now = Date.now() / 1000, lines = [];
+  var where = t.ground && t.airport ? "On the ground at " + t.airport.town + " (" + t.airport.code + ")" + (t.ground.gs > 5 ? ", taxiing" : "")
+    : t.airport ? "At " + t.airport.town + " (" + t.airport.code + ")" + (t.info ? "" : ", probably") : t.pending ? "Looking for it…" : "Its airport isn't known";
+  var phase = { taxi: "Left the gate", air: "In the air, out of range of the receivers", landed: "Landed", cancelled: "Cancelled" }[i.phase];
+  lines.push(phase || "Not in the air yet");
+  lines.push(where);
+  if (i.gate) lines.push("🚪 Gate " + i.gate + (i.terminal ? ", terminal " + i.terminal : ""));
+  else if (t.info) lines.push("No known gate");
+  if (i.takeoff && i.phase !== "air" && i.phase !== "landed" && i.phase !== "cancelled") {
+    lines.push(i.takeoff > now + 30 ? "<span class='cd'>Takes off in " + hms(i.takeoff - now) + "</span> (about " + clockAt(i.takeoff) + ")"
+                                    : "Should be taking off about now");
+  }
+  if (typeof i.delay === "number") lines.push(i.delay >= 5 ? "⏱ Delayed " + i.delay + " min" : i.delay <= -5 ? "⏱ " + (-i.delay) + " min early" : "⏱ On time");
+  if (!t.gatesOn) lines.push("Gate, take-off time and delays: set up gate numbers (see the README)");
+  else if (t.infoError === "limit") lines.push("Gate lookups for this month are used up");
+  var f = followed[t.cs];
+  var follow = !state.canFollow ? "" : f === "yes" ? "<span class='sub'>🔔 You'll hear when it takes off</span>"
+    : '<button class="small" onclick="followIt(' + "'" + esc(t.cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Tell me when it flies") + "</button>";
+  var times = t.gatesOn ? '<button class="small" onclick="refreshTimes(' + "'" + esc(t.cs) + "'" + ')">' + (gates[t.cs] === "asking" ? "Updating…" : "↻ Times") + "</button>" : "";
+  return "<b>✈︎ " + esc(t.label) + "</b>" + lines.map(function (l) { return "<div class='sub'>" + l + "</div>"; }).join("") +
+    "<div class='btns'>" + follow + times + "<button class='small' onclick='stopTracking()'>Stop</button></div>";
+}
 function followIt(flight) { followed[flight] = "asking"; ask({ kind: "follow", flight: flight }); draw(); renderResults(); }
 function followDone(r) { followed[r.flight] = r.ok ? "yes" : "no"; draw(); renderResults(); return true; }
 function renderCard() {
   var t = state.tracked, card = $("card");
   if (!t) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
+  if (t.waiting) { card.innerHTML = waitingCard(t); return; }
   if (t.lost) {
     card.innerHTML = "<b>" + esc(t.label) + "</b><div class='sub'>Not showing any more: it has probably landed (or flown out of range).</div>" +
       "<div class='btns'><button class='small' onclick='stopTracking()'>OK</button></div>";
@@ -1279,6 +1489,7 @@ function renderResults() {
   var html = search.notFlying.map(function (cs) {
     var f = followed[cs];
     return '<div class="row"><div class="who"><b>' + esc(cs) + "</b><span>Not in the air right now</span></div>" +
+      '<button class="small go" onclick="trackWaiting(' + "'" + esc(cs) + "'" + ')">📍 Track</button> ' +
       (!state.canFollow ? "" : f === "yes" ? '<span class="why">🔔 You’ll hear when it takes off</span>'
         : '<button class="small" onclick="followIt(' + "'" + esc(cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Tell me when it flies") + "</button>") + "</div>";
   }).join("");
@@ -1308,6 +1519,9 @@ function draw() {
   renderCard();
   if (!ready) return;
   var tracked = state.tracked && state.tracked.lat !== undefined && !state.tracked.lost ? state.tracked : null;
+  var w = state.tracked && state.tracked.waiting ? state.tracked : null, spot = w && (w.ground || w.airport);
+  map.getSource("waiting").setData(spot ? { type: "Feature", geometry: { type: "Point", coordinates: [spot.lon, spot.lat] },
+    properties: { text: w.label + (w.info && w.info.gate ? NL + "gate " + w.info.gate : "") } } : EMPTY);
   var features = state.planes.filter(function (p) { return !tracked || p.hex !== tracked.hex; }).map(function (p) {
     var at = glided(p, t, state.at);
     return { type: "Feature", geometry: { type: "Point", coordinates: [at[1], at[0]] },
@@ -1347,9 +1561,15 @@ function frame() {
 }
 function update(d) {
   for (var k in d) state[k] = d[k];
+  if (d.gateFresh) for (var c in d.gateFresh) gates[c] = d.gateFresh[c];
+  var w = state.tracked && state.tracked.waiting ? state.tracked : null, spot = w && (w.ground || w.airport);
+  if (spot && map && ready && pinFor !== w.cs + (w.ground ? ":g" : "")) {  // fly to where it's waiting, once
+    pinFor = w.cs + (w.ground ? ":g" : "");
+    map.flyTo({ center: [spot.lon, spot.lat], zoom: w.ground ? 13 : 11, duration: 900 });
+  }
   if (d.gatesKnown) for (var g in d.gatesKnown) if (!gates[g] || gates[g] === "asking") gates[g] = d.gatesKnown[g];
   var t = state.tracked;
-  if (t && !t.lost && t.lat !== undefined && !t.gone) {
+  if (t && !t.waiting && !t.lost && t.lat !== undefined && !t.gone) {
     trail.push([t.lon, t.lat]);
     if (map && ready && Date.now() - movedAt > 20000) map.easeTo({ center: [t.lon, t.lat], duration: 800 });  // follow it
   }
@@ -1495,7 +1715,7 @@ try {
   map.on("dragstart", function () { movedAt = Date.now(); });
   map.on("load", function () {
     map.addImage("plane", planeIcon(), { sdf: true });
-    ["zone", "me", "planes", "tracked", "trail"].forEach(function (id) { map.addSource(id, { type: "geojson", data: EMPTY }); });
+    ["zone", "me", "planes", "tracked", "trail", "waiting"].forEach(function (id) { map.addSource(id, { type: "geojson", data: EMPTY }); });
     map.addLayer({ id: "zone-fill", type: "fill", source: "zone", paint: { "fill-color": "#ffb020", "fill-opacity": 0.08 } });
     map.addLayer({ id: "zone-line", type: "line", source: "zone",
       paint: { "line-color": "#ffb020", "line-width": 1.5, "line-opacity": 0.75, "line-dasharray": [2, 2] } });
@@ -1511,6 +1731,12 @@ try {
       layout: Object.assign({ "icon-image": "plane", "icon-size": 0.75, "icon-rotate": ["get", "track"],
         "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true }, label),
       paint: { "icon-color": "#3ddc84", "text-color": "#3ddc84", "text-halo-color": "#0b0f14", "text-halo-width": 1.4 } });
+    map.addLayer({ id: "waiting", type: "circle", source: "waiting",
+      paint: { "circle-radius": 9, "circle-color": "#3ddc84", "circle-stroke-width": 3, "circle-stroke-color": "#0b0f14" } });
+    map.addLayer({ id: "waiting-label", type: "symbol", source: "waiting",
+      layout: { "text-field": ["get", "text"], "text-font": ["Noto Sans Regular"], "text-size": 12, "text-offset": [0, 1.3],
+        "text-anchor": "top", "text-allow-overlap": true },
+      paint: { "text-color": "#3ddc84", "text-halo-color": "#0b0f14", "text-halo-width": 1.6 } });
     map.addLayer({ id: "me", type: "circle", source: "me",
       paint: { "circle-radius": 7, "circle-color": "#3b9cff", "circle-stroke-width": 2.5, "circle-stroke-color": "#ffffff" } });
     map.on("click", "planes", function (e) { openPopup(e.features[0].properties.hex); });
@@ -1590,7 +1816,29 @@ async function showMap(startPoint) {
           update.status = "No connection: trying again…";
         }
       }
-      if (following) {  // the flight you're following, wherever it is
+      if (following && !following.hex) {  // not in the air yet: watch for it taking off, and show where it waits
+        const body = counted(cache) ? await getJSON(SETTINGS.adsb + "/v2/callsign/" + following.cs, 10) : null;
+        const raw = body && Array.isArray(body.ac) ? body.ac.find((x) => String(x.flight || "").trim() === following.cs) : null;
+        if (raw && raw.alt_baro !== "ground" && typeof raw.lat === "number") {  // it's taken off: follow it live
+          following.hex = raw.hex;
+          following.seen = now;
+          remember(cache, [{ callsign: following.cs, hex: raw.hex }]);
+          if (cache.mine && cache.mine.cs === following.cs) { cache.mine.hex = raw.hex; cache.mine.seen = now; }
+        } else {
+          const info = SETTINGS.gates ? await gateLookup(following.cs, cache, { anyAge: true }) : null;
+          const ok = info && !info.error && !info.none && !info.off;
+          let code = ok ? info.dep.code : "";
+          if (!code) { const plan = await planFor(following.cs, cache); code = plan ? plan.origin : ""; }
+          const ap = code ? await airportByCode(code) : null;
+          update.tracked = { waiting: true, hex: "", cs: following.cs, label: following.label, gatesOn: !!SETTINGS.gates,
+            airport: ap ? { code: ap[0] || ap[1], town: ap[3] || ap[2], lat: ap[4], lon: ap[5] } : null,
+            ground: raw && typeof raw.lat === "number" ? { lat: raw.lat, lon: raw.lon, gs: raw.gs || 0 } : null,
+            info: ok ? { gate: info.dep.gate, terminal: info.dep.terminal, takeoff: takeoffAt(info), delay: info.dep.delay,
+                         status: info.status, phase: info.phase, to: info.arr.code } : null,
+            infoError: (info && info.error) || "" };
+        }
+      }
+      if (following && following.hex) {  // the flight you're following, wherever it is
         const got = await adsbGet("/v2/hex/" + following.hex, cache, 10);
         if (got && got.planes && got.planes.length) {
           following.seen = now;
@@ -1608,7 +1856,7 @@ async function showMap(startPoint) {
             update.tracked = { hex: following.hex, label: following.label, lost: true };
           }
         }
-      } else {
+      } else if (!following) {
         update.tracked = null;
       }
       await page(wv, "update(" + JSON.stringify(update) + ")");
@@ -1621,11 +1869,15 @@ async function showMap(startPoint) {
       } else if (a.kind === "search") {
         await page(wv, "searchDone(" + JSON.stringify(await search(a.q, where, cache)) + ")");
       } else if (a.kind === "track") {
-        cache.tracking = { hex: a.hex, label: a.label, cs: a.cs, since: now, seen: now };
-        cache.mine = { hex: a.hex, label: a.label, cs: a.cs, since: now, seen: now };  // "Where's my plane?"
+        cache.tracking = { hex: a.hex || "", label: a.label, cs: a.cs, since: now, seen: a.hex ? now : null };
+        cache.mine = { hex: a.hex || "", label: a.label, cs: a.cs, since: now, seen: a.hex ? now : null };  // "Where's my plane?"
         last = -1e12;  // show it now
       } else if (a.kind === "untrack") {
         cache.tracking = null;
+        last = -1e12;
+      } else if (a.kind === "gaterefresh") {  // ↻ Times: ask the gate service again (one lookup)
+        const info = await gateLookup(a.cs, cache, { force: true });
+        await page(wv, "setGate(" + JSON.stringify(a.cs) + "," + JSON.stringify(info) + ")");
         last = -1e12;
       } else if (a.kind === "gate") {
         await page(wv, "setGate(" + JSON.stringify(a.cs) + "," + JSON.stringify(await gateLookup(a.cs, cache)) + ")");
@@ -1641,14 +1893,24 @@ async function showMap(startPoint) {
   saveCache(cache);
 }
 
+function siriAsked() {
+  // What the Siri shortcut passed in: "my plane", or what you said when it asked "Which flight?".
+  if (typeof args === "undefined") return "";
+  const bits = [args.shortcutParameter, ...(args.plainTexts || [])].flat()
+    .filter((x) => typeof x === "string" && x.trim());
+  return bits.join(" ").trim();
+}
+
 if (config.runsInApp) {
   // Tapped the widget, or ran it in Scriptable: the live map. ("point" from a shortcut: straight to pointing.)
   const asked = JSON.stringify((typeof args !== "undefined" && (args.queryParameters || args.plainTexts)) || "");
   await showMap(/point/i.test(asked));
-} else if (forSiri && /my (plane|flight)/i.test(JSON.stringify(typeof args !== "undefined" ?
-    [args.shortcutParameter, args.plainTexts, args.queryParameters] : ""))) {
+} else if (forSiri && siriAsked()) {
+  // "Hey Siri, where's my plane?", or "Hey Siri, find a flight" ... "Alaska 1349"
   const cache = loadCache();
-  Script.setShortcutOutput(await wheresMyPlane(cache));  // "Hey Siri, where's my plane?"
+  const where = await myLocation(cache);
+  const asked = siriAsked();
+  Script.setShortcutOutput(/\bmy (plane|flight)\b/i.test(asked) ? await wheresMyPlane(cache, where) : await flightAnswer(asked, cache, where));
   saveCache(cache);
 } else {
   const data = await gather();

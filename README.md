@@ -671,6 +671,12 @@ airport, or a mix, then **Search**:
 | `LAX`, `Los Angeles`, `Heathrow`, `John Wayne` | Planes near that airport: ones flying to or from it first |
 | `Southwest LAX`, `Delta JFK` | That airline's planes near that airport |
 
+A flight that isn't in the air yet shows **📍 Track**: it's pinned at its
+airport (or where it is on the ground, if it's taxiing), with its gate, a
+countdown to take-off and how late it's running (those three need gate
+numbers set up; **↻ Times** checks again), and the map switches to following
+it as soon as it takes off.
+
 The best 10 show first; **Load more** shows 10 more. Tap one to track it: the
 map follows it (green, with its trail) wherever it goes, and a card shows its
 route, height, speed and how far it is from you. **🔔 Notify me when it lands**
@@ -751,6 +757,34 @@ Set it up like the first Siri shortcut, with one difference:
 3. Add **Speak Text** underneath.
 4. Name the shortcut **Where's my plane** and tap **Done**. Then: *"Hey Siri,
    where's my plane?"*
+
+### Siri: "Hey Siri, find a flight"
+
+Any flight, not just yours. iPhones don't let a Siri shortcut take a flight
+number in the same sentence as its name, so Siri asks: *"Hey Siri, find a
+flight"* → *"Which flight?"* → *"Alaska 1349"* (or *"A S A 1349"*, *"UA 12"*).
+
+- In the air: *"Alaska flight 1349 is in the air about 40 miles north-west of
+  you, near Santa Barbara, at 34,000 feet, heading to Seattle, about 1 hour
+  50 minutes away. Look north-west, about 8° up."* (the last part when it's
+  close enough to see).
+- Out of sight: *"… isn't showing right now. It was last seen about 40
+  minutes ago, about 1,140 miles west of San Francisco, at 36,000 feet:
+  probably out of range of the receivers (over an ocean, say)."*
+- Landed: where and how long ago, and the gate if known.
+- Not taken off yet (with gate numbers set up): *"… hasn't taken off yet. It
+  leaves Seattle from gate C3, taking off in about 2 hours 20 minutes. It's
+  running 25 minutes late."*
+
+To set it up:
+
+1. In **Shortcuts**, tap **+** and add **Ask for Input**: type of input
+   **Text**, prompt `Which flight?`.
+2. Add **Run Script** (Scriptable), choose **planespotter**, tap the arrow
+   **›**, turn **Show When Run** off, and set **Parameter** (or **Texts**) to
+   **Provided Input** (tap the field, then the variable above the keyboard).
+3. Add **Speak Text** underneath.
+4. Name it **Find a flight** and tap **Done**.
 
 ### Gate numbers (optional, free with your own key)
 

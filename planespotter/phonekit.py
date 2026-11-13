@@ -56,6 +56,11 @@ def kit_email(cfg, k: dict) -> Email:
             "Run Script step's Parameter (or Texts) type: my plane",
             "Name it Where's my plane. It tells you where the flight you picked in Track a flight is, or when and where it landed.",
         ]),
+        ("2c. Siri: \"Find a flight\" (any flight)", [
+            "Shortcuts → + → Ask for Input (Text, prompt: Which flight?), then Run Script → planespotter (Show When Run off, "
+            "Parameter: Provided Input), then Speak Text. Name it Find a flight.",
+            "Say \"Hey Siri, find a flight\", then the flight when it asks, like \"Alaska 1349\".",
+        ]),
         ("3. Commands from your phone (travel mode, your flight)", [
             f"Open this page in Safari and bookmark it: {k['cmd_url']}",
             "Type a message and tap send. For example: travel 33.8090,-117.9265 Disneyland  ·  home  ·  "

@@ -491,6 +491,17 @@ class GateTests(unittest.TestCase):
         self.assertEqual(asked[0], ("https://aeroapi.flightaware.com/aeroapi/flights/ASA312", {"x-apikey": "KEY"}))
         self.assertEqual((info["arr"]["gate"], info["arr"]["terminal"], info["dep"]["gate"]), ("N12", "N", "22B"))  # today's, not tomorrow's
         self.assertIn("arrives at gate N12 (terminal N)", describe(info))
+        self.assertEqual(info["phase"], "landed")
+
+    def test_a_flight_that_hasnt_left_yet(self):
+        from planespotter.gates import lookup
+        body = {"flights": [{"ident_icao": "ASA1349", "status": "Scheduled / Delayed", "origin": {"code_iata": "SEA"},
+                             "destination": {"code_iata": "HNL"}, "gate_origin": "C3", "departure_delay": 1500,
+                             "scheduled_out": "2026-11-13T20:00:00Z", "estimated_out": "2026-11-13T20:25:00Z",
+                             "estimated_off": "2026-11-13T20:40:00Z"}]}
+        info = lookup("aeroapi", "KEY", "ASA1349", self.now, lambda u, h: (200, body))
+        self.assertEqual((info["phase"], info["dep"]["gate"], info["dep"]["delay"]), ("scheduled", "C3", 25))
+        self.assertEqual(info["takeoff"]["estimated"], ts(2026, 11, 13, 20, 40))
 
     def test_aviationstack(self):
         from planespotter.gates import lookup
