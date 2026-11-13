@@ -58,9 +58,10 @@ overhead today, and a live 3D/2D map of the sky around you.
   wherever your phone is, even with the Mac off. Your **plane alerts follow
   your phone** when you travel, **My flight** follows your flight, your
   **family** gets the highlights, and **friends** can compare collections.
-- **Always on:** the Mac runs planespotter **by itself** from login (and
-  restarts it if it ever stops), and you can switch **emails off** and get
-  the reports as phone notifications instead.
+- **Always on:** planespotter runs **by itself**, on your Mac or on a
+  **free cloud server** (so the alerts keep coming with the Mac closed), you
+  can switch **emails off** and get the reports as phone notifications, and
+  a **live map on your phone** shows the planes around you anywhere.
 - **Sky extras:** a heads-up when a plane is about to **cross the Moon**,
   planets and bright stars in the sky view, a **contrail forecast**, and the
   **best time to look up** each day, in your **calendar** too.
@@ -483,13 +484,89 @@ Three things make planespotter something you just check on your phone:
    you go, and switches back when you're home: you get one notification when
    it starts and one when you're back. Turn it off with `FOLLOW_PHONE=off`.
 
-**What still needs the Mac:** push notifications. An iPhone can't run a
-program in the background all day, so the alerts come from planespotter on
-your Mac (or another computer that's always on). If the Mac is asleep or
-off, the widget and Siri carry on by themselves; the alerts pause, and the
-offline log fills in what it missed when the Mac wakes up. A MacBook with
-its lid closed sleeps (unless it's plugged into an external screen), so
-for alerts all the time, leave it open and plugged in at home.
+**Push notifications need planespotter running somewhere.** An iPhone
+can't run a program in the background all day, so the alerts come from
+planespotter on a computer that's always on. On your Mac, they pause while
+it's asleep (a MacBook with its lid closed sleeps) and the offline log fills
+in what it missed. For alerts all the time with the Mac closed or far away,
+**run it on a free cloud server** (next section): one command moves it
+there. The widget, Siri and the phone map never need either.
+
+## Run it in the cloud (free, always on)
+
+A cloud server is a computer in a data centre that's always on. Oracle
+Cloud gives everyone one small server free, for good, which is plenty for
+planespotter. Once it runs there, your Mac can be closed, asleep or with
+you anywhere: the alerts, the morning and weekly reports, and the
+alerts-follow-your-phone part all keep going.
+
+**1. Make a key on your Mac** (it lets your Mac log in to the server). In
+Terminal:
+
+```bash
+ssh-keygen -t ed25519
+```
+
+Press **Return** three times. (If it says the file *already exists*, type
+**n**: you already have a key.) Then copy the public half of the key (it's
+safe to share):
+
+```bash
+pbcopy < ~/.ssh/id_ed25519.pub
+```
+
+**2. Sign up** at **oracle.com/cloud/free** → **Start for free**. Choose a
+**Home Region** near you (for example *US West (San Jose)*); it can't be
+changed later. Oracle asks for a card to check you're a real person: the
+Always Free server isn't charged.
+
+**3. Make the server.** In the Oracle Cloud console, open the **☰** menu →
+**Compute** → **Instances** → **Create instance**. (The names below can
+differ a little as Oracle updates its pages.)
+
+- **Name:** `planespotter`.
+- **Image and shape** → **Edit**:
+  - **Change image** → **Ubuntu** → **Canonical Ubuntu 24.04** → **Select**.
+  - **Change shape** → **Virtual machine** → **Specialty and previous
+    generation** → **VM.Standard.E2.1.Micro** (marked *Always Free-eligible*)
+    → **Select**.
+- **Networking:** leave it as it is (it gets a public IP address).
+- **Add SSH keys:** choose **Paste public keys** and paste (**Command V**).
+- Click **Create**.
+
+**4.** When it says **Running** (a minute or two), copy its **Public IP
+address** from the page.
+
+**5. Move planespotter there.** On your Mac (put the address in place of
+`203.0.113.5`):
+
+```bash
+cd ~/planespotter && python3 -m planespotter server ubuntu@203.0.113.5
+```
+
+It installs planespotter on the server, copies your settings (with your
+time zone: servers run on UTC) and your history, starts it there so it runs
+by itself from boot, and stops it on your Mac so every alert comes once.
+When it says **✔ planespotter now runs on your server**, you're done. Your
+phone needs nothing new.
+
+| Command (on your Mac) | What it does |
+| --- | --- |
+| `python3 -m planespotter server status` | Is it running there, and its latest messages. |
+| `python3 -m planespotter server update` | After updating planespotter on your Mac, update it on the server too. |
+| `python3 -m planespotter server stop` | Stop it on the server and bring its history back to the Mac (then `autostart` runs it on the Mac again). |
+
+Good to know:
+
+- While the server runs it, `watch` on the Mac says so and doesn't start
+  (every alert would come twice). The live map on the Mac
+  (`python3 -m planespotter map`) still works for the planes in the sky; your
+  history is on the server.
+- Oracle says it may reclaim Always Free servers that sit almost idle for a
+  week. planespotter is light, so if that ever happens, make a new server
+  and run the `server` command again.
+- Any always-on Linux computer works the same way (another cloud, a
+  Raspberry Pi at home): `python3 -m planespotter server user@address`.
 
 ### Emails off
 
@@ -545,6 +622,9 @@ A widget with the next planes due over your house and a live countdown:
 6. Press and hold the new widget, tap **Edit Widget**, and set **Script**
    to **planespotter**.
 
+**Tap the widget for a live map** of the planes around you (see *Live map
+on your phone* below).
+
 What it shows:
 
 - **Planes due in the next few minutes**, with a countdown, a route and
@@ -562,6 +642,21 @@ map (on your home Wi-Fi).
 To update the widget after updating planespotter, run
 `python3 -m planespotter phone --copy widget` on your Mac, then in Scriptable
 open **planespotter**, select all, paste over it, and tap **Done**.
+
+### Live map on your phone
+
+Tap the widget (or open **planespotter** in Scriptable and tap **▶**) for a
+full-screen map of the planes around you, wherever you are: your zone around
+the blue dot, every plane with its callsign and height (amber: the next
+ones over you, blue: below 10,000 ft), moving smoothly between updates, and
+**Next over you** with countdowns at the bottom. Tap a plane for its airline,
+route, aircraft type, height and speed. Close it with **Close** (top left) or
+a swipe down.
+
+It asks adsb.lol from your phone every 15 seconds for the first 10 minutes,
+then every minute, and pauses for the day if the phone has asked about 400
+times (adsb.lol allows about 500 a day per connection). It doesn't need your
+Mac or the server.
 
 ### Siri: "Hey Siri, Planespotter"
 
@@ -920,6 +1015,9 @@ carries on by itself once adsb.lol allows more requests.
 | The widget says *Can't get the planes* | The phone has no internet, or adsb.lol isn't answering: it tries again at the next refresh, and shows its last answer when it has one. |
 | The widget shows **Home** while you're away (or the wrong town) | Scriptable needs your location: iPhone **Settings → Scriptable → Location → While Using the App or Widgets**, with **Precise Location** on. Without it, the widget uses where you last were, or home. |
 | Alerts don't follow you when you travel | The planespotter script on your phone sends your location when the widget refreshes or you ask Siri: make sure it's the newest script (`python3 -m planespotter phone --copy widget`), that planespotter is running on your Mac, and that `FOLLOW_PHONE` isn't `off`. The Mac reacts within a minute or two. |
+| `server` says *Connecting to the server didn't work* | Check the address (the server's **Public IP address**), that the user is `ubuntu`, and that you pasted your Mac's key when you made the server. Try `ssh ubuntu@<address>`: if that asks for a password or says *Permission denied*, the key is missing (in Oracle: the instance page → add the key, or make the server again). |
+| The phone map says *Paused for today* | The phone has asked adsb.lol about 400 times today: it carries on tomorrow. The widget and Siri reuse recent answers meanwhile. |
+| *planespotter runs on your server* when you start it on the Mac | It's running on your cloud server, so the Mac stays out of the way. `server status` checks on it; `server stop` brings it back to the Mac. |
 | *planespotter is already running* | It's running by itself in the background (see *Always on*), so there's nothing to start. `python3 -m planespotter autostart status` shows what it's doing. |
 | The widget always says *Nothing due right now* | Planes only show a few minutes before they come over, and iPhone refreshes widgets rarely. Update the widget script (`python3 -m planespotter phone --copy widget`, then paste it over the old one in Scriptable): the new one also shows your next regular flight, the last plane over and the last hour's count. |
 | No runway line | It needs a big airport within about 60 miles and planes seen near it. The "planes an hour" part appears after a few days of watching. |
@@ -960,7 +1058,8 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter test-push` | Sends a test phone notification. |
 | `python3 -m planespotter test-special` | Sends a sample special-plane alert (email and phone). |
 | `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. Add `--copy widget` (or `siri`, `commands`) to copy one part to the clipboard instead, or `--test` to see what Siri and the widget would say. |
-| `python3 -m planespotter autostart` | Mac: runs planespotter by itself from login, all the time (`autostart status` to check on it, `autostart off` to stop). |
+| `python3 -m planespotter autostart` | Runs planespotter by itself (Mac: from login; Linux: from boot), all the time (`autostart status` to check on it, `autostart off` to stop). |
+| `python3 -m planespotter server ubuntu@<address>` | Moves planespotter to an always-on cloud server (`server status`, `server update`, `server stop`). See *Run it in the cloud*. |
 | `python3 -m planespotter emails off` | No more emails: the reports come as phone notifications (`emails on` to undo). |
 
 There are more settings (how often to check, the hourly alert limit and so

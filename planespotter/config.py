@@ -167,6 +167,7 @@ class Config:
     relay: bool = True           # send your status to a private ntfy topic so the widget and Siri work anywhere
     emails: bool = True          # off: no emails at all (the reports come as phone notifications instead)
     follow_phone: bool = True    # watch wherever your phone is (it sends its location when it moves)
+    server: str = ""             # planespotter runs on this server instead ("ubuntu@203.0.113.5")
 
     def place_configs(self) -> list["Config"]:
         """A settings copy for each of your other places: its own spot, zone, database and map."""
@@ -355,6 +356,7 @@ class Config:
             relay=flag("RELAY", True),
             emails=flag("EMAILS", True),
             follow_phone=flag("FOLLOW_PHONE", True),
+            server=get("SERVER"),
         )
 
 
@@ -367,5 +369,5 @@ KNOWN_KEYS = {
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
     "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES",
     "FAMILY_ALERTS", "FRIENDS", "SHARE_NAME", "TRANSIT_ALERTS", "TRANSIT_SUN", "RELAY",
-    "EMAILS", "FOLLOW_PHONE",
+    "EMAILS", "FOLLOW_PHONE", "SERVER",
 }

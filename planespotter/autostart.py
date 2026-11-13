@@ -1,9 +1,13 @@
-"""Run planespotter by itself on a Mac: from login, restarted if it ever stops, and only ever once.
+"""Run planespotter by itself: from login (or boot), restarted if it ever stops, and only ever once.
 
-`python3 -m planespotter autostart` installs a LaunchAgent (macOS's own way to keep a program
-running for you). It starts planespotter when you log in, starts it again within a minute if it
-stops for any reason, and keeps the Mac from going to sleep while it's plugged in (so the plane
-alerts keep coming). Its messages go to planespotter.log, which trims itself.
+`python3 -m planespotter autostart` sets this up with the computer's own tools:
+
+* on a Mac, a LaunchAgent: it starts when you log in, again within a minute if it stops, and keeps
+  the Mac from going to sleep while it's plugged in (so the plane alerts keep coming);
+* on Linux (a cloud server, a Raspberry Pi), a systemd service: it starts when the computer boots,
+  even with nobody logged in, and again within a minute if it stops.
+
+Its messages go to planespotter.log, which trims itself.
 """
 
 from __future__ import annotations
@@ -12,11 +16,13 @@ import logging
 import logging.handlers
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 LABEL = "com.planespotter.watch"
+SERVICE = "planespotter"
 LOG_BYTES = 1_000_000   # planespotter.log is trimmed at about 1 MB (keeping 3 older copies)
 
 
@@ -46,7 +52,24 @@ def _launchctl(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True)
 
 
+def supported() -> bool:
+    return sys.platform == "darwin" or (sys.platform.startswith("linux") and shutil.which("systemctl") is not None)
+
+
 def install(env_path: Path, project_dir: Path) -> tuple[bool, str]:
+    return _mac_install(env_path, project_dir) if sys.platform == "darwin" else _linux_install(env_path, project_dir)
+
+
+def uninstall() -> bool:
+    return _mac_uninstall() if sys.platform == "darwin" else _linux_uninstall()
+
+
+def status() -> dict:
+    """{'installed': bool, 'running': bool, 'pid': int | None}."""
+    return _mac_status() if sys.platform == "darwin" else _linux_status()
+
+
+def _mac_install(env_path: Path, project_dir: Path) -> tuple[bool, str]:
     """Write the LaunchAgent and start it now. Returns (worked, what happened)."""
     log_path = project_dir / "planespotter.log"
     path = plist_path()
@@ -63,7 +86,7 @@ def install(env_path: Path, project_dir: Path) -> tuple[bool, str]:
     return True, str(log_path)
 
 
-def uninstall() -> bool:
+def _mac_uninstall() -> bool:
     """Stop it and stop it starting by itself. True if it was set up."""
     path = plist_path()
     _launchctl("bootout", f"gui/{os.getuid()}/{LABEL}")
@@ -74,8 +97,7 @@ def uninstall() -> bool:
     return False
 
 
-def status() -> dict:
-    """{'installed': bool, 'running': bool, 'pid': int | None}."""
+def _mac_status() -> dict:
     out = _launchctl("list", LABEL)
     pid = None
     for line in out.stdout.splitlines():
@@ -83,6 +105,77 @@ def status() -> dict:
             digits = "".join(c for c in line if c.isdigit())
             pid = int(digits) if digits else None
     return {"installed": plist_path().exists(), "running": pid is not None, "pid": pid}
+
+
+# --- Linux: a systemd service (cloud servers, a Raspberry Pi) -------------------------
+
+def unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / f"{SERVICE}.service"
+
+
+def _quote(arg: str) -> str:
+    return f'"{arg}"' if any(c.isspace() for c in arg) else arg
+
+
+def build_unit(python: str, env_path: Path, project_dir: Path, log_path: Path) -> str:
+    """The systemd service: run `watch` from boot, and again within a minute if it ever stops."""
+    command = " ".join(_quote(str(a)) for a in (python, "-m", "planespotter", "--env", env_path,
+                                                 "--log-file", log_path, "watch"))
+    return (
+        "[Unit]\n"
+        "Description=planespotter: plane alerts for your house\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n\n"
+        "[Service]\n"
+        f"WorkingDirectory={_quote(str(project_dir))}\n"
+        f"ExecStart={command}\n"
+        "Environment=PYTHONUNBUFFERED=1\n"
+        "Restart=always\n"
+        "RestartSec=60\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def _systemctl(*args: str, run=subprocess.run) -> subprocess.CompletedProcess:
+    return run(["systemctl", "--user", *args], capture_output=True, text=True)
+
+
+def _linux_install(env_path: Path, project_dir: Path, run=subprocess.run) -> tuple[bool, str]:
+    log_path = project_dir / "planespotter.log"
+    path = unit_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(build_unit(sys.executable, env_path.resolve(), project_dir.resolve(), log_path))
+    for step in (("daemon-reload",), ("enable", SERVICE), ("restart", SERVICE)):
+        done = _systemctl(*step, run=run)
+        if done.returncode != 0:
+            return False, (done.stderr or done.stdout).strip()
+    # Keep running after you log out (and start at boot without anyone logging in).
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    linger = run(["loginctl", "enable-linger", user], capture_output=True, text=True)
+    if linger.returncode != 0:  # over SSH it can need admin rights (cloud servers' ubuntu user has them)
+        linger = run(["sudo", "-n", "loginctl", "enable-linger", user], capture_output=True, text=True)
+    if linger.returncode != 0:
+        return True, f"{log_path}\n  ⚠ To keep it running after you log out, run:  sudo loginctl enable-linger {user}"
+    return True, str(log_path)
+
+
+def _linux_uninstall(run=subprocess.run) -> bool:
+    _systemctl("disable", "--now", SERVICE, run=run)
+    path = unit_path()
+    if path.exists():
+        path.unlink()
+        _systemctl("daemon-reload", run=run)
+        return True
+    return False
+
+
+def _linux_status(run=subprocess.run) -> dict:
+    out = _systemctl("show", SERVICE, "-p", "ActiveState", "-p", "MainPID", run=run).stdout
+    values = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    pid = int(values.get("MainPID") or 0) or None
+    return {"installed": unit_path().exists(), "running": values.get("ActiveState") == "active" and pid is not None,
+            "pid": pid}
 
 
 # --- only once, and a log that trims itself ---------------------------------------

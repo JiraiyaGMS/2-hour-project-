@@ -191,10 +191,108 @@ class AutostartTests(unittest.TestCase):
                 root.addHandler(h)
             root.setLevel(saved[3])
 
-    def test_not_a_mac(self):
-        import sys
-        if sys.platform != "darwin":
+    def test_unsupported_computer(self):
+        from unittest import mock
+        from planespotter import autostart
+        with mock.patch.object(autostart, "supported", return_value=False):
             self.assertEqual(main(["autostart"]), 1)
+
+    def test_linux_service(self):
+        from unittest import mock
+        from planespotter import autostart
+        unit = autostart.build_unit("/usr/bin/python3", Path("/home/ubuntu/planespotter/.env"),
+                                    Path("/home/ubuntu/planespotter"), Path("/home/ubuntu/planespotter/planespotter.log"))
+        self.assertIn("Restart=always", unit)
+        self.assertIn("ExecStart=/usr/bin/python3 -m planespotter --env /home/ubuntu/planespotter/.env", unit)
+        self.assertIn("WantedBy=default.target", unit)
+        self.assertIn('"/home/my files/.env"', autostart.build_unit("p", Path("/home/my files/.env"), Path("/x"), Path("/x/l")))
+        calls = []
+
+        def run(cmd, **kw):
+            import subprocess
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "ActiveState=active\nMainPID=4242\n", "")
+        with TemporaryDirectory() as tmp:
+            with mock.patch.object(autostart, "unit_path", return_value=Path(tmp) / "planespotter.service"):
+                ok, _ = autostart._linux_install(Path(tmp) / ".env", Path(tmp), run=run)
+                self.assertTrue(ok)
+                self.assertIn(["systemctl", "--user", "enable", "planespotter"], calls)
+                self.assertTrue(any(c[:2] == ["loginctl", "enable-linger"] for c in calls))  # runs from boot
+                self.assertEqual(autostart._linux_status(run=run), {"installed": True, "running": True, "pid": 4242})
+                self.assertTrue(autostart._linux_uninstall(run=run))
+
+        def needs_sudo(cmd, **kw):
+            import subprocess
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1 if cmd[0] == "loginctl" else 0, "", "")
+        with TemporaryDirectory() as tmp:
+            with mock.patch.object(autostart, "unit_path", return_value=Path(tmp) / "planespotter.service"):
+                ok, detail = autostart._linux_install(Path(tmp) / ".env", Path(tmp), run=needs_sudo)
+                self.assertTrue(ok)
+                self.assertEqual(calls[-1][:3], ["sudo", "-n", "loginctl"])  # kept running after logging out
+                self.assertNotIn("⚠", detail)
+
+
+class ServerTests(unittest.TestCase):
+    def test_settings_for_the_server(self):
+        from planespotter.server import server_env
+        text = server_env("# mine\nHOME_LAT=1\nDB_PATH=/Users/me/p.db\nSERVER=ubuntu@1.2.3.4\nMAP_LAN=true\n",
+                          "America/Los_Angeles")
+        self.assertIn("HOME_LAT=1", text)
+        self.assertIn("TIMEZONE=America/Los_Angeles", text)   # servers run on UTC
+        self.assertNotIn("DB_PATH", text)
+        self.assertNotIn("SERVER=", text)
+        self.assertIn("MAP_LAN=false", text)                  # the map isn't opened to the internet
+        self.assertNotIn("TIMEZONE=America/Los_Angeles", server_env("TIMEZONE=Europe/London\n", "America/Los_Angeles"))
+
+    def test_address_check(self):
+        from planespotter.server import ServerError, check_target
+        self.assertEqual(check_target(" ubuntu@203.0.113.5 "), "ubuntu@203.0.113.5")
+        for bad in ("203.0.113.5", "ubuntu@", "ubuntu@1.2.3.4; rm -rf ~", "status"):
+            with self.assertRaises(ServerError):
+                check_target(bad)
+
+    def test_moving_to_the_server(self):
+        import subprocess
+        from planespotter.server import Remote, move
+        from planespotter.store import Store
+        sent, commands = {}, []
+
+        def run(cmd, **kw):
+            commands.append(cmd)
+            if cmd[0] == "scp":
+                sent[cmd[-1].split(":", 1)[1]] = Path(cmd[-2]).read_bytes()
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            remote_cmd = cmd[-1]
+            if "sys.version_info" in remote_cmd:
+                return subprocess.CompletedProcess(cmd, 0, "(3, 12)\n", "")
+            if remote_cmd.startswith("test -e"):
+                return subprocess.CompletedProcess(cmd, 1, "", "")       # no history there yet
+            return subprocess.CompletedProcess(cmd, 0, "✔ planespotter now runs by itself\n", "")
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text(f"HOME_LAT={HOME[0]}\nHOME_LON={HOME[1]}\nNTFY_TOPIC=planespotter-x\n")
+            db = Path(tmp) / "planespotter.db"
+            store = Store(db)
+            store.record_sighting(plane("abc123"), 1.0, 0, ts(2026, 11, 13, 9), gap=60)
+            store.close()
+            said = []
+            move(Remote("ubuntu@203.0.113.5", run=run), env, db, say=said.append)
+            remote_cmds = [c[-1] for c in commands if c[0] == "ssh"]
+            self.assertIn("curl -fsSL", remote_cmds[1])                          # installs planespotter there
+            self.assertIn("NTFY_TOPIC=planespotter-x", sent["~/planespotter/.env"].decode())
+            self.assertIn("python3 -m planespotter autostart", remote_cmds[-1])   # and starts it by itself
+            copied = Path(tmp) / "copied.db"
+            copied.write_bytes(sent["~/planespotter/planespotter.db"])
+            self.assertEqual(Store(copied).db.execute("SELECT COUNT(*) FROM passes").fetchone()[0], 1)  # history
+
+    def test_the_mac_steps_aside_while_the_server_runs_it(self):
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text(f"HOME_LAT={HOME[0]}\nHOME_LON={HOME[1]}\nDB_PATH={Path(tmp) / 'p.db'}\n"
+                           "SERVER=ubuntu@203.0.113.5\n")
+            self.assertEqual(main(["--env", str(env), "watch"]), 0)
+            self.assertFalse((Path(tmp) / "p.db.lock").exists())  # it didn't even start
 
 
 if __name__ == "__main__":

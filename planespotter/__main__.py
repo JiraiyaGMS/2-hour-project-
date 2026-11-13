@@ -164,6 +164,11 @@ def print_map_urls(urls: list[str]) -> None:
 def cmd_watch(cfg: Config, args) -> int:
     from .autostart import single_instance
 
+    if cfg.server:
+        print(f"planespotter runs on your server ({cfg.server}), so it doesn't start here too (every alert would")
+        print("come twice). To check on it:  python3 -m planespotter server status")
+        print("To bring it back to this computer:  python3 -m planespotter server stop")
+        return 0
     lock = single_instance(cfg.db_path)  # held until planespotter stops
     if lock is None:
         print("planespotter is already running (probably by itself in the background), so there's nothing to do.")
@@ -248,9 +253,9 @@ def cmd_autostart(env_path: Path, args) -> int:
     from . import autostart
     from .config import PROJECT_DIR
 
-    if sys.platform != "darwin":
-        print("autostart is for Macs. On other computers, start planespotter with your system's own tools")
-        print("(for example a systemd user service on Linux) running:  python3 -m planespotter watch")
+    if not autostart.supported():
+        print("autostart works on Macs and on Linux (with systemd). On this computer, start planespotter with")
+        print("its own tools (for example Task Scheduler on Windows) running:  python3 -m planespotter watch")
         return 1
     if args.state == "off":
         was = autostart.uninstall()
@@ -271,14 +276,24 @@ def cmd_autostart(env_path: Path, args) -> int:
             print("\n".join("  " + line for line in lines))
         return 0
     try:
-        Config.load(env_path)
+        cfg = Config.load(env_path)
     except ConfigError as exc:
         print(f"Fix your settings first: {exc}")
         return 2
+    if cfg.server:
+        print(f"planespotter runs on your server ({cfg.server}), so it won't start here too.")
+        print("To bring it back to this computer first:  python3 -m planespotter server stop")
+        return 1
     ok, detail = autostart.install(env_path, PROJECT_DIR)
     if not ok:
         print(f"Couldn't set it up: {detail}")
         return 1
+    if sys.platform != "darwin":
+        print("✔ planespotter now runs by itself: from when this computer starts, all the time, and again")
+        print("  within a minute if it ever stops. You can log out (or close the connection).")
+        print(f"  • Its messages: {detail}   (or: python3 -m planespotter autostart status)")
+        print("  • To stop it:  python3 -m planespotter autostart off")
+        return 0
     print("✔ planespotter now runs by itself: from when you log in, all the time, and again within a minute")
     print("  if it ever stops. You don't need to start it any more (and you can close Terminal).")
     print("  • While it's plugged in, the Mac won't go to sleep (the screen still turns off).")
@@ -288,6 +303,70 @@ def cmd_autostart(env_path: Path, args) -> int:
     print(f"  • Its messages: {detail}   (or: python3 -m planespotter autostart status)")
     print("  • If planespotter is also running in a Terminal window, press Ctrl+C there: the background one takes over.")
     print("  • To stop it:  python3 -m planespotter autostart off")
+    return 0
+
+
+def cmd_server(env_path: Path, args) -> int:
+    """Move planespotter to an always-on server, check on it, update it, or bring it back."""
+    from . import autostart
+    from .server import Remote, ServerError, move, status, stop, update
+    from .wizard import set_env_value
+
+    try:
+        cfg = Config.load(env_path)
+    except ConfigError as exc:
+        print(f"Fix your settings first: {exc}")
+        return 2
+    action = args.what.lower()
+    if action in ("status", "update", "stop"):
+        target = args.target or cfg.server
+        if not target:
+            print("Which server? Move planespotter there first:  python3 -m planespotter server ubuntu@<its address>")
+            return 1
+    else:
+        target, action = args.what, "move"
+    try:
+        remote = Remote(target)
+        if action == "status":
+            print(status(remote))
+            return 0
+        if action == "update":
+            print("Updating planespotter on your server...")
+            print(update(remote))
+            return 0
+        lock = None
+        for _ in range(15):  # wait for planespotter here to finish stopping
+            if action == "move" and autostart.supported():
+                autostart.uninstall()
+            lock = autostart.single_instance(cfg.db_path)
+            if lock is not None:
+                break
+            time.sleep(1)
+        if lock is None:
+            print("planespotter is still running in a Terminal window on this computer.")
+            print("Press Ctrl+C in that window, then run this again.")
+            return 1
+        if action == "stop":
+            print(f"Stopping planespotter on {target}...")
+            stop(remote, cfg.db_path)
+            set_env_value(env_path, "SERVER", "")
+            print("✔ Done. To run it on this computer again:  python3 -m planespotter autostart")
+            return 0
+        move(remote, env_path, cfg.db_path)
+    except ServerError as exc:
+        print(f"✘ {exc}")
+        if action == "move":
+            print("  Check that the address is right, the user is ubuntu (for Ubuntu servers), and that you pasted")
+            print("  this Mac's key (~/.ssh/id_ed25519.pub) when you made the server. Try:  ssh " + target)
+            print("  planespotter is stopped on this computer: to start it here again:  python3 -m planespotter autostart")
+        return 1
+    set_env_value(env_path, "SERVER", target)
+    print(f"\n✔ planespotter now runs on your server ({target}), all the time, by itself.")
+    print("  It's stopped on this Mac, so you can close it, take it anywhere, or switch it off: your alerts,")
+    print("  morning and weekly reports keep coming, and the widget and Siri carry on as before.")
+    print("  • To check on it:     python3 -m planespotter server status")
+    print("  • After updating planespotter on this Mac, update it there too:  python3 -m planespotter server update")
+    print("  • To bring it back:   python3 -m planespotter server stop   (its history comes back with it)")
     return 0
 
 
@@ -405,7 +484,7 @@ def cmd_phone(cfg: Config, args) -> int:
     if not cfg.ntfy_topic:
         print("Set up phone notifications first: run  python3 -m planespotter setup  and answer y at question 5.")
         return 1
-    ip = lan_address() if cfg.map_lan else None
+    ip = lan_address() if cfg.map_lan and not cfg.server else None  # with a server, the Mac's map isn't running
     k = kit(cfg, f"http://{ip}:{cfg.map_port}" if ip else "")
     folder = Path(cfg.db_path).parent / "phone-setup"
     folder.mkdir(exist_ok=True)
@@ -521,8 +600,12 @@ def main(argv: list[str] | None = None) -> int:
     p_phone.add_argument("--test", action="store_true", help="show what Siri and the widget would say right now")
     p_emails = sub.add_parser("emails", help="turn emails off (phone notifications only) or back on")
     p_emails.add_argument("state", choices=["on", "off"])
-    p_auto = sub.add_parser("autostart", help="Mac: run planespotter by itself, from login, all the time")
+    p_auto = sub.add_parser("autostart", help="run planespotter by itself, from login (or boot), all the time")
     p_auto.add_argument("state", nargs="?", choices=["on", "off", "status"], default="on")
+    p_server = sub.add_parser("server", help="move planespotter to an always-on server (ubuntu@address), or: "
+                                             "status, update, stop")
+    p_server.add_argument("what", help="user@address to move it there, or status / update / stop")
+    p_server.add_argument("target", nargs="?", help="user@address (if it isn't saved yet)")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -543,6 +626,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_emails(env_path, args)
     if args.command == "autostart":
         return cmd_autostart(env_path, args)
+    if args.command == "server":
+        return cmd_server(env_path, args)
 
     try:
         cfg = Config.load(env_path)
