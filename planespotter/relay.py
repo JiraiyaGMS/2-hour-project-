@@ -94,6 +94,8 @@ class Relay:
         if since < MIN_GAP or (key == self.last_key and since < HEARTBEAT):
             return False
         if self.notifier.publish("relay", message=json.dumps(status, separators=(",", ":"))):
+            if self.last_key is None:
+                log.info("posted your status for the widget and Siri (it updates every few minutes)")
             self.last_sent, self.last_key = now, key
             return True
         return False

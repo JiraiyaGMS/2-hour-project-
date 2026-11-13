@@ -285,6 +285,32 @@ def copy_to_clipboard(text: str) -> bool:
     return True
 
 
+def phone_test(cfg: Config) -> int:
+    """Read the status the widget and Siri read (from ntfy), and say what Siri would say."""
+    import json
+    import urllib.error
+
+    try:
+        body = PushNotifier(cfg).poll("relay", since="latest", raw=True).strip()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"Couldn't reach ntfy: {exc}")
+        return 1
+    if not body:
+        print("Nothing for Siri or the widget yet: planespotter hasn't posted a status in the last 12 hours.")
+        print("Start it (python3 -m planespotter watch), keep the Mac awake, wait 5 minutes, then try again.")
+        print("If it's running, look in its window for lines mentioning ntfy.")
+        return 1
+    try:
+        status = json.loads(body.splitlines()[-1])
+    except ValueError:
+        print(f"The status isn't readable: {body[:200]}")
+        return 1
+    age = (time.time() - status.get("updated", 0)) / 60
+    print(f"✔ Siri would say: {status.get('siri')}")
+    print(f"  (posted {age:.0f} min ago; planespotter updates it every few minutes while it runs)")
+    return 0
+
+
 def cmd_phone(cfg: Config, args) -> int:
     """Email yourself everything for the phone: widget, Siri, commands, family, friends, calendar."""
     from .phonekit import kit, kit_email
@@ -301,6 +327,8 @@ def cmd_phone(cfg: Config, args) -> int:
     email = kit_email(cfg, k)
     (folder / "phone-setup.txt").write_text(email.text, encoding="utf-8")
 
+    if args.test:
+        return phone_test(cfg)
     if args.copy:
         what = {"widget": k["widget"], "siri": k["siri_url"], "commands": k["cmd_url"], "family": k["family_topic"],
                 "friend": k["friend_code"]}[args.copy]
@@ -396,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     p_phone = sub.add_parser("phone", help="email yourself the phone setup (widget, Siri, commands, family, friends)")
     p_phone.add_argument("--copy", choices=["widget", "siri", "commands", "family", "friend"],
                          help="copy one part to this Mac's clipboard instead (paste it on your iPhone)")
+    p_phone.add_argument("--test", action="store_true", help="show what Siri and the widget would say right now")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
