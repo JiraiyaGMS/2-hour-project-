@@ -442,5 +442,22 @@ class SearchAndPointTests(unittest.TestCase):
         self.assertNotIn("The nearest plane", spoken_now(both, now, str))  # not the same one twice
 
 
+
+class WheresMyPlaneTests(unittest.TestCase):
+    def test_the_mac_shares_the_flight_it_follows(self):
+        from planespotter.jobs import relay_job
+        from planespotter.myflight import add_flight
+        from planespotter.relay import Relay
+        watcher, _, _ = make_watcher(ntfy_topic="planespotter-test")
+        now = ts(2026, 11, 13, 18)
+        add_flight(watcher.store, "UA 1234", date(2026, 11, 13), now - 3600)
+        watcher.store.db.execute("UPDATE my_flights SET state = 'landed', landed = ?, hex = 'abc123', "
+                                 "destination_city = 'Seattle' WHERE callsign = 'UAL1234'", (now - 600,))
+        post = FakePost()
+        relay_job(watcher, Relay(PushNotifier(watcher.cfg, post=post), lambda: now), None)([], now)
+        mine = json.loads(post.sent[-1]["message"])["myflight"]
+        self.assertEqual((mine["callsign"], mine["state"], mine["destination_city"]), ("UAL1234", "landed", "Seattle"))
+
+
 if __name__ == "__main__":
     unittest.main()

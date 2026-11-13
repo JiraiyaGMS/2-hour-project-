@@ -83,7 +83,7 @@ def build_status(cfg, crossings, infos: dict, last_row, now: float, extras: dict
     siri_extra = [x for x in (extras.get("space"), extras.get("transit")) if x]
     status = {"v": 1, "home": cfg.home_name, "updated": round(now), "next": nxt, "last": last,
               "siri": siri_sentence(cfg, nxt, last, siri_extra, now)}
-    for key in ("sky", "best", "space", "flight", "transit", "hour_count", "regulars"):
+    for key in ("sky", "best", "space", "flight", "transit", "hour_count", "regulars", "myflight"):
         if extras.get(key):
             status[key] = extras[key]
     if "hour_count" in extras:

@@ -112,10 +112,17 @@ def relay_job(watcher, relay, outlook):
             except Exception as exc:
                 log.debug("no regulars for the widget: %s", exc)
         extras["regulars"] = [r for r in slow["regulars"] if r["at"] > now - 20 * 60]
-        active = [f for f in my_flights(watcher.store) if f["state"] in ("waiting", "airborne")]
+        flights = my_flights(watcher.store)
+        active = [f for f in flights if f["state"] in ("waiting", "airborne")]
         if active:
             f = active[0]
             extras["flight"] = f"{f['label']}: {'in the air' if f['state'] == 'airborne' else 'waiting to take off'}"
+        # "Where's my plane?" on the phone: the flight you're following (or the last one, for a week).
+        recent = [f for f in flights if f["state"] != "done" or now - (f["landed"] or f["added"] or 0) < 7 * 86400]
+        if recent:
+            f = max(recent, key=lambda f: f["added"] or 0)
+            extras["myflight"] = {k: f[k] for k in ("label", "callsign", "state", "hex", "took_off", "landed", "last_lat",
+                                                    "last_lon", "last_alt", "last_seen", "destination", "destination_city")}
         relay.maybe_send(build_status(cfg, coming, infos, last[0] if last else None, now, extras))
 
     return job

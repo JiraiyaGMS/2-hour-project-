@@ -724,6 +724,34 @@ Older shortcuts that read the status link directly (Get Contents of URL,
 key `siri`) still work, but they can mention a plane that has already gone
 by. Switch to the steps above.
 
+### Siri: "Hey Siri, where's my plane?"
+
+Tells you where **your** flight is: the one you last picked in **✈︎ Track a
+flight** on the phone map (or, if you haven't picked one, the one
+planespotter on your Mac is following).
+
+- In the air: *"Delta flight 783 is in the air about 80 miles north-east of
+  Las Vegas, at 36,000 feet, heading to Seattle, about 1 hour 50 minutes
+  away."* (and *"It's coming down to land"* near the end).
+- On the ground before take-off: *"… is on the ground at Los Angeles,
+  taxiing."*
+- Landed: *"Alaska flight 312 has landed in Seattle, about 25 minutes
+  ago."* It works out where and when from the plane's recorded positions
+  (adsb.lol keeps about a day of them), and remembers it after that
+  (*"about 2 days ago"*).
+- Gates: the free flight data planespotter uses doesn't include gates, so
+  it says *"No known gate."*
+
+Set it up like the first Siri shortcut, with one difference:
+
+1. In **Shortcuts**, tap **+**, add **Run Script** (Scriptable), and choose
+   **planespotter**.
+2. Tap the arrow **›** on that step: turn **Show When Run** off, and in
+   **Parameter** (some versions call it **Texts**) type `my plane`.
+3. Add **Speak Text** underneath.
+4. Name the shortcut **Where's my plane** and tap **Done**. Then: *"Hey Siri,
+   where's my plane?"*
+
 ### Commands from your phone
 
 Your phone can tell planespotter what to do, from anywhere, through a second

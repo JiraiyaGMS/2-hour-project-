@@ -51,6 +51,11 @@ def kit_email(cfg, k: dict) -> Email:
             "Tap the name at the top, rename the shortcut Planespotter, and tap Done. "
             "Then say \"Hey Siri, Planespotter\".",
         ]),
+        ("2b. Siri: \"Where's my plane?\"", [
+            "Make a second shortcut the same way (Run Script → planespotter, Show When Run off, then Speak Text), and in the "
+            "Run Script step's Parameter (or Texts) type: my plane",
+            "Name it Where's my plane. It tells you where the flight you picked in Track a flight is, or when and where it landed.",
+        ]),
         ("3. Commands from your phone (travel mode, your flight)", [
             f"Open this page in Safari and bookmark it: {k['cmd_url']}",
             "Type a message and tap send. For example: travel 33.8090,-117.9265 Disneyland  ·  home  ·  "
