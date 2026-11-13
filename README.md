@@ -817,7 +817,7 @@ carries on by itself once adsb.lol allows more requests.
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
 | `phone` says *timed out* or *Couldn't email it* | The Wi-Fi (hotels, schools, offices) is blocking email. Run `python3 -m planespotter phone --copy widget` and paste on your iPhone (Universal Clipboard: same Apple ID, Bluetooth on), then `--copy siri` for the Siri link. Or AirDrop the files in the `phone-setup` folder. |
 | The widget says *Can't reach planespotter* | planespotter must be running on your Mac. Check the widget uses the script from `python3 -m planespotter phone` (older copies only work on home Wi-Fi). |
-| Siri says nothing useful | Check the shortcut's URL is the *Siri / widget status* link from the phone setup email the steps include **Get Dictionary from Input**, and the key is `siri`. |
+| Siri just says *Done* or *OK* | Run `python3 -m planespotter phone --test` on the Mac. If it says nothing has been posted, planespotter isn't running (or the Mac is asleep): start it and wait 5 minutes. If it shows a sentence, the shortcut needs fixing: check the URL is the *Siri / widget status* link, the steps include **Get Dictionary from Input**, and the key is `siri`. |
 | Commands get no answer | Check you're on the *Commands page* from the phone setup email, and planespotter is running (`watch`). Answers come in the ntfy app within a minute. |
 | *Not sending to ntfy: saving today's messages for plane alerts* in the log | ntfy's 250 a day are nearly used; the extras pause until tomorrow. Plane alerts carry on. |
 | No Moon-crossing alerts | They need the Moon well up and bright, a plane heading right across it, phone notifications, and it not to be quiet hours. They're rare, so don't expect many. |
@@ -862,7 +862,7 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter test-email` | Sends a test email. |
 | `python3 -m planespotter test-push` | Sends a test phone notification. |
 | `python3 -m planespotter test-special` | Sends a sample special-plane alert (email and phone). |
-| `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. Add `--copy widget` (or `siri`, `commands`) to copy one part to the clipboard instead. |
+| `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. Add `--copy widget` (or `siri`, `commands`) to copy one part to the clipboard instead, or `--test` to see what Siri and the widget would say. |
 
 There are more settings (how often to check, the hourly alert limit and so
 on) in [`.env.example`](.env.example). Copy any of them into your `.env`.
