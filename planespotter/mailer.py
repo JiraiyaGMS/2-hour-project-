@@ -31,6 +31,9 @@ class Mailer:
         msg["To"] = self.cfg.email_to
         msg.set_content(email.text)
         msg.add_alternative(email.html, subtype="html")
+        for filename, data, mime in email.attachments:
+            maintype, subtype = mime.split("/", 1)
+            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
         context = ssl.create_default_context()
         if self.cfg.smtp_port == 465:
@@ -51,5 +54,7 @@ class Mailer:
         slug = re.sub(r"[^a-z0-9]+", "-", email.subject.lower()).strip("-")[:60]
         path = outbox / f"{datetime.now():%Y%m%d-%H%M%S}-{slug}.html"
         path.write_text(email.html, encoding="utf-8")
+        for filename, data, _ in email.attachments:
+            (outbox / f"{path.stem}-{filename}").write_bytes(data)
         log.info("no email login set, saved instead: %s  (%s)", path, email.subject)
         return path

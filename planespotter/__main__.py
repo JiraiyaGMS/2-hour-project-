@@ -19,7 +19,14 @@ from .emails import fmt_alt, test_email
 from .fullpath import FlightLookup, start_full_path_worker
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
-from .notify import PushNotifier
+from .commands import start_command_worker
+from .friends import Friends, start_friends_worker
+from .jobs import relay_job, transit_job
+from .myflight import start_flight_worker
+from .notify import NtfyQuota, PushNotifier
+from .outlook import Outlook
+from .relay import Relay
+from .travel import TravelMode
 from .sky import SkyWatch
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
@@ -28,13 +35,13 @@ from .webmap import (MapServerError, home_elevation_ft, make_budget, shared_feed
 from .wizard import Cancelled, Wizard
 
 
-def build(cfg: Config, budget=None, share: int = 1) -> Watcher:
+def build(cfg: Config, budget=None, share: int = 1, quota=None) -> Watcher:
     store = Store(cfg.db_path)
     budget = budget or make_budget(cfg)
     flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
                if cfg.whole_flights else None)
     watcher = Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
-                      budget=budget, flights=flights, notifier=PushNotifier(cfg),
+                      budget=budget, flights=flights, notifier=PushNotifier(cfg, quota=quota),
                       sky=SkyWatch(cfg) if cfg.weather else None,
                       ground_ft=home_elevation_ft(cfg),
                       space=SpaceWatch(cfg, lambda: store) if cfg.space_alerts else None)
@@ -42,10 +49,13 @@ def build(cfg: Config, budget=None, share: int = 1) -> Watcher:
     return watcher
 
 
-def start_place(cfg: Config, budget, share: int, maps: list) -> threading.Thread:
-    """Watch one of your other places in the background, with its own map."""
+def start_place(cfg: Config, budget, share: int, maps: list, quota=None, ready=None) -> threading.Thread:
+    """Watch one of your other places (or where you're travelling) in the background, with its own map."""
+    holder: dict = {}
+
     def run():
-        watcher = build(cfg, budget=budget, share=share)
+        watcher = build(cfg, budget=budget, share=share, quota=quota)  # built in its own thread (SQLite)
+        server = None
         if cfg.map_enabled:
             try:
                 server, urls = start_map_server(cfg, feed=watcher.feed, budget=budget, sky=watcher.sky)
@@ -53,11 +63,24 @@ def start_place(cfg: Config, budget, share: int, maps: list) -> threading.Thread
                 watcher.notifier.map_url = phone_url(urls)
             except MapServerError as exc:
                 print(f"  (No map for {cfg.home_name}: {exc})")
+        holder.update(watcher=watcher, server=server)
+        if ready is not None:
+            ready.set()
         watcher.run()
 
     thread = threading.Thread(target=run, name=f"place-{cfg.home_name}", daemon=True)
+    thread.holder = holder
     thread.start()
     return thread
+
+
+def launch_place(cfg: Config, budget, share: int, maps: list, quota=None):
+    """Start a place and wait until it's running: (watcher, map server)."""
+    ready = threading.Event()
+    thread = start_place(cfg, budget, share, maps, quota, ready)
+    if not ready.wait(30) or thread.holder.get("watcher") is None:
+        raise RuntimeError(f"couldn't start watching {cfg.home_name}")
+    return thread.holder["watcher"], thread.holder["server"]
 
 
 def cmd_setup(env_path: Path, args) -> int:
@@ -136,13 +159,19 @@ def print_map_urls(urls: list[str]) -> None:
 
 def cmd_watch(cfg: Config, args) -> int:
     places = cfg.place_configs()
-    watcher = build(cfg, share=1 + len(places))  # other places share adsb.lol's daily limit
+    quota = NtfyQuota(cfg.db_path, cfg.ntfy_server) if cfg.ntfy_topic else None  # ntfy's 250 a day
+    watcher = build(cfg, share=1 + len(places), quota=quota)  # other places share adsb.lol's daily limit
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
     maps = [{"name": c.home_name, "port": c.map_port} for c in [cfg, *places]] if places else []
+    travel = TravelMode(cfg, watcher, watcher.budget,
+                        lambda c: launch_place(c, watcher.budget, watcher.share, maps, quota))
+    outlook = Outlook(cfg)
+    friends = Friends(cfg, None, watcher.notifier)
     if cfg.map_enabled:
         try:
             server, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget, sky=watcher.sky)
             server.app.places = maps
+            server.app.travel, server.app.outlook, server.app.friends = travel, outlook, friends
             print_map_urls(urls)
             watcher.notifier.map_url = phone_url(urls)  # tapping a phone notification opens the map (home Wi-Fi)
             for c in places:
@@ -152,11 +181,20 @@ def cmd_watch(cfg: Config, args) -> int:
                 webbrowser.open(urls[0])
         except MapServerError as exc:
             print(f"  (No map: {exc})\n")
-    start_follow_worker(cfg, PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=watcher.budget),
-                        watcher.notifier)
+    positions = PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=watcher.budget)
+    start_follow_worker(cfg, positions, watcher.notifier)
+    start_flight_worker(cfg, watcher.budget, watcher.notifier)
+    watcher.after_poll += [relay_job(watcher, Relay(watcher.notifier, time.time), outlook), transit_job(watcher)]
+    if cfg.ntfy_topic:
+        start_command_worker(cfg, watcher.notifier, travel)  # "travel ...", "flight UA1234" from your phone
+        start_friends_worker(friends)
     for c in places:
         print(f"Also watching {c.home_name} ({c.radius_miles:g} mi zone).")
-        start_place(c, watcher.budget, 1 + len(places), maps)
+        start_place(c, watcher.budget, 1 + len(places), maps, quota)
+    try:
+        travel.restore()  # carry on with a trip that was running before a restart
+    except Exception as exc:
+        print(f"  (Couldn't restart travel mode: {exc})")
     try:
         watcher.run()
     except KeyboardInterrupt:
@@ -230,6 +268,35 @@ def cmd_test_special(cfg: Config, args) -> int:
     return 0
 
 
+def cmd_phone(cfg: Config, args) -> int:
+    """Email yourself everything for the phone: widget, Siri, commands, family, friends, calendar."""
+    from .phonekit import kit, kit_email
+    from .webmap import lan_address
+
+    if not cfg.ntfy_topic:
+        print("Set up phone notifications first: run  python3 -m planespotter setup  and answer y at question 5.")
+        return 1
+    ip = lan_address() if cfg.map_lan else None
+    k = kit(cfg, f"http://{ip}:{cfg.map_port}" if ip else "")
+    folder = Path(cfg.db_path).parent / "phone-setup"
+    folder.mkdir(exist_ok=True)
+    (folder / "planespotter-widget.js").write_text(k["widget"], encoding="utf-8")
+    email = kit_email(cfg, k)
+    (folder / "phone-setup.txt").write_text(email.text, encoding="utf-8")
+    try:
+        saved = Mailer(cfg).send(email)
+    except SEND_ERRORS as exc:
+        print(f"Couldn't email it ({exc}), but it's saved in {folder}")
+        return 1
+    print(f"✔ Emailed your phone setup to {cfg.email_to}." if not saved else f"Saved: {saved}")
+    print(f"  (Also saved in {folder})\n")
+    print(f"  Siri / widget status:  {k['siri_url']}")
+    print(f"  Commands page:         {k['cmd_url']}")
+    print(f"  Family topic:          {k['family_topic']}")
+    print(f"  Your friend code:      {k['friend_code']}")
+    return 0
+
+
 def cmd_test_push(cfg: Config, args) -> int:
     if not cfg.ntfy_topic:
         print("Phone notifications aren't set up yet. Run: python3 -m planespotter setup")
@@ -290,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("test-email", help="send a test email")
     sub.add_parser("test-push", help="send a test phone notification")
     sub.add_parser("test-special", help="send a sample special-plane alert")
+    sub.add_parser("phone", help="email yourself the phone setup (widget, Siri, commands, family, friends)")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -312,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
 
     commands = {"check": cmd_check, "watch": cmd_watch, "map": cmd_map, "digest": cmd_digest,
                 "test-email": cmd_test_email, "test-push": cmd_test_push, "weekly": cmd_weekly,
-                "test-special": cmd_test_special}
+                "test-special": cmd_test_special, "phone": cmd_phone}
     try:
         return commands[args.command](cfg, args)
     except BrokenPipeError:  # output piped into e.g. `head`; not a network problem

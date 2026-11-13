@@ -29,10 +29,15 @@ from .heat import backfill as backfill_heat
 from .heat import heat_json
 from .fullpath import WAITING, FlightLookup, Point, as_path, simplify
 from .logos import LogoCache
+from .astro import not_a_plane, sky_objects, transits
+from .calendar_ics import build_calendar
 from .flow import flow_report
 from .follow import follow, following, unfollow
 from .games import bingo, old_friends, profile, quiz_answer, quiz_question, quiz_score, wrapped
+from .myflight import add_flight, my_flights, parse_day, remove_flight
 from .noise import build_noise, loudness, noise_csv
+from .notify import derived_topic
+from .outlook import Outlook, best_time, best_time_text, contrail_text, daily_best
 from .predict import crossings, describe, glide
 from .schedule import delays_for, today_board
 from .space import SpaceWatch, pass_text
@@ -188,6 +193,10 @@ class MapApp:
         self.secure_url = ""  # the https address for phones, once it's running
         self.space = SpaceWatch(cfg, self.store) if cfg.space_alerts else None
         self.places: list[dict] = []  # the maps of your other places, if any: [{name, url}]
+        self.travel = None    # travel mode (set by `watch`)
+        self.friends = None   # friends' leaderboard (set by `watch`)
+        self.outlook = Outlook(cfg) if cfg.weather else None
+        self._transits = (0.0, [])
         self.clock = clock
         self.budget = budget
         self.feed = feed or shared_feed(cfg, budget)
@@ -210,7 +219,22 @@ class MapApp:
         if receiver and budget:
             budget["interval_s"] = self.cfg.poll_seconds
         return {**data, "paused_s": round(paused), "budget": budget,
-                "source": "receiver" if receiver else "adsb.lol"}
+                "source": "receiver" if receiver else "adsb.lol", "transits": self.transits_json()}
+
+    def transits_json(self) -> list[dict]:
+        """Planes about to cross in front of the Moon (or Sun), for the Look up! card. Worked out every 20 s."""
+        now = self.clock()
+        if now - self._transits[0] < 20 or not self.cfg.transit_alerts:
+            return self._transits[1]
+        planes, fetched_at = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
+        moved = [glide(ac, now - fetched_at + (ac.seen_pos or 0)) for ac in planes or []]
+        bodies = ("Moon", "Sun") if self.cfg.transit_sun else ("Moon",)
+        found = [{"hex": t.ac.hex, "label": t.ac.label, "body": t.body, "at": round(t.at, 1), "miss": round(t.miss, 2),
+                  "az": round(t.az, 1), "el": round(t.el, 1)}
+                 for t in transits(self.cfg, moved, now, home_elevation_ft(self.cfg), horizon=600, bodies=bodies,
+                                   margin=0.15)]
+        self._transits = (now, found)
+        return found
 
     def store(self) -> Store:
         """SQLite connections can't be shared between threads, so each gets its own."""
@@ -230,6 +254,8 @@ class MapApp:
             "secure_url": self.secure_url,
             "rush_count": cfg.rush_count,
             "places": self.places,
+            "travel": self.travel.status() if self.travel else None,
+            "can_travel": self.travel is not None,
         }
 
     def flights_json(self, days: float) -> dict[str, Any]:
@@ -378,6 +404,10 @@ class MapApp:
         store, now = self.store(), self.clock()
         pass_id = body.get("pass_id")
         row = store.get_pass(int(pass_id)) if pass_id else None
+        if row is None and not body.get("hex") and body.get("taken_at"):
+            row = self.match_photo(float(body["taken_at"]))  # from the photo's own time stamp
+            if row is None:
+                raise ValueError("no plane came over your zone around the time that photo was taken")
         hex_code = clean_hex(body.get("hex", "")) or (row["hex"] if row else "")
         if not hex_code:
             raise ValueError("which plane?")
@@ -389,7 +419,16 @@ class MapApp:
         self.photo_dir.mkdir(exist_ok=True)
         (self.photo_dir / f"{photo_id}.jpg").write_bytes(full)
         (self.photo_dir / f"{photo_id}-thumb.jpg").write_bytes(thumb)
-        return {"id": photo_id, **self.yours_json()}
+        return {"id": photo_id, "matched": label_of(row) if row else "", **self.yours_json()}
+
+    def match_photo(self, taken_at: float):
+        """The pass a photo belongs to: the plane over your zone closest to when it was taken."""
+        from .noise import closest_time
+        rows = self.store().db.execute(
+            "SELECT * FROM passes WHERE first_seen <= ? AND last_seen >= ?", (taken_at + 900, taken_at - 900)).fetchall()
+        if not rows:
+            return None
+        return min(rows, key=lambda r: abs(closest_time(self.cfg, r) - taken_at))
 
     def delete_photo(self, body: dict) -> dict[str, Any]:
         photo_id = int(body.get("photo") or 0)
@@ -458,7 +497,7 @@ class MapApp:
     def space_json(self) -> dict[str, Any]:
         """Satellite passes over home for the next 3 days, and tracks for any happening now or soon."""
         if not self.space:
-            return {"passes": [], "tracks": []}
+            return {"passes": [], "tracks": [], "objects": self.objects_json()}
         now = self.clock()
         upcoming = self.space.upcoming()
         tracks = []
@@ -467,10 +506,70 @@ class MapApp:
                 start = max(now - 30, p["start"] - 60)
                 tracks.append({"number": p["number"], "name": p["name"], "visible": p["visible"],
                                "points": self.space.track(p["number"], start, p["end"] + 60 - start)})
-        return {"passes": [{**{k: p[k] for k in ("name", "number", "start", "end", "visible", "visible_from",
+        return {"objects": self.objects_json(),
+                "passes": [{**{k: p[k] for k in ("name", "number", "start", "end", "visible", "visible_from",
                                                     "visible_to", "max_el", "max_t", "start_dir", "max_dir",
                                                     "end_dir", "minutes")},
                             "text": pass_text(p, self.cfg)} for p in upcoming], "tracks": tracks}
+
+    def outlook_json(self) -> dict[str, Any]:
+        """Contrails today, the best time to look up, and "that bright light is Venus"."""
+        now, cfg = self.clock(), self.cfg
+        hours = self.outlook.hours() if self.outlook else []
+        best = best_time(self.store(), cfg, now, hours)
+        return {"contrails": contrail_text(hours, cfg, now), "best": best_time_text(best, cfg, now),
+                "not_a_plane": not_a_plane(now, cfg.home_lat, cfg.home_lon)}
+
+    def objects_json(self) -> list[dict]:
+        """The Moon, planets and brightest stars above the horizon (for the sky view)."""
+        return [{"name": o.name, "kind": o.kind, "az": round(o.az, 2), "el": round(o.el, 2), "mag": round(o.mag, 1)}
+                for o in sky_objects(self.clock(), self.cfg.home_lat, self.cfg.home_lon, min_el=0)
+                if o.kind != "sun"]
+
+    def travel_post(self, body: dict) -> dict[str, Any]:
+        if self.travel is None:
+            raise ValueError("travel mode needs `python3 -m planespotter watch`")
+        if body.get("stop"):
+            return self.travel.stop()
+        lat, lon = float(body.get("lat")), float(body.get("lon"))
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise ValueError("those coordinates are off the map")
+        return self.travel.start(lat, lon, str(body.get("name", ""))[:40])
+
+    def myflights_json(self) -> dict[str, Any]:
+        return {"flights": [f for f in my_flights(self.store()) if f["state"] != "done"]}
+
+    def myflights_post(self, body: dict) -> dict[str, Any]:
+        store = self.store()
+        if body.get("remove"):
+            remove_flight(store, str(body["remove"]).upper())
+        else:
+            day = parse_day(str(body.get("day", "")), self.cfg.local(self.clock()).date())
+            add_flight(store, str(body.get("flight", ""))[:12], day, self.clock())
+        return self.myflights_json()
+
+    def myflight_track(self, callsign: str) -> dict[str, Any]:
+        """Where a flight you're following has been, and where it is now."""
+        row = next((f for f in my_flights(self.store()) if f["callsign"] == callsign.upper()), None)
+        if row is None or not row["hex"]:
+            return {"path": [], "now": None}
+        trace = self.trace_json(row["hex"])
+        now = None
+        if row["last_lat"] is not None:
+            now = {"lat": row["last_lat"], "lon": row["last_lon"], "alt_ft": row["last_alt"], "seen": row["last_seen"]}
+        return {**trace, "now": now, "state": row["state"]}
+
+    def calendar(self) -> bytes:
+        now = self.clock()
+        hours = self.outlook.hours() if self.outlook else []
+        passes = self.space.upcoming(hours=24 * 5) if self.space else []
+        return build_calendar(self.cfg, now, passes, daily_best(self.store(), self.cfg, now, hours),
+                              my_flights(self.store()))
+
+    def friends_json(self) -> dict[str, Any]:
+        if self.friends is None:
+            return {"code": "", "rows": [], "friends": 0}
+        return self.friends.board(self.store())
 
     def coming(self, horizon: float = 900) -> list:
         """Planes due over the zone soon (positions moved on to now), with their details."""
@@ -515,10 +614,9 @@ class MapApp:
 
     def scriptable(self, host: str) -> str:
         """The widget script for the Scriptable app, with this map's address already filled in."""
-        script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
         host = host if host and all(c.isalnum() or c in ".-:[]" for c in host) else f"localhost:{self.cfg.map_port}"
         scheme = "https" if self.secure_url and host in self.secure_url else "http"
-        return script.replace("__PLANESPOTTER_URL__", f"{scheme}://{host}")
+        return widget_script(self.cfg, f"{scheme}://{host}")
 
     def trace_json(self, hex_code: str) -> dict[str, Any]:
         """The flight a live plane is on, from takeoff until now."""
@@ -545,6 +643,18 @@ class MapApp:
                       registration="", type_code="", lat=lat, lon=lon, alt_ft=None, speed_kt=None, track=None)
         info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, self.clock())
         return asdict(info)
+
+
+def relay_url(cfg: Config) -> str:
+    """Where the widget and Siri read your latest status (your private ntfy relay topic)."""
+    if not (cfg.ntfy_topic and cfg.relay):
+        return ""
+    return f"{cfg.ntfy_server.rstrip('/')}/{derived_topic(cfg.ntfy_topic, 'relay')}/raw?poll=1&since=latest"
+
+
+def widget_script(cfg: Config, map_url: str) -> str:
+    script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
+    return script.replace("__RELAY_URL__", relay_url(cfg)).replace("__PLANESPOTTER_URL__", map_url)
 
 
 def label_of(row) -> str:
@@ -633,6 +743,16 @@ def make_handler(app: MapApp):
                     self.send_json(app.flow_json())
                 elif url.path == "/api/space":
                     self.send_json(app.space_json())
+                elif url.path == "/api/outlook":
+                    self.send_json(app.outlook_json())
+                elif url.path == "/api/myflights":
+                    self.send_json(app.myflights_json())
+                elif url.path == "/api/myflight/track":
+                    self.send_json(app.myflight_track(query.get("callsign", "")[:10]))
+                elif url.path == "/api/friends":
+                    self.send_json(app.friends_json())
+                elif url.path == "/calendar.ics":
+                    self.send(200, app.calendar(), "text/calendar; charset=utf-8", cache="max-age=600")
                 elif url.path == "/api/next":
                     self.send_json(app.next_json())
                 elif url.path == "/api/now.txt":
@@ -689,7 +809,8 @@ def make_handler(app: MapApp):
         def do_POST(self):
             url = urllib.parse.urlsplit(self.path)
             routes = {"/api/saw": app.saw, "/api/photo": app.add_photo, "/api/photo/delete": app.delete_photo,
-                      "/api/noise/levels": app.add_noise, "/api/follow": app.follow, "/api/quiz": app.quiz_reply}
+                      "/api/noise/levels": app.add_noise, "/api/follow": app.follow, "/api/quiz": app.quiz_reply,
+                      "/api/travel": app.travel_post, "/api/myflights": app.myflights_post}
             try:
                 if url.path not in routes:
                     self.send_json({"error": "not found"}, 404)

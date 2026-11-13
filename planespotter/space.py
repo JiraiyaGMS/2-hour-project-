@@ -412,3 +412,15 @@ def pass_text(p: dict, cfg) -> str:
     when = cfg.local(p["visible_from"] or p["start"]).strftime("%I:%M %p").lstrip("0").lower()
     return (f"{p['name']}: {when}, appears in the {p['start_dir']}, up to {p['max_el']}° high in the "
             f"{p['max_dir']}, about {round(p['minutes'])} minutes")
+
+
+def when_text(cfg, ts: float, now: float) -> str:
+    """'tonight at 6:02 pm', 'tomorrow at 5:17 pm', 'on Sat at 6:40 pm'."""
+    local, today = cfg.local(ts), cfg.local(now).date()
+    clock = local.strftime("%I:%M %p").lstrip("0").lower()
+    days = (local.date() - today).days
+    if days == 0:
+        return f"{'tonight' if local.hour >= 17 else 'today'} at {clock}"
+    if days == 1:
+        return f"tomorrow{' night' if local.hour >= 20 else ''} at {clock}"
+    return f"on {local:%a} at {clock}"

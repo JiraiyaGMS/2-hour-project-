@@ -115,6 +115,20 @@ CREATE TABLE IF NOT EXISTS follows (
     last_seen REAL
 );
 
+-- Flights you're following from takeoff to landing ("My flight").
+CREATE TABLE IF NOT EXISTS my_flights (
+    callsign         TEXT PRIMARY KEY,
+    label            TEXT NOT NULL,          -- as you typed it, e.g. UA 1234
+    day              TEXT NOT NULL,          -- the local date it flies
+    added            REAL NOT NULL,
+    state            TEXT NOT NULL,          -- waiting, airborne, landed, done
+    hex              TEXT,
+    origin           TEXT, destination TEXT, origin_city TEXT, destination_city TEXT,
+    took_off         REAL, landed REAL,
+    last_lat         REAL, last_lon REAL, last_alt INTEGER, last_seen REAL,
+    over_home        INTEGER NOT NULL DEFAULT 0
+);
+
 -- Which way the nearest big airport is landing, seen from planes coming in.
 CREATE TABLE IF NOT EXISTS flow_obs (t REAL NOT NULL, airport TEXT NOT NULL, heading REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS flow_obs_by_time ON flow_obs (t);

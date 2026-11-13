@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from html import escape
 
 from .config import Config, fmt_clock_range
@@ -25,6 +26,7 @@ class Email:
     subject: str
     text: str
     html: str
+    attachments: list = dc_field(default_factory=list)  # [(filename, bytes, "text/calendar"), ...]
 
 
 # --- formatting helpers ------------------------------------------------------
@@ -78,9 +80,9 @@ def _page(title: str, body: str) -> str:
         f'<div style="font-family:{FONT};color:{INK};max-width:600px;margin:0 auto;padding:20px 16px">'
         f"{body}"
         f'<p style="font-size:12px;color:{MUTED};margin:24px 0 0;border-top:1px solid {LINE};padding-top:12px">'
-        'Live data from <a href="https://adsb.lol" style="color:{0}">adsb.lol</a> (ODbL) · '
-        'routes from <a href="https://www.adsbdb.com" style="color:{0}">adsbdb.com</a> · '
-        "sent by planespotter</p></div></body></html>".format(MUTED)
+        f'Live data from <a href="https://adsb.lol" style="color:{MUTED}">adsb.lol</a> (ODbL) · '
+        f'routes from <a href="https://www.adsbdb.com" style="color:{MUTED}">adsbdb.com</a> · '
+        "sent by planespotter</p></div></body></html>"
     )
 
 

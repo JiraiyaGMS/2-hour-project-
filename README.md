@@ -54,6 +54,14 @@ overhead today, and a live 3D/2D map of the sky around you.
   a notification beforehand.
 - **More places:** watch your work or a relative's house too, and save a
   day's **replay as a video**.
+- **Anywhere:** the widget and Siri work away from home too, **travel mode**
+  watches wherever you are, **My flight** follows your flight, your
+  **family** gets the highlights, and **friends** can compare collections.
+- **Sky extras:** a heads-up when a plane is about to **cross the Moon**,
+  planets and bright stars in the sky view, a **contrail forecast**, and the
+  **best time to look up** each day, in your **calendar** too.
+- **History:** replay **any day** in the time machine, and add a batch of
+  photos that **match themselves** to the right planes.
 - Free data and no API keys. Nothing extra to install besides Python.
 
 ---
@@ -439,45 +447,121 @@ You don't need to do anything: it happens by itself. Good to know:
 - It uses up to a fifth of the day's adsb.lol allowance, and slows down if
   adsb.lol asks it to.
 
-## Siri: "What's that plane?"
+## Your phone setup kit (widget, Siri, commands, family, friends)
 
-Ask Siri which plane is overhead (or coming next) and it answers: *"Delta
-flight 573 from Atlanta is coming over in about 40 seconds. Look
-south-east, 25 degrees up. It's at 3,400 feet."* Set it up once on your
-iPhone:
+Once phone notifications are set up (see *Phone notifications*), one command
+emails you everything for your phone, so you can set it up from anywhere:
 
-1. Open the **Shortcuts** app and tap **+** to make a new shortcut.
-2. Tap **Add Action**, search for **Get Contents of URL**, and tap it.
-3. Tap the blue **URL** and type your map's phone address followed by
-   `/api/now.txt`, like `http://192.168.1.23:8765/api/now.txt` (the address
-   planespotter prints as *Map on your phone*).
-4. Tap the search bar at the bottom, search for **Speak Text**, and tap it.
-   It speaks the *Contents of URL* by itself.
-5. Tap the name at the top, choose **Rename**, call it **What's that plane**,
-   and tap **Done**.
-6. Say **"Hey Siri, what's that plane?"** (on your home Wi-Fi, with
-   planespotter running).
+```bash
+python3 -m planespotter phone
+```
 
-## Home-screen widget (iPhone)
+The email has the widget script attached, and links and short steps for
+each part below. (It's also saved in the `phone-setup` folder.)
+
+The widget and Siri **work anywhere**, not just on your home Wi-Fi:
+planespotter posts a small status message (the next planes due, the last
+one, the space station...) to a private ntfy topic every few minutes, and they
+read the latest one from there. Your Mac just needs to be running
+planespotter.
+
+### Home-screen widget (iPhone)
 
 A widget with the next planes due over your house and a live countdown:
 
 1. Install the free **Scriptable** app from the App Store.
-2. On your iPhone, on home Wi-Fi, open Safari and go to your map's phone
-   address followed by `/scriptable.js`, like
-   `http://192.168.1.23:8765/scriptable.js`. It shows a short script with
-   your address already filled in.
-3. Press and hold the text, tap **Select All**, then **Copy**.
-4. Open **Scriptable**, tap **+**, and paste. Tap the title at the top and
+2. On your iPhone, open the email from `python3 -m planespotter phone`. Copy
+   the whole script at the bottom (press and hold, **Select All**, **Copy**),
+   or open the attached `planespotter-widget.js`.
+3. Open **Scriptable**, tap **+**, and paste. Tap the title at the top and
    name it **planespotter**. Tap **▶** to try it, then **Done**.
-5. Go to your home screen, press and hold an empty spot, tap **Edit** (or
-   **+**), search for **Scriptable**, choose the small or medium size, and
-   tap **Add Widget**.
-6. Press and hold the new widget, tap **Edit Widget**, and set **Script**
+4. Go to your home screen, press and hold an empty spot, tap **Edit** (or
+   **+**), then **Add Widget**, search for **Scriptable**, choose the small
+   or medium size, and tap **Add Widget**.
+5. Press and hold the new widget, tap **Edit Widget**, and set **Script**
    to **planespotter**.
 
 The countdown ticks by itself; iPhone refreshes the list every few minutes.
-It works on your home Wi-Fi only (where it can reach your Mac).
+Tapping the widget opens the map (on your home Wi-Fi).
+
+### Siri: "What's that plane?"
+
+Siri answers: *"Delta flight 573 from Atlanta is due over about 4:15 pm,
+coming from the south-east. 2 more after that."*
+
+1. Open the **Shortcuts** app and tap **+**.
+2. Add **Get Contents of URL**, and set the URL to the *Siri / widget
+   status* link from the phone setup email (it starts with
+   `https://ntfy.sh/planespotter-relay-`).
+3. Add **Get Dictionary from Input**.
+4. Add **Get Dictionary Value**, and set **Key** to `siri`.
+5. Add **Speak Text**.
+6. Rename the shortcut **What's that plane** and say *"Hey Siri, what's that
+   plane?"*
+
+### Commands from your phone
+
+Your phone can tell planespotter what to do, from anywhere, through a second
+private ntfy topic. Open the *Commands page* link from the phone setup email
+in Safari (bookmark it), type a message and send it:
+
+| Send | What it does |
+| --- | --- |
+| `travel 33.8090,-117.9265 Disneyland` | Travel mode: watch there for two days (see below) |
+| `home` | Stop travel mode |
+| `flight UA1234` (or `flight UA1234 tomorrow`) | Follow your flight (see *My flight*) |
+| `flights off` | Stop following flights |
+| `status` | What planespotter is doing |
+
+planespotter answers in your ntfy app within a minute. The email also
+explains a **Spot from here** shortcut that sends your phone's location
+with one tap.
+
+### Travel mode
+
+Watch wherever you are (a hotel, a friend's house, an airport) for two days,
+as well as home: its own zone, alerts, emails and map (on port 8774). Start
+it with the `travel` command above, or on the map with **📍 Travel → Use this
+computer's location** (or type coordinates). It switches itself off after
+two days, or send `home`. It shares adsb.lol's daily allowance, so home is
+checked a little less often meanwhile.
+
+### My flight
+
+Follow a flight you or family are taking: on the map, **In the air → Your
+flights → ＋ Follow a flight**, or send `flight UA1234`. Type the number from
+the ticket (like *UA 1234* or *DL573*). You get a notification when it takes
+off, if it flies over your house (*look up and wave!*), and when it lands,
+and so does your family's feed. **Show** draws it on the map.
+
+### Your family's feed
+
+Family members can get the highlights (A380s and 747s, military planes,
+emergencies, the space station, your flight taking off and landing), not
+every plane. They install the free **ntfy** app, tap **+**, and subscribe to
+the *family topic* from the phone setup email. `FAMILY_ALERTS=false` in `.env`
+turns it off.
+
+### Spotting with friends
+
+If friends run planespotter too, you can compare collections. Your **friend
+code** is in the phone setup email and on the map (*Collection → Friends*).
+Swap codes, and add theirs to `.env`:
+
+```
+FRIENDS=Sam=planespotter-share-abc123def45678; Alex=planespotter-share-0123456789abcd
+SHARE_NAME=Henry
+```
+
+*Collection → Friends* then shows who's spotted the most this week, their
+totals and bingo, and your phone gets a ping when a friend spots something
+rare (*🎉 Sam just spotted an Airbus A380*). Nothing about where anyone
+lives is shared.
+
+**ntfy's daily limit.** ntfy.sh's free service accepts 250 messages a day
+from one internet connection (reading is free). Plane alerts always come
+first: the widget status, family feed, friends and command replies only use
+what's left, and stop for the day if fewer than 80 are left.
 
 ## Kiosk mode (an old tablet or a TV)
 
@@ -490,6 +574,39 @@ the Look up! card and the next planes with countdowns. Nothing to tap.
   while it's plugged in.
 - On an Android tablet, add it to the home screen from Chrome's menu, and
   keep the screen on in the developer options or with a "stay awake" app.
+
+## Look up for: the Moon, planets, contrails, the best time
+
+- **🌕 Planes crossing the Moon.** When a plane is about to fly in front of the
+  Moon as seen from your house, your phone gets a heads-up a few minutes
+  before: *"DAL573 may fly right across the Moon at 6:42:15 pm. Look ESE,
+  32° up."* The Look up! card counts down to it on the map. It's over in a
+  split second, so start filming a few seconds early. The time is predicted
+  from the plane's course, so it may turn. `TRANSIT_SUN=true` does the same
+  for the Sun (**only ever look at or photograph the Sun through a proper
+  solar filter**); `TRANSIT_ALERTS=false` turns them off.
+- **Planets and bright stars** show in the sky view, labelled *(a planet,
+  not a plane)*. After dark the map also says when the bright, steady light
+  is Venus or Jupiter: they fool everyone.
+- **Contrails:** the map and the morning email say whether planes will leave
+  long-lasting white trails today (*Long-lasting contrails likely this
+  afternoon*), from the forecast temperature and humidity at cruising height.
+- **Best time to look up today:** the hour with the most planes you'd actually
+  be able to see, from your history and the cloud forecast (*5–6 pm, usually
+  about 9 planes, clear*). On the map and in the morning email.
+- **Calendar:** space station passes (with a reminder 10 minutes before), the
+  best time to look up each day, and your flights. The weekly email has the
+  calendar file attached (tap it to add the events), or subscribe with
+  **Collection → 📅 Add to my calendar** on your home Wi-Fi to keep it up to date.
+
+## History: any day, and photos that match themselves
+
+- **Time machine:** in **🕒 Replay**, choose **📅 Any day…** and pick a date to
+  replay everything that flew over then (any day planespotter was watching).
+- **Photos from a spotting session:** in **Collection → Your photos**, tap
+  **📷 Add photos from a spotting session** and pick several at once. Each is
+  matched to the plane that was over your zone when you took it, from the
+  time the camera saved in the photo.
 
 ## Space station passes
 
@@ -698,6 +815,11 @@ carries on by itself once adsb.lol allows more requests.
 | The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
 | The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
+| The widget says *Can't reach planespotter* | planespotter must be running on your Mac. Check the widget uses the script from `python3 -m planespotter phone` (older copies only work on home Wi-Fi). |
+| Siri says nothing useful | Check the shortcut's URL is the *Siri / widget status* link from the phone setup email the steps include **Get Dictionary from Input**, and the key is `siri`. |
+| Commands get no answer | Check you're on the *Commands page* from the phone setup email, and planespotter is running (`watch`). Answers come in the ntfy app within a minute. |
+| *Not sending to ntfy: saving today's messages for plane alerts* in the log | ntfy's 250 a day are nearly used; the extras pause until tomorrow. Plane alerts carry on. |
+| No Moon-crossing alerts | They need the Moon well up and bright, a plane heading right across it, phone notifications, and it not to be quiet hours. They're rare, so don't expect many. |
 | The offline log found nothing | It only looks back about 20 hours, and can't find planes that have since landed far away. Check the weekly email for how much it covered. |
 | Siri says it can't connect | Your phone must be on your home Wi-Fi, planespotter running, and the address in the shortcut must be the *Map on your phone* one plus `/api/now.txt`. |
 | The widget says *Can't reach planespotter* | Same as for Siri. The widget only works on your home Wi-Fi. |
@@ -738,6 +860,7 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter test-email` | Sends a test email. |
 | `python3 -m planespotter test-push` | Sends a test phone notification. |
 | `python3 -m planespotter test-special` | Sends a sample special-plane alert (email and phone). |
+| `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. |
 
 There are more settings (how often to check, the hourly alert limit and so
 on) in [`.env.example`](.env.example). Copy any of them into your `.env`.
@@ -845,6 +968,15 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   [CelesTrak](https://celestrak.org) (refreshed twice a day) and the
   standard SGP4 model, worked out on your Mac. A pass counts as visible when
   the satellite is in sunlight and the sun is more than 6° below your horizon.
+- **The Moon, planets and stars** use Paul Schlyter's simplified orbits,
+  checked against a full astronomy library to within a few arc-minutes, with
+  the Moon corrected for being seen from your house. Moon crossings are
+  found by flying each plane's course forward a second at a time.
+- **Contrails and cloud forecasts** come from [Open-Meteo](https://open-meteo.com)
+  (free, no key; your position is rounded to about 10 km).
+- **The widget status, commands, family feed and friends** use extra private
+  ntfy topics made from your main topic name. Anyone who knew your main
+  topic could work them out, so keep it to yourself.
 - **The secure address** uses a certificate planespotter makes once with
   `openssl` (kept in the `https-cert` folder; remade if your Mac's network
   address changes).

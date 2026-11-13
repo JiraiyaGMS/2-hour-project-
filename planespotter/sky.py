@@ -184,3 +184,25 @@ def sky_note(report: dict | None, alt_ft: int | None, distance: float, ground_ft
     if sun.get("daylight") == "twilight":
         return "🌆 Getting dark: look for its lights"
     return ""
+
+
+def sky_summary(report: dict | None) -> str:
+    """'☁️ Overcast at 1,800 ft', '🌙 Clear night'... (the same line as on the map)."""
+    if not report:
+        return ""
+    w, dark = report.get("weather"), (report.get("sun") or {}).get("daylight") != "day"
+    if not w:
+        return "🌙 Dark out" if dark else "☀️ Daylight"
+    solid = next((x for x in w["layers"] if x["cover"] in CEILING_COVERS), None)
+    top = w["layers"][0] if w["layers"] else None
+    if solid:
+        word = {"BKN": "🌥️ Broken cloud", "OVX": "🌫️ Fog"}.get(solid["cover"], "☁️ Overcast")
+        text = f"{word} at {solid['base_ft']:,} ft"
+    elif top:
+        word = COVER_WORDS[top["cover"]]
+        text = f"{'⛅' if top['cover'] == 'SCT' else '🌤️'} {word[0].upper() + word[1:]} at {top['base_ft']:,} ft"
+    else:
+        text = "🌙 Clear night" if dark else "☀️ Clear skies"
+    if dark and not text.startswith("🌙"):
+        text += " · 🌙 dark"
+    return text

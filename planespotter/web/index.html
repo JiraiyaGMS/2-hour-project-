@@ -17,9 +17,12 @@
         <select id="place" class="place" aria-label="Which place" hidden></select></div>
       <div class="sky-line" id="sky-line" hidden></div>
       <div class="sky-line flow-line" id="flow-line" hidden></div>
+      <div class="sky-line" id="outlook-line" hidden></div>
+      <div class="travel-line" id="travel-line" hidden></div>
       <div class="sounds">
         <button id="btn-chime" class="chime" aria-pressed="false" title="Play a chime when a plane is about to fly over">🔕 Chime</button>
         <button id="btn-voice" class="chime" aria-pressed="false" title="Say which plane is coming, from where, and where to look">🔇 Voice</button>
+        <button id="btn-travel" class="chime" title="Travel mode: watch wherever you are for a couple of days" hidden>📍 Travel</button>
       </div>
     </header>
 
@@ -86,6 +89,7 @@
       <div class="replay-row">
         <button id="replay-play" class="round" aria-label="Play">▶</button>
         <select id="replay-day" aria-label="Day"></select>
+        <input id="replay-date" type="date" aria-label="Any day" hidden>
         <select id="replay-speed" aria-label="Speed">
           <option value="60">1 min / sec</option>
           <option value="300" selected>5 min / sec</option>
@@ -123,6 +127,7 @@
   </div>
 </div>
 <input id="photo-input" type="file" accept="image/*" hidden>
+<input id="photos-input" type="file" accept="image/*" multiple hidden>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>

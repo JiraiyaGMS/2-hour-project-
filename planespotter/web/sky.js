@@ -27,7 +27,7 @@
     fov: store.get('fov', 62),     // the camera's field of view across the long side of the screen
     yaw: 180, pitch: 12,     // where you're looking when dragging instead (computers)
   };
-  const state = { config: null, planes: [], info: new Map(), sun: null, selected: null, eyes: [], hits: [], tracks: [] };
+  const state = { config: null, planes: [], info: new Map(), sun: null, selected: null, eyes: [], hits: [], tracks: [], objects: [] };
 
   async function getJSON(url) {
     const res = await fetch(url, { cache: 'no-store' });
@@ -193,6 +193,18 @@
       }
     }
 
+    // The Moon, planets and brightest stars, faintly, so you can tell them from planes.
+    for (const o of state.objects) {
+      const s = project(dirVec(o.az, o.el), cam, focal);
+      if (!s || s[0] < 0 || s[0] > W || s[1] < 0 || s[1] > H) continue;
+      const size = o.kind === 'moon' ? 14 : Math.max(2, 5 - o.mag);
+      g.fillStyle = o.kind === 'moon' ? 'rgba(255,248,220,.95)' : o.kind === 'planet' ? 'rgba(255,236,170,.95)' : 'rgba(220,230,255,.8)';
+      g.beginPath(); g.arc(s[0], s[1], size, 0, 7); g.fill();
+      g.font = `${o.kind === 'star' ? 500 : 700} 12px -apple-system, sans-serif`;
+      g.fillStyle = o.kind === 'star' ? 'rgba(220,230,255,.75)' : '#fff3c4';
+      g.fillText(o.kind === 'planet' ? `${o.name} (a planet, not a plane)` : o.name, s[0] + size + 5, s[1] + 4);
+    }
+
     // Satellites crossing the sky (the space station looks like a bright, steady star).
     const nowS = Date.now() / 1000;
     for (const tr of state.tracks) {
@@ -288,7 +300,11 @@
 
   async function loadSky() {
     try { state.sun = (await getJSON('api/sky')).sun; } catch { /* no sun marker */ }
-    try { state.tracks = (await getJSON('api/space')).tracks || []; } catch { /* no satellites */ }
+    try {
+      const space = await getJSON('api/space');
+      state.tracks = space.tracks || [];
+      state.objects = space.objects || [];
+    } catch { /* no satellites */ }
   }
 
   // ---------- tapping a plane ----------

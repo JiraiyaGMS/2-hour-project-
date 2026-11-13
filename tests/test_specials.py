@@ -2,7 +2,7 @@ import unittest
 from dataclasses import replace
 
 from planespotter.adsb import parse_aircraft
-from planespotter.notify import PushNotifier
+from planespotter.notify import PushNotifier, derived_topic
 from planespotter.specials import special_reasons
 
 from helpers import HOME, make_config, make_watcher, plane, ts
@@ -54,8 +54,8 @@ class WatcherSpecialTests(unittest.TestCase):
         self.assertEqual(len(mailer.sent), 1)
         self.assertIn("Airbus A380", mailer.sent[0].subject)
         self.assertIn("✨ Airbus A380", mailer.sent[0].html)
-        self.assertEqual(len(post.sent), 1)
-        self.assertEqual(post.sent[0]["priority"], 4)
+        self.assertEqual([m["topic"] for m in post.sent], ["planespotter-test", derived_topic("planespotter-test", "family")])
+        self.assertEqual(post.sent[0]["priority"], 4)  # and once to your family's feed
 
     def test_emergencies_are_urgent(self):
         watcher, feed, mailer = make_watcher(ntfy_topic="planespotter-test")

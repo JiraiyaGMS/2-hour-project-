@@ -159,6 +159,12 @@ class Config:
     rush_count: int = 5          # ...this many within 15 minutes
     space_alerts: bool = True    # a phone notification before the space station flies over (visible passes)
     places: str = ""             # other places to watch too: "Work @ 47.61,-122.33 r2; Mum's @ 51.5,-0.12"
+    family_alerts: bool = True   # highlights to a separate ntfy topic your family can subscribe to
+    friends: str = ""            # friends' codes: "Sam=planespotter-share-abc...; Alex=..."
+    share_name: str = ""         # what friends see you as (blank = your home's name)
+    transit_alerts: bool = True  # a heads-up when a plane is about to cross in front of the Moon
+    transit_sun: bool = False    # ...and the Sun (only with a proper solar filter!)
+    relay: bool = True           # send your status to a private ntfy topic so the widget and Siri work anywhere
 
     def place_configs(self) -> list["Config"]:
         """A settings copy for each of your other places: its own spot, zone, database and map."""
@@ -334,6 +340,12 @@ class Config:
             rush_count=max(2, number("RUSH_COUNT", "5", int)),
             space_alerts=flag("SPACE_ALERTS", True),
             places=check_places(get("PLACES")),
+            family_alerts=flag("FAMILY_ALERTS", True),
+            friends=get("FRIENDS"),
+            share_name=get("SHARE_NAME"),
+            transit_alerts=flag("TRANSIT_ALERTS", True),
+            transit_sun=flag("TRANSIT_SUN", False),
+            relay=flag("RELAY", True),
         )
 
 
@@ -345,4 +357,5 @@ KNOWN_KEYS = {
     "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
     "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES",
+    "FAMILY_ALERTS", "FRIENDS", "SHARE_NAME", "TRANSIT_ALERTS", "TRANSIT_SUN", "RELAY",
 }

@@ -88,6 +88,10 @@
     today: null,                // your regular flights today: on time, late... (api/today)
     space: null,                // space station passes and tracks (api/space)
     quiz: null,                 // the question you're answering
+    myFlights: [],              // flights you're following
+    myTrack: null,              // the one shown on the map
+    transits: [],               // planes about to cross the Moon
+    friends: null,              // friends' leaderboard
   };
 
   // ---------- small helpers ----------
@@ -169,6 +173,7 @@
                            waiting: !!data.waiting, receiver: data.source === 'receiver' };
         state.liveError = null;
         state.quietNow = !!data.quiet_now;
+        state.transits = data.transits || [];
         updateTrails();
         queueInfo(state.live);
         const sel = state.selected;
@@ -453,13 +458,14 @@
         .map((w) => ({ w, f: flightById(w.id) }))
         .filter(({ f }) => f && matches(f));
       const extra = state.query ? '' : extraLiveSections();
+      const mine = state.query ? '' : myFlightsHtml();
       if (!items.length && !away.length) {
-        el.innerHTML = empty(state.query ? 'No planes in the air match your search.'
+        el.innerHTML = mine + empty(state.query ? 'No planes in the air match your search.'
           : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.') + extra;
         render();
         return;
       }
-      el.innerHTML = items.slice(0, state.listLimit).map(liveItem).join('') + moreButton(state.listLimit, items.length)
+      el.innerHTML = mine + items.slice(0, state.listLimit).map(liveItem).join('') + moreButton(state.listLimit, items.length)
         + (away.length ? `<div class="list-section">Went over you · still flying</div>${away.map(awayItem).join('')}` : '')
         + extra;
     } else {
@@ -967,6 +973,19 @@
   let lastLookUpHtml = '';
   function renderLookUp(now) {
     const el = $('#lookup');
+    const tr = state.replay.on ? null : transitTarget();
+    if (tr) {
+      // A plane about to cross in front of the Moon (or Sun): get the camera out!
+      const left = tr.at - Date.now() / 1000;
+      const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
+        + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(tr.az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
+        <div class="what"><div class="head">${tr.body === 'Moon' ? '🌕' : '☀️'} ${esc(tr.label)} crosses the ${tr.body} · <strong>${left > 1 ? countdown(left) : 'now'}</strong></div>
+        <div class="sub"><span>Look <strong>${compass(tr.az)}, ${Math.round(tr.el)}° up</strong> at the ${tr.body}. It’s over in a split second${tr.body === 'Sun' ? '. Only ever through a solar filter!' : ': start filming early'}.</span></div></div>`;
+      if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
+      el.hidden = false;
+      el.onclick = () => select('live', tr.hex);
+      return;
+    }
     const sat = state.replay.on ? null : satTarget();
     if (sat) {
       // The space station (or another bright satellite) is crossing your sky right now.
@@ -1616,7 +1635,11 @@
         + (c.quiz && c.quiz.answered ? `<div class="ctiles"><div class="ctile"><div class="k">🎯 Guess the plane</div><div class="v">${c.quiz.right} / ${c.quiz.answered}</div>
             <div class="note">${c.quiz.percent}% right · best run ${c.quiz.best_run}</div></div></div>` : ''),
       records: recs || busy ? `<h3>Records</h3>${recs}${busy}` : '',
-      photos: `<h3>Your photos <span>${photos.length}</span></h3>${gallery}`
+      photos: `<h3>Your photos <span>${photos.length}</span></h3>${gallery}
+        <div class="wrapped-links"><button class="btn ghost" data-action="add-photos">📷 Add photos from a spotting session</button>
+        <a class="btn ghost" href="${esc(location.origin.replace(/^https?:/, 'webcal:'))}/calendar.ics" title="Space station passes and the best times to look up, in your calendar">📅 Add to my calendar</a></div>
+        <p class="hint">Pick several photos at once: each one is matched to the plane that was over your zone when you took it.</p>`
+        + friendsHtml()
         + ((c.friends || []).length ? `<h3>Old friends <span>planes you see again and again</span></h3>` + c.friends.map((f) => `
           <button class="crow flight" data-profile="${esc(f.hex)}">${logo(f.callsign)}<span class="cname"><strong>${esc(f.registration || f.callsign)}</strong>
           <span class="muted">${esc([f.aircraft, f.airline].filter(Boolean).join(' · '))}</span></span><span class="cnum">${f.times}×</span></button>`).join('') : ''),
@@ -1929,6 +1952,242 @@
     }, 250);
   }
 
+  // ---------- today's outlook: contrails, the best time to look up, "that's Venus" ----------
+  async function loadOutlook() {
+    let o = null;
+    try { o = await getJSON('api/outlook'); } catch { /* keep the last one */ }
+    if (!o) return;
+    const lines = [o.best, o.contrails, o.not_a_plane].filter(Boolean);
+    const el = $('#outlook-line');
+    el.hidden = !lines.length;
+    el.innerHTML = lines.map((x) => `<div>${esc(x)}</div>`).join('');
+  }
+
+  // ---------- travel mode ----------
+  function renderTravel() {
+    const t = state.config && state.config.travel;
+    const line = $('#travel-line');
+    $('#btn-travel').hidden = !(state.config && state.config.can_travel);
+    if (t && t.on) {
+      const proto = location.protocol === 'https:' ? 'http:' : location.protocol;
+      line.innerHTML = `🧳 Travel mode: watching <a href="${proto}//${location.hostname}:${t.port}/">${esc(t.name)}</a> until ${esc(t.until_text)}
+        <button class="linkbtn" data-action="travel-stop">Stop</button>`;
+      line.hidden = false;
+      $('#btn-travel').textContent = '🧳 Travelling';
+    } else {
+      line.hidden = true;
+      $('#btn-travel').textContent = '📍 Travel';
+    }
+  }
+
+  function openTravel() {
+    const t = state.config.travel;
+    if (t && t.on) { stopTravel(); return; }
+    openOverlay(`<div class="quiz"><div class="k">📍 Travel mode</div>
+      <h2>Watch where you are</h2>
+      <p class="muted">For the next two days, planespotter also watches here: its own zone, alerts and map. Home carries on as usual.
+        From your phone, anywhere, you can send <strong>travel</strong> with your location to your commands topic instead (see <code>python3 -m planespotter phone</code>).</p>
+      <div class="overlay-actions" style="margin:12px 0"><button class="btn" data-action="travel-here">Use this computer's location</button></div>
+      <p class="muted">Or type the place's coordinates (in Google Maps, press and hold the spot):</p>
+      <div class="travel-form"><input id="travel-coords" placeholder="33.8090, -117.9265"><input id="travel-name" placeholder="Name (optional)">
+      <button class="btn ghost" data-action="travel-go">Start</button></div>
+      <div id="travel-msg" class="muted"></div></div>`);
+  }
+
+  async function startTravel(lat, lon, name) {
+    $('#travel-msg').textContent = 'Starting…';
+    try {
+      const t = await postJSON('api/travel', { lat, lon, name });
+      state.config.travel = t;
+      closeOverlay();
+      renderTravel();
+      toast(`🧳 Watching ${t.name} until ${t.until_text}`);
+    } catch (err) { $('#travel-msg').textContent = `Couldn’t start: ${err.message}`; }
+  }
+
+  function travelHere() {
+    if (!navigator.geolocation) { $('#travel-msg').textContent = 'This browser can’t tell where it is. Type the coordinates instead.'; return; }
+    $('#travel-msg').textContent = 'Finding where this computer is…';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => startTravel(pos.coords.latitude, pos.coords.longitude, ''),
+      (err) => { $('#travel-msg').textContent = `Couldn’t get the location (${err.message}). Allow location for this page, or type the coordinates.`; },
+      { enableHighAccuracy: true, timeout: 15000 });
+  }
+
+  async function stopTravel() {
+    try { state.config.travel = await postJSON('api/travel', { stop: true }); } catch (err) { toast(err.message); return; }
+    renderTravel();
+    toast('🏠 Travel mode is off');
+  }
+
+  // ---------- your flights ----------
+  async function loadMyFlights() {
+    try { state.myFlights = (await getJSON('api/myflights')).flights; } catch { /* keep */ }
+    if (state.tab === 'live') renderListSoon();
+  }
+
+  function myFlightsHtml() {
+    const flights = state.myFlights || [];
+    const words = { waiting: 'waiting to take off', airborne: 'in the air', landed: 'landed' };
+    return `<div class="myflights"><div class="upnext-head">Your flights
+        <button class="linkbtn" data-action="add-flight">＋ Follow a flight</button></div>
+      ${flights.map((f) => `<div class="mf ${f.state}">${logo(f.callsign)}<span class="who"><strong>${esc(f.label)}</strong>
+        <span class="muted">${esc(words[f.state] || f.state)}${f.state === 'landed' && f.destination ? ` in ${esc(f.destination)}` : ''}
+        ${f.state === 'waiting' ? ` · ${esc(new Date(`${f.day}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }))}` : ''}</span></span>
+        ${f.hex ? `<button class="linkbtn" data-show-flight="${esc(f.callsign)}">Show</button>` : ''}
+        <button class="linkbtn danger" data-remove-flight="${esc(f.callsign)}" aria-label="Stop following">×</button></div>`).join('')
+        || '<p class="hint">Follow a flight you or family are taking: you’ll get a notification when it takes off, if it flies over home, and when it lands.</p>'}
+    </div>`;
+  }
+
+  function openAddFlight() {
+    openOverlay(`<div class="quiz"><div class="k">✈ Follow a flight</div><h2>Which flight?</h2>
+      <p class="muted">The flight number from the ticket or booking, like <strong>UA 1234</strong> or <strong>DL573</strong>.</p>
+      <div class="travel-form"><input id="flight-number" placeholder="UA 1234" autocapitalize="characters">
+      <select id="flight-day"><option value="today">Today</option><option value="tomorrow">Tomorrow</option></select>
+      <button class="btn" data-action="flight-go">Follow</button></div><div id="flight-msg" class="muted"></div></div>`);
+    setTimeout(() => $('#flight-number') && $('#flight-number').focus(), 50);
+  }
+
+  async function addFlight() {
+    const flight = $('#flight-number').value.trim();
+    if (!flight) return;
+    try {
+      state.myFlights = (await postJSON('api/myflights', { flight, day: $('#flight-day').value })).flights;
+      closeOverlay();
+      toast(`✈ Following ${flight.toUpperCase()}`);
+      renderList();
+    } catch (err) { $('#flight-msg').textContent = err.message; }
+  }
+
+  async function removeFlight(callsign) {
+    try { state.myFlights = (await postJSON('api/myflights', { remove: callsign })).flights; } catch (err) { toast(err.message); return; }
+    if (state.myTrack && state.myTrack.callsign === callsign) state.myTrack = null;
+    renderList();
+  }
+
+  async function showMyFlight(callsign) {
+    let t;
+    try { t = await getJSON(`api/myflight/track?callsign=${encodeURIComponent(callsign)}`); } catch (err) { toast(err.message); return; }
+    if (!t.path.length && !t.now) { toast('No position for it yet.'); return; }
+    state.myTrack = {
+      callsign, now: t.now,
+      p3: t.path.map((p) => [p[1], p[0], (p[2] || 0) * FT]), p2: t.path.map((p) => [p[1], p[0], 0]),
+    };
+    const coords = state.myTrack.p2.map((c) => [c[0], c[1]]);
+    if (t.now) coords.push([t.now.lon, t.now.lat]);
+    fitTo(coords);
+    render();
+  }
+
+  function myTrackLayers(is3d) {
+    const t = state.myTrack;
+    if (!t) return [];
+    const path = is3d ? t.p3 : t.p2;
+    const out = [];
+    if (path.length > 1) {
+      out.push(new deck.PathLayer({ id: 'my-flight', data: [{ path }], getPath: (d) => d.path, getColor: a(C.select, 230),
+        getWidth: 3.5, widthUnits: 'pixels', capRounded: true, jointRounded: true }));
+    }
+    if (t.now) {
+      out.push(new deck.TextLayer({ id: 'my-flight-label', data: [t.now], getPosition: (d) => [d.lon, d.lat, is3d ? (d.alt_ft || 0) * FT : 0],
+        getText: () => `✈ ${t.callsign}`, getPixelOffset: [0, -18], getSize: 13, getColor: a(C.ink, 255), fontWeight: 700,
+        background: true, getBackgroundColor: a(C.select, 120), backgroundPadding: [6, 3],
+        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }));
+      out.push(new deck.ScatterplotLayer({ id: 'my-flight-now', data: [t.now], getPosition: (d) => [d.lon, d.lat, is3d ? (d.alt_ft || 0) * FT : 0],
+        getRadius: 7, radiusUnits: 'pixels', getFillColor: a(C.select, 255), stroked: true, getLineColor: a(C.panel, 255),
+        lineWidthUnits: 'pixels', getLineWidth: 2 }));
+    }
+    return out;
+  }
+
+  // ---------- planes crossing the Moon ----------
+  function transitTarget() {
+    const now = Date.now() / 1000;
+    const t = (state.transits || []).find((x) => x.at > now - 5 && x.at < now + 180);
+    return t || null;
+  }
+
+  // ---------- friends ----------
+  async function loadFriends() {
+    try { state.friends = await getJSON('api/friends'); } catch { /* keep */ }
+    if (state.tab === 'collection') renderList();
+  }
+
+  function friendsHtml() {
+    const f = state.friends;
+    if (!f || !f.code) return '';
+    const rows = f.rows.map((r) => `<div class="crow${r.me ? ' me' : ''}"><span class="cname"><strong>${esc(r.me ? 'You' : r.friend)}</strong>
+        <span class="muted">${(r.planes || 0).toLocaleString()} planes · ${r.airlines || 0} airlines · bingo ${r.bingo || 0}/9</span></span>
+        <span class="cnum">${r.week || 0} this week</span></div>`).join('');
+    return `<h3>Friends <span>${f.friends ? `${f.friends} friend${f.friends === 1 ? '' : 's'}` : 'add some!'}</span></h3>${rows}
+      <p class="hint">Your friend code: <code class="code">${esc(f.code)}</code> <button class="linkbtn" data-copy="${esc(f.code)}">Copy</button><br>
+      Send it to friends who run planespotter, and add theirs to <code>FRIENDS</code> in your settings.</p>`;
+  }
+
+  // ---------- photos that match themselves (by the time they were taken) ----------
+  /** When a JPEG was taken, from its EXIF data (seconds since 1970), or null. */
+  async function photoTime(file) {
+    try {
+      const buf = new DataView(await file.slice(0, 256 * 1024).arrayBuffer());
+      if (buf.getUint16(0) !== 0xffd8) return null;
+      let off = 2;
+      while (off + 4 < buf.byteLength) {
+        const marker = buf.getUint16(off), size = buf.getUint16(off + 2);
+        if (marker === 0xffe1 && buf.getUint32(off + 4) === 0x45786966) return exifTime(buf, off + 10);
+        off += 2 + size;
+      }
+    } catch { /* not a JPEG we can read */ }
+    return null;
+  }
+
+  function exifTime(buf, tiff) {
+    const little = buf.getUint16(tiff) === 0x4949;
+    const u16 = (o) => buf.getUint16(tiff + o, little), u32 = (o) => buf.getUint32(tiff + o, little);
+    const str = (o, n) => { let s = ''; for (let i = 0; i < n; i++) { const c = buf.getUint8(tiff + o + i); if (!c) break; s += String.fromCharCode(c); } return s; };
+    const tags = (ifd) => {
+      const out = {}, n = u16(ifd);
+      for (let i = 0; i < n; i++) {
+        const e = ifd + 2 + i * 12, tag = u16(e), count = u32(e + 4);
+        out[tag] = { count, value: count > 4 ? u32(e + 8) : e + 8, raw: u32(e + 8) };
+      }
+      return out;
+    };
+    const ifd0 = tags(u32(4));
+    if (!ifd0[0x8769]) return null;
+    const exif = tags(ifd0[0x8769].raw);
+    const dt = exif[0x9003] || exif[0x9004];
+    if (!dt) return null;
+    const m = /(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d):(\d\d)/.exec(str(dt.value, 19));
+    if (!m) return null;
+    const off = exif[0x9011] ? str(exif[0x9011].value, 6) : '';
+    const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${/^[+-]\d\d:\d\d$/.test(off) ? off : ''}`;
+    const t = new Date(iso).getTime();  // without an offset, it's this device's local time
+    return Number.isFinite(t) ? t / 1000 : null;
+  }
+
+  async function addPhotoBatch(files) {
+    let matched = 0, unmatched = 0, unread = 0;
+    const names = new Set();
+    toast(`Matching ${files.length} photo${files.length === 1 ? '' : 's'}…`);
+    for (const file of files) {
+      const t = (await photoTime(file)) || (file.lastModified ? file.lastModified / 1000 : null);
+      if (!t) { unread++; continue; }
+      try {
+        const full = await shrink(file, 1600, 0.85), thumb = await shrink(file, 480, 0.8);
+        const r = await postJSON('api/photo', { taken_at: t, full: full.data, thumb: thumb.data, width: full.width, height: full.height });
+        state.yours = r;
+        matched++;
+        if (r.matched) names.add(r.matched);
+      } catch { unmatched++; }
+    }
+    const bits = [`📸 ${matched} matched${names.size ? ` (${[...names].slice(0, 3).join(', ')}${names.size > 3 ? '…' : ''})` : ''}`];
+    if (unmatched) bits.push(`${unmatched} taken when no plane was over your zone`);
+    if (unread) bits.push(`${unread} couldn’t be read`);
+    toast(bits.join(' · '));
+    loadCollection();
+  }
+
   // ---------- day replay ----------
   const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const clockOf = (secs) => `${String(Math.floor(secs / 3600) % 24).padStart(2, '0')}:${String(Math.floor(secs / 60) % 60).padStart(2, '0')}`;
@@ -1940,7 +2199,9 @@
     daySelect.innerHTML = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - i);
       return `<option value="${isoDay(d)}">${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</option>`;
-    }).join('');
+    }).join('') + '<option value="pick">📅 Any day…</option>';
+    $('#replay-date').hidden = true;
+    $('#replay-date').max = isoDay(new Date());
     $('#replay').hidden = false;
     $('#map-wrap').classList.add('replaying');
     $('#btn-replay').setAttribute('aria-pressed', 'true');
@@ -2258,6 +2519,7 @@
         background: true, getBackgroundColor: (d) => (d.selected ? a(C.select, 90) : a(C.panel, 200)), backgroundPadding: [5, 2],
         fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
       }),
+      ...myTrackLayers(is3d),
       ...logoLayers(labelled.map((d) => ({ code: airlineCode(d.p.callsign), pos: [d.lon, d.lat, d.z] }))
         .concat(farAway.map((d) => {
           const f = flightById(d.w.id);
@@ -2340,6 +2602,14 @@
     $('#list').addEventListener('click', (e) => {
       const open = e.target.closest('[data-open-flight]');
       if (open) { openFlight(open.dataset.openFlight); return; }
+      if (e.target.closest('[data-action="add-flight"]')) { openAddFlight(); return; }
+      const sf = e.target.closest('[data-show-flight]');
+      if (sf) { showMyFlight(sf.dataset.showFlight); return; }
+      const rf = e.target.closest('[data-remove-flight]');
+      if (rf) { removeFlight(rf.dataset.removeFlight); return; }
+      if (e.target.closest('[data-action="add-photos"]')) { $('#photos-input').click(); return; }
+      const cp = e.target.closest('[data-copy]');
+      if (cp) { navigator.clipboard && navigator.clipboard.writeText(cp.dataset.copy).then(() => toast('Copied')); return; }
       const wr = e.target.closest('[data-wrapped]');
       if (wr) { openWrapped(wr.dataset.wrapped); return; }
       const prof = e.target.closest('[data-profile]');
@@ -2432,8 +2702,22 @@
       if (b) { e.stopPropagation(); toggleSaw(b.dataset.saw, b.dataset.callsign, Date.now() / 1000); }
     });
     $('#photo-input').addEventListener('change', (e) => uploadPhoto(e.target.files[0]));
+    $('#btn-travel').addEventListener('click', openTravel);
+    $('#travel-line').addEventListener('click', (e) => { if (e.target.closest('[data-action="travel-stop"]')) stopTravel(); });
+    $('#photos-input').addEventListener('change', (e) => { if (e.target.files.length) addPhotoBatch(Array.from(e.target.files)); e.target.value = ''; });
+    $('#overlay').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.id === 'flight-number') addFlight();
+    });
     $('#overlay').addEventListener('click', (e) => {
       if (e.target === e.currentTarget || e.target.closest('[data-action="close-overlay"]')) { closeOverlay(); return; }
+      if (e.target.closest('[data-action="travel-here"]')) { travelHere(); return; }
+      if (e.target.closest('[data-action="travel-go"]')) {
+        const m = /(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec($('#travel-coords').value);
+        if (m) startTravel(Number(m[1]), Number(m[2]), $('#travel-name').value.trim());
+        else $('#travel-msg').textContent = 'Type them like 33.8090, -117.9265';
+        return;
+      }
+      if (e.target.closest('[data-action="flight-go"]')) { addFlight(); return; }
       const ans = e.target.closest('[data-quiz-answer]');
       if (ans) { answerQuiz(ans.dataset.quizAnswer); return; }
       if (e.target.closest('[data-action="share-wrapped"]')) { shareWrapped(); return; }
@@ -2456,7 +2740,14 @@
       r.playing = !r.playing;
       updateReplayBar();
     });
-    $('#replay-day').addEventListener('change', (e) => loadReplay(e.target.value));
+    $('#replay-day').addEventListener('change', (e) => {
+      const input = $('#replay-date');
+      if (e.target.value !== 'pick') { input.hidden = true; loadReplay(e.target.value); return; }
+      input.hidden = false;  // the time machine: any day planespotter was watching
+      input.focus();
+      if (input.showPicker) { try { input.showPicker(); } catch { /* needs a tap */ } }
+    });
+    $('#replay-date').addEventListener('change', (e) => { if (e.target.value) loadReplay(e.target.value); });
     $('#replay-speed').addEventListener('change', (e) => { state.replay.speed = Number(e.target.value); });
     $('#replay-slider').addEventListener('input', (e) => {
       state.replay.t = Number(e.target.value);
@@ -2532,11 +2823,24 @@
     setInterval(() => { if (!document.hidden) loadSky(); }, 5 * 60000);
     loadFlow();
     setInterval(() => { if (!document.hidden) loadFlow(); }, 5 * 60000);
+    loadOutlook();
+    setInterval(() => { if (!document.hidden) loadOutlook(); }, 10 * 60000);
+    loadMyFlights();
+    setInterval(() => { if (!document.hidden) loadMyFlights(); }, 2 * 60000);
+    loadFriends();
+    setInterval(() => { if (!document.hidden && state.tab === 'collection') loadFriends(); }, 10 * 60000);
+    renderTravel();
     loadToday();
     setInterval(() => { if (!document.hidden) loadToday(); }, 2 * 60000);
     loadSpace();
     setInterval(() => { if (!document.hidden) loadSpace(); }, 60000);
-    if ((state.config.places || []).length) {
+    const places = (state.config.places || []).slice();
+    if (state.config.travel && state.config.travel.on) {
+      if (!places.length) places.push({ name: home.name, port: Number(location.port || 80) });
+      places.push({ name: `🧳 ${state.config.travel.name}`, port: state.config.travel.port });
+    }
+    state.config.places = places;
+    if (places.length) {
       const port = Number(location.port || (location.protocol === 'https:' ? 443 : 80));
       const sel = $('#place');
       sel.innerHTML = state.config.places.map((pl) => `<option value="${pl.port}"${pl.port === port || (pl.name === home.name) ? ' selected' : ''}>${esc(pl.name)}</option>`).join('');
