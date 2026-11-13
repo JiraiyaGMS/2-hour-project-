@@ -673,7 +673,9 @@ Siri uses the planespotter script in Scriptable, so set up the widget first
 1. Open the **Shortcuts** app and tap **+**.
 2. Tap **Add Action** (or the search bar at the bottom), type **Run Script**,
    and choose the one from **Scriptable**. Tap **Script** and choose
-   **planespotter**.
+   **planespotter**. Then tap the small arrow **›** on that step (or **Show
+   More**) and turn **Show When Run** off, so Siri answers straight away
+   instead of waiting for you to tap **Done**.
 3. Search for **Speak Text** and add it underneath. It should say **Speak
    Script Result**. If the blank isn't filled in, tap it and choose **Script
    Result**.
@@ -1006,6 +1008,7 @@ carries on by itself once adsb.lol allows more requests.
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
 | `phone` says *timed out* or *Couldn't email it* | The Wi-Fi (hotels, schools, offices) is blocking email. Run `python3 -m planespotter phone --copy widget` and paste on your iPhone (Universal Clipboard: same Apple ID, Bluetooth on), (Siri uses the same script). Or AirDrop the files in the `phone-setup` folder. |
 | The widget says *Can't reach planespotter* | planespotter must be running on your Mac. Check the widget uses the script from `python3 -m planespotter phone` (older copies only work on home Wi-Fi). |
+| Siri waits for you to tap **Done** before it answers | In Shortcuts, tap **⋯** on the shortcut, tap the arrow **›** on the **Run Script** step, and turn **Show When Run** off. |
 | Siri just says *Done* or *OK* | Run `python3 -m planespotter phone --test` on the Mac. If it says nothing has been posted, planespotter isn't running (or the Mac is asleep): start it and wait 5 minutes. If it shows a sentence, the shortcut needs fixing: it should be just **Run Script** (Scriptable, script **planespotter**) and **Speak Text** with **Script Result**. |
 | Siri keeps talking about a plane that has already gone by, or keeps saying one is overhead | Your shortcut reads the status link directly, so it repeats what your Mac last posted (and nothing new is posted while the Mac is asleep). If Siri starts with *"At 9:42 pm: …"* and ends with *"change your Siri shortcut…"*, that's it: rebuild the shortcut with Scriptable's **Run Script** (see *Siri* above), and update the planespotter script in Scriptable (`python3 -m planespotter phone --copy widget`, then paste over the old one). The script works out the answer when you ask. Something that stays in your zone (a helicopter hovering) is mentioned as *hovering nearby*, not as coming over. |
 | Commands get no answer | Check you're on the *Commands page* from the phone setup email, and planespotter is running (`watch`). Answers come in the ntfy app within a minute. |

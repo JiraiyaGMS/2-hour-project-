@@ -42,7 +42,8 @@ def kit_email(cfg, k: dict) -> Email:
         ("2. Siri (works anywhere; set up the widget script first)", [
             "Open Shortcuts and tap +.",
             "Tap Add Action (or the search bar), type Run Script, and choose the one from Scriptable. "
-            "Tap Script and choose planespotter.",
+            "Tap Script and choose planespotter. Tap the arrow › on that step and turn Show When Run off "
+            "(so Siri answers straight away, without a Done button).",
             "Search for Speak Text and add it underneath. It should say Speak Script Result (if not, tap the "
             "blank and choose Script Result).",
             "Tap the name at the top, rename the shortcut Planespotter, and tap Done. "
