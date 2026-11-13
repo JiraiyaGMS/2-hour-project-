@@ -23,6 +23,7 @@ from .adsb import (Aircraft, FeedWithReceiver, LiveFeed, Lookup, PositionLookup,
                    SharedFeed)
 from .airports import airports, route_from_path
 from .airlines import AIRLINES
+from .gates import APIS as GATE_APIS
 from .budget import ApiBudget
 from .collection import build_collection
 from .config import Config
@@ -666,11 +667,12 @@ def command_url(cfg: Config) -> str:
     return f"{cfg.ntfy_server.rstrip('/')}/{derived_topic(cfg.ntfy_topic, 'cmd')}" if cfg.ntfy_topic else ""
 
 
-def widget_script(cfg: Config, map_url: str) -> str:
+def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
     """The Scriptable script (widget and Siri), with your settings filled in.
 
     No adsb.lol key: the phone asks adsb.lol from its own connection, within its own free allowance,
-    so it doesn't use up your Mac's.
+    so it doesn't use up your Mac's. A gate-lookup key goes only in the copy for your phone
+    (``with_keys``), never in the one the map serves on your Wi-Fi.
     """
     settings = {
         "home": {"name": cfg.home_name, "lat": round(cfg.home_lat, 5), "lon": round(cfg.home_lon, 5),
@@ -680,6 +682,9 @@ def widget_script(cfg: Config, map_url: str) -> str:
         "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
     }
     settings["airportsUrl"] = AIRPORTS_URL
+    if with_keys and cfg.gates_api in GATE_APIS and cfg.gates_key:
+        settings["gates"] = {"api": cfg.gates_api, "key": cfg.gates_key, "name": GATE_APIS[cfg.gates_api]["name"],
+                             "monthly": cfg.gates_monthly or GATE_APIS[cfg.gates_api]["monthly"]}
     script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
     return (script.replace("__SETTINGS__", json.dumps(settings, ensure_ascii=False))
             .replace("__AIRLINES__", json.dumps(AIRLINES_FOR_PHONE, ensure_ascii=False, separators=(",", ":")))

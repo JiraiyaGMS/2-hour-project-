@@ -306,6 +306,46 @@ def cmd_autostart(env_path: Path, args) -> int:
     return 0
 
 
+def cmd_gates(env_path: Path, args) -> int:
+    """Gate numbers from FlightAware AeroAPI or Aviationstack, with your own free key."""
+    from .gates import APIS, describe, lookup
+    from .wizard import set_env_value
+
+    if not env_path.exists():
+        print("No settings yet: run  python3 -m planespotter setup  first.")
+        return 1
+    if args.what == "off":
+        set_env_value(env_path, "GATES_API", "")
+        set_env_value(env_path, "GATES_KEY", "")
+        print("✔ Gate lookups are off. Copy the script to your phone again:  python3 -m planespotter phone --copy widget")
+        return 0
+    if args.what in APIS:
+        if not args.value:
+            print(f"Add your {APIS[args.what]['name']} key, like:  python3 -m planespotter gates {args.what} YOUR_KEY")
+            return 1
+        set_env_value(env_path, "GATES_API", args.what)
+        set_env_value(env_path, "GATES_KEY", args.value.strip())
+        print(f"✔ Gate numbers from {APIS[args.what]['name']}, at most {APIS[args.what]['monthly']} lookups a month "
+              "(inside the free allowance; change it with GATES_MONTHLY in your settings).")
+        print("  Check it works:  python3 -m planespotter gates test UAL1")
+        print("  Then copy the script to your phone again:  python3 -m planespotter phone --copy widget")
+        return 0
+    cfg = Config.load(env_path)
+    if not (cfg.gates_api and cfg.gates_key):
+        print("Gate lookups aren't set up. First:  python3 -m planespotter gates aeroapi YOUR_KEY  (or aviationstack)")
+        return 1
+    flight = (args.value or "UAL1").strip().upper()
+    info = lookup(cfg.gates_api, cfg.gates_key, flight)
+    if "error" in info:
+        print({"key": f"✘ {APIS[cfg.gates_api]['name']} didn't accept the key (or the plan doesn't allow this).",
+               "limit": "✘ This month's lookups are used up (or too many at once): try again later.",
+               }.get(info["error"], "✘ The lookup didn't work.") + f"\n  Details: {info.get('detail', '')}")
+        return 1
+    print(f"✔ {APIS[cfg.gates_api]['name']} works. {flight}: {describe(info)}")
+    print("  (That used one lookup from this month's allowance.)")
+    return 0
+
+
 def cmd_server(env_path: Path, args) -> int:
     """Move planespotter to an always-on server, check on it, update it, or bring it back."""
     from . import autostart
@@ -602,6 +642,9 @@ def main(argv: list[str] | None = None) -> int:
     p_emails.add_argument("state", choices=["on", "off"])
     p_auto = sub.add_parser("autostart", help="run planespotter by itself, from login (or boot), all the time")
     p_auto.add_argument("state", nargs="?", choices=["on", "off", "status"], default="on")
+    p_gates = sub.add_parser("gates", help="gate numbers: aeroapi KEY, aviationstack KEY, off, or test UAL123")
+    p_gates.add_argument("what", choices=["aeroapi", "aviationstack", "off", "test"])
+    p_gates.add_argument("value", nargs="?", help="your key (or a flight to test, like UAL123)")
     p_server = sub.add_parser("server", help="move planespotter to an always-on server (ubuntu@address), or: "
                                              "status, update, stop")
     p_server.add_argument("what", help="user@address to move it there, or status / update / stop")
@@ -628,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_autostart(env_path, args)
     if args.command == "server":
         return cmd_server(env_path, args)
+    if args.command == "gates":
+        return cmd_gates(env_path, args)
 
     try:
         cfg = Config.load(env_path)

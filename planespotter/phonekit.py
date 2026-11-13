@@ -14,7 +14,7 @@ def kit(cfg, map_url: str) -> dict:
     server = cfg.ntfy_server.rstrip("/")
     topics = {k: derived_topic(cfg.ntfy_topic, k) for k in ("relay", "cmd", "family", "share")}
     return {
-        "widget": widget_script(cfg, map_url),
+        "widget": widget_script(cfg, map_url, with_keys=True),
         "siri_url": relay_url(cfg),
         "cmd_url": command_url(cfg),
         "family_topic": topics["family"],

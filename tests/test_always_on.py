@@ -459,5 +459,74 @@ class WheresMyPlaneTests(unittest.TestCase):
         self.assertEqual((mine["callsign"], mine["state"], mine["destination_city"]), ("UAL1234", "landed", "Seattle"))
 
 
+
+AEROAPI_LANDED = {"flights": [
+    {"ident": "ASA312", "ident_icao": "ASA312", "status": "Scheduled", "origin": {"code": "KLAX", "code_iata": "LAX"},
+     "destination": {"code": "KSEA", "code_iata": "SEA", "city": "Seattle"}, "gate_origin": "21A", "gate_destination": None,
+     "scheduled_out": "2026-11-14T18:00:00Z"},
+    {"ident": "ASA312", "ident_icao": "ASA312", "status": "Arrived / Gate Arrival", "origin": {"code": "KLAX", "code_iata": "LAX"},
+     "destination": {"code": "KSEA", "code_iata": "SEA", "city": "Seattle"}, "gate_origin": "22B", "terminal_origin": "6",
+     "gate_destination": "N12", "terminal_destination": "N", "baggage_claim": "12",
+     "scheduled_out": "2026-11-13T15:00:00Z", "actual_out": "2026-11-13T15:05:00Z", "actual_off": "2026-11-13T15:20:00Z",
+     "actual_on": "2026-11-13T17:40:00Z", "actual_in": "2026-11-13T17:48:00Z"},
+]}
+AVIATIONSTACK_LANDED = {"pagination": {"limit": 100, "offset": 0, "count": 1, "total": 1}, "data": [
+    {"flight_date": "2026-11-13", "flight_status": "landed",
+     "departure": {"airport": "Los Angeles International", "iata": "LAX", "terminal": "6", "gate": "22B"},
+     "arrival": {"airport": "Seattle-Tacoma International", "iata": "SEA", "terminal": "N", "gate": "N12", "baggage": "12"},
+     "flight": {"iata": "AS312", "icao": "ASA312", "number": "312"}}]}
+
+
+class GateTests(unittest.TestCase):
+    now = ts(2026, 11, 13, 18, 10)
+
+    def test_flightaware(self):
+        from planespotter.gates import describe, lookup
+        asked = []
+
+        def fetch(url, headers):
+            asked.append((url, headers))
+            return 200, AEROAPI_LANDED
+        info = lookup("aeroapi", "KEY", "ASA312", self.now, fetch)
+        self.assertEqual(asked[0], ("https://aeroapi.flightaware.com/aeroapi/flights/ASA312", {"x-apikey": "KEY"}))
+        self.assertEqual((info["arr"]["gate"], info["arr"]["terminal"], info["dep"]["gate"]), ("N12", "N", "22B"))  # today's, not tomorrow's
+        self.assertIn("arrives at gate N12 (terminal N)", describe(info))
+
+    def test_aviationstack(self):
+        from planespotter.gates import lookup
+        asked = []
+
+        def fetch(url, headers):
+            asked.append(url)
+            return 200, AVIATIONSTACK_LANDED
+        info = lookup("aviationstack", "KEY", "asa312", self.now, fetch)
+        self.assertTrue(asked[0].startswith("https://api.aviationstack.com/v1/flights?access_key=KEY&flight_icao=ASA312"))
+        self.assertEqual((info["arr"]["gate"], info["arr"]["baggage"]), ("N12", "12"))
+
+    def test_problems(self):
+        from planespotter.gates import lookup
+        self.assertEqual(lookup("aeroapi", "BAD", "ASA312", self.now, lambda u, h: (401, {"title": "Unauthorized"}))["error"], "key")
+        used_up = {"error": {"code": "usage_limit_reached", "message": "monthly allowed request volume"}}
+        self.assertEqual(lookup("aviationstack", "K", "ASA312", self.now, lambda u, h: (429, used_up))["error"], "limit")
+        self.assertTrue(lookup("aviationstack", "K", "ASA312", self.now, lambda u, h: (200, {"data": []})).get("none"))
+
+    def test_the_key_only_goes_to_your_phone(self):
+        from planespotter.phonekit import kit
+        from planespotter.webmap import widget_script
+        cfg = make_config(ntfy_topic="planespotter-test", gates_api="aeroapi", gates_key="SECRET123")
+        self.assertIn('"api": "aeroapi", "key": "SECRET123"', kit(cfg, "")["widget"])   # the copy for your phone
+        self.assertNotIn("SECRET123", widget_script(cfg, "http://192.168.1.5:8765"))      # what the map serves on Wi-Fi
+
+    def test_the_gates_command(self):
+        with TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text(f"HOME_LAT={HOME[0]}\nHOME_LON={HOME[1]}\n")
+            self.assertEqual(main(["--env", str(env), "gates", "aeroapi", "KEY123"]), 0)
+            cfg = Config.load(env)
+            self.assertEqual((cfg.gates_api, cfg.gates_key), ("aeroapi", "KEY123"))
+            self.assertEqual(main(["--env", str(env), "gates", "off"]), 0)
+            self.assertEqual(Config.load(env).gates_key, "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -739,8 +739,8 @@ planespotter on your Mac is following).
   ago."* It works out where and when from the plane's recorded positions
   (adsb.lol keeps about a day of them), and remembers it after that
   (*"about 2 days ago"*).
-- Gates: the free flight data planespotter uses doesn't include gates, so
-  it says *"No known gate."*
+- Gates: *"It's at gate N12, terminal N. Bags come out at carousel 12."* if
+  you've set up gate numbers (below), otherwise *"No known gate."*
 
 Set it up like the first Siri shortcut, with one difference:
 
@@ -751,6 +751,36 @@ Set it up like the first Siri shortcut, with one difference:
 3. Add **Speak Text** underneath.
 4. Name the shortcut **Where's my plane** and tap **Done**. Then: *"Hey Siri,
    where's my plane?"*
+
+### Gate numbers (optional, free with your own key)
+
+The plane data planespotter uses has no gates: those come from airline and
+airport schedules, through flight-status services. Two have a free monthly
+allowance; pick one:
+
+| Service | Free allowance | Sign up |
+| --- | --- | --- |
+| **FlightAware AeroAPI** (Personal) | up to $5 of credit a month, and a lookup costs $0.005: about 1,000 lookups | flightaware.com/aeroapi: sign in, choose **Personal**, and make an API key (it may ask for a card; personal use only) |
+| **Aviationstack** (Free) | 100 lookups a month | aviationstack.com: **Sign up free**, then copy **Your API Access Key** from the dashboard |
+
+Then, on your Mac:
+
+```bash
+python3 -m planespotter gates aeroapi YOUR_KEY
+```
+
+(or `gates aviationstack YOUR_KEY`), check it works with
+`python3 -m planespotter gates test UAL1`, and copy the script to your phone
+again (`python3 -m planespotter phone --copy widget`).
+
+Gates are looked up only when you ask: tap **🚪 Gate** on a plane or on the
+flight you're tracking, or ask *"Hey Siri, where's my plane?"*. Each answer is
+kept on your phone for two hours, so asking again costs nothing, and the
+phone stops just under the free allowance each month (900 lookups for
+AeroAPI, 90 for Aviationstack; change it with `GATES_MONTHLY`). Your key goes
+only into the copy of the script for your phone, not the one your Mac's map
+serves on your Wi-Fi. `gates off` turns it off. Not every airport reports
+gates, so some flights still say *no known gate*.
 
 ### Commands from your phone
 
@@ -1129,6 +1159,7 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. Add `--copy widget` (or `siri`, `commands`) to copy one part to the clipboard instead, or `--test` to see what Siri and the widget would say. |
 | `python3 -m planespotter autostart` | Runs planespotter by itself (Mac: from login; Linux: from boot), all the time (`autostart status` to check on it, `autostart off` to stop). |
 | `python3 -m planespotter server ubuntu@<address>` | Moves planespotter to an always-on cloud server (`server status`, `server update`, `server stop`). See *Run it in the cloud*. |
+| `python3 -m planespotter gates aeroapi YOUR_KEY` | Gate numbers from FlightAware AeroAPI (or `aviationstack`); `gates test UAL1` checks it, `gates off` turns it off. |
 | `python3 -m planespotter emails off` | No more emails: the reports come as phone notifications (`emails on` to undo). |
 
 There are more settings (how often to check, the hourly alert limit and so

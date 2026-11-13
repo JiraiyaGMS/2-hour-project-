@@ -743,6 +743,106 @@ async function sendCommand(text) {
   }
 }
 
+// --- gate numbers (optional): your own key for FlightAware AeroAPI or Aviationstack ---
+// Looked up only when you ask (🚪 Gate, or "Where's my plane?"), kept for two hours, and never more
+// than SETTINGS.gates.monthly a month (just under the service's free allowance).
+
+const isoTime = (text) => (text ? Date.parse(text) / 1000 : NaN);
+
+function fromAeroApi(body) {
+  // The flight that matters now: in the air, else one that arrived in the last 12 hours, else the next one.
+  const flights = (body && body.flights) || [];
+  const done = (f) => isoTime(f.actual_in || f.actual_on);
+  let f = flights.find((x) => (x.actual_off && !x.actual_on) || (x.actual_out && !x.actual_in && !x.actual_on));
+  if (!f) {
+    const arrived = flights.filter((x) => !isNaN(done(x))).sort((a, b) => done(b) - done(a));
+    const upcoming = flights.filter((x) => !x.actual_out && !isNaN(isoTime(x.scheduled_out)))
+      .sort((a, b) => isoTime(a.scheduled_out) - isoTime(b.scheduled_out));
+    f = (arrived[0] && now - done(arrived[0]) < 12 * 3600 && arrived[0]) || upcoming[0] || arrived[0] || flights[0];
+  }
+  if (!f) return null;
+  const o = f.origin || {}, d = f.destination || {};
+  return { dep: { code: o.code_iata || o.code || "", gate: f.gate_origin || "", terminal: f.terminal_origin || "" },
+           arr: { code: d.code_iata || d.code || "", city: d.city || "", gate: f.gate_destination || "",
+                  terminal: f.terminal_destination || "", baggage: f.baggage_claim || "" },
+           status: f.status || "" };
+}
+
+function fromAviationstack(body) {
+  const data = (body && body.data) || [];
+  const d = new Date(now * 1000);
+  const day = d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+  const f = data.find((x) => x.flight_status === "active") || data.find((x) => x.flight_date === day) || data[0];
+  if (!f) return null;
+  const dep = f.departure || {}, arr = f.arrival || {};
+  return { dep: { code: dep.iata || "", gate: dep.gate || "", terminal: dep.terminal || "" },
+           arr: { code: arr.iata || "", city: arr.airport || "", gate: arr.gate || "", terminal: arr.terminal || "",
+                  baggage: arr.baggage || "" },
+           status: f.flight_status || "" };
+}
+
+async function gateLookup(cs, cache) {
+  const g = SETTINGS.gates;
+  if (!g || !cs) return { off: true };
+  cache.gates = cache.gates || {};
+  const hit = cache.gates[cs];
+  if (hit && now - hit.at < (hit.info && !hit.info.none ? 2 * 3600 : 30 * 60)) return hit.info;  // asked lately: free
+  const d = new Date(now * 1000), month = d.getFullYear() + "-" + (d.getMonth() + 1);
+  if (!cache.gateUsage || cache.gateUsage.month !== month) cache.gateUsage = { month, n: 0 };
+  if (cache.gateUsage.n >= (g.monthly || 90)) return { error: "limit" };
+  cache.gateUsage.n += 1;
+  let status = 0, body = null;
+  try {
+    const req = new Request(g.api === "aeroapi"
+      ? "https://aeroapi.flightaware.com/aeroapi/flights/" + encodeURIComponent(cs)
+      : "https://api.aviationstack.com/v1/flights?access_key=" + encodeURIComponent(g.key) + "&flight_icao=" + encodeURIComponent(cs));
+    req.timeoutInterval = 12;
+    if (g.api === "aeroapi") req.headers = { "x-apikey": g.key };
+    const text = await withTimeout(req.loadString(), 14);
+    status = req.response ? req.response.statusCode : 0;
+    body = text ? JSON.parse(text) : null;
+  } catch (e) {
+    body = null;
+  }
+  const err = body && body.error, code = err && typeof err === "object" ? String(err.code) : "";
+  let info;
+  if (!body) info = { error: "other" };
+  else if (status === 401 || status === 403 ||
+           ["invalid_access_key", "missing_access_key", "inactive_user", "101", "https_access_restricted", "105"].includes(code)) info = { error: "key" };
+  else if (status === 429 || ["usage_limit_reached", "104", "rate_limit_reached", "106"].includes(code)) info = { error: "limit" };
+  else if (status >= 400 || err) info = { error: "other" };
+  else info = (g.api === "aeroapi" ? fromAeroApi(body) : fromAviationstack(body)) || { none: true };
+  if (!info.error) {
+    cache.gates[cs] = { at: now, info };
+    for (const [k, v] of Object.entries(cache.gates)) if (now - v.at > 2 * 86400) delete cache.gates[k];
+  }
+  return info;
+}
+
+function gateWords(info, side) {  // "gate 23B, terminal 2"
+  const s = info && info[side];
+  return s && s.gate ? "gate " + s.gate + (s.terminal ? ", terminal " + s.terminal : "") : "";
+}
+
+async function gateSentence(mine, cache, phase) {
+  // For "Where's my plane?": phase is "air", "ground" or "landed".
+  if (!SETTINGS.gates || !mine.cs) return phase === "air" ? "" : " No known gate.";
+  const info = await gateLookup(mine.cs, cache);
+  if (info.error) {
+    if (phase === "air") return "";
+    return info.error === "limit" ? " No known gate (this month's gate lookups are used up)." : " No known gate.";
+  }
+  if (phase === "air") {
+    const at = gateWords(info, "arr");
+    return at ? " It's due at " + at + "." : "";
+  }
+  const arrived = phase === "landed" || /arriv|landed|taxi(ing)? in/i.test(info.status || "");
+  const w = gateWords(info, arrived ? "arr" : "dep");
+  if (!w) return " No known gate.";
+  return (arrived ? " It's at " : " It leaves from ") + w + "." +
+    (arrived && info.arr.baggage ? " Bags come out at carousel " + info.arr.baggage + "." : "");
+}
+
 // --- "Hey Siri, where's my plane?" ---
 
 function nearestAirport(lat, lon, list) {
@@ -864,7 +964,8 @@ async function wheresMyPlane(cache) {
     if (raw && raw.alt_baro === "ground" && typeof raw.lat === "number") {
       const ap = await landedAt(raw.lat, raw.lon);
       const there = ap ? (ap[3] || ap[2]) : whereIs(raw.lat, raw.lon);
-      return name + " is on the ground" + (ap ? " at " + there : " " + there) + ((raw.gs || 0) > 5 ? ", taxiing" : "") + ". No known gate.";
+      return name + " is on the ground" + (ap ? " at " + there : " " + there) + ((raw.gs || 0) > 5 ? ", taxiing" : "") + "." +
+        (await gateSentence(mine, cache, "ground"));
     }
     const age = Math.min(300, Math.max(0, body && body.now ? now - body.now / 1000 : 0));
     const p = raw ? parsePlane(raw, age) : null;
@@ -882,7 +983,7 @@ async function wheresMyPlane(cache) {
         text += ", heading to " + (dest[3] || dest[2]) + (speed > 80 && d > 3 ? ", " + inTime(d / (speed * 1.15078) * 3600) + " away" : "");
       }
       if (p.vr !== null && p.vr < -600 && p.alt !== null && p.alt < 12000) text += ". It's coming down to land";
-      return text + ".";
+      return text + "." + (await gateSentence(mine, cache, "air"));
     }
   }
   // Not flying: when and where it landed.
@@ -894,7 +995,8 @@ async function wheresMyPlane(cache) {
       const ap = await landedAt(landing.lat, landing.lon);
       where = ap ? ap[3] || ap[2] : "";
     }
-    return name + " has landed" + (where ? " in " + where : "") + ", " + agoLong(now - landing.at) + ". No known gate.";
+    return name + " has landed" + (where ? " in " + where : "") + ", " + agoLong(now - landing.at) + "." +
+      (await gateSentence(mine, cache, "landed"));
   }
   return "I can't see " + name + " right now. It may be out of range of the receivers (over an ocean, say), " +
     "it may not have taken off yet, or it may have landed somewhere I can't tell.";
@@ -1000,7 +1102,7 @@ const MAP_PAGE = `<!doctype html>
 var state = { planes: [], at: 0, me: null, radius: 3, next: [], due: {}, status: "", where: "", ground: 0,
               tracked: null, canFollow: false };
 var routes = {}, asks = [], popup = null, popupHex = null, ready = false, centred = false, map = null;
-var search = { results: [], shown: 0, notFlying: [], busy: false }, trail = [], movedAt = 0, followed = {};
+var search = { results: [], shown: 0, notFlying: [], busy: false }, trail = [], movedAt = 0, followed = {}, gates = {};
 var R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] }, NL = String.fromCharCode(10);
 var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
 function $(id) { return document.getElementById(id); }
@@ -1039,6 +1141,25 @@ function ask(a) { asks.push(a); }
 function takeAsks() { var a = asks; asks = []; return JSON.stringify(a); }
 function wantRoute(p) { if (p.cs && !(p.cs in routes)) { routes[p.cs] = null; ask({ kind: "route", cs: p.cs, lat: p.lat, lon: p.lon }); } }
 function setRoute(cs, r) { routes[cs] = r || {}; draw(); renderResults(); return true; }
+function askGate(cs) { if (!gates[cs]) { gates[cs] = "asking"; ask({ kind: "gate", cs: cs }); draw(); } }
+function setGate(cs, info) { gates[cs] = info || { none: true }; draw(); return true; }
+function gateHtml(cs) {
+  // Gate numbers cost a lookup from your monthly allowance, so only when you tap.
+  if (!state.gatesOn || !cs) return "";
+  var g = gates[cs];
+  if (!g) return '<button class="small" onclick="askGate(' + "'" + esc(cs) + "'" + ')">🚪 Gate</button>';
+  if (g === "asking") return "<div>Looking up the gate…</div>";
+  if (g.error) return "<div>" + (g.error === "limit" ? "Gate lookups for this month are used up" : g.error === "key"
+    ? "The gate service didn't accept your key" : "Couldn't look up the gate") + "</div>";
+  if (g.none) return "<div>No known gate</div>";
+  var side = function (s, verb) {
+    return s && s.gate ? verb + " gate " + esc(s.gate) + (s.terminal ? " (terminal " + esc(s.terminal) + ")" : "") : "";
+  };
+  var bits = [side(g.dep, (g.dep.code ? esc(g.dep.code) + ": leaves from" : "Leaves from")),
+              side(g.arr, (g.arr.code ? esc(g.arr.code) + ": arrives at" : "Arrives at"))].filter(Boolean);
+  if (g.arr && g.arr.baggage) bits.push("Bags: carousel " + esc(g.arr.baggage));
+  return bits.length ? bits.map(function (b) { return "<div>🚪 " + b + "</div>"; }).join("") : "<div>No known gate</div>";
+}
 function sayOf(p) {  // "Southwest flight 1672 from Las Vegas"
   if (String(p.label || "").charAt(0) === "~") return "an unidentified plane";
   var r = (p.cs && routes[p.cs]) || {}, airline = (r.airline || p.airline || "").replace(/ (Air Lines|Airlines|Airways)$/, "");
@@ -1067,7 +1188,7 @@ function popupHtml(p) {
   var what = [p.type, altText(p.alt), p.gs ? Math.round(p.gs) + " kt" : ""].filter(Boolean).join(" · ");
   var tracking = state.tracked && state.tracked.hex === p.hex;
   return '<div class="pop"><b>' + esc(p.label) + "</b>" + bits.map(function (b) { return "<div>" + b + "</div>"; }).join("") +
-    (what ? "<div>" + esc(what) + "</div>" : "") +
+    (what ? "<div>" + esc(what) + "</div>" : "") + gateHtml(p.cs) +
     (tracking ? "" : '<button class="small go" onclick="trackIt(' + "'" + esc(p.hex) + "'" + ')">✈︎ Track this flight</button>') + "</div>";
 }
 function openPopup(hex) {
@@ -1128,6 +1249,7 @@ function renderCard() {
   }
   card.innerHTML = "<b>✈︎ " + esc(t.label) + "</b>" + (t.gone ? " <span class='sub'>(not seen for a moment)</span>" : "") +
     "<div class='sub'>" + esc(bits.join(" · ")) + "</div><div class='sub'>" + esc(meta.filter(Boolean).join(" · ")) + "</div>" +
+    "<div class='sub'>" + gateHtml(t.cs) + "</div>" +
     "<div class='btns'>" + follow + "<button class='small' onclick='stopTracking()'>Stop</button></div>";
 }
 
@@ -1225,6 +1347,7 @@ function frame() {
 }
 function update(d) {
   for (var k in d) state[k] = d[k];
+  if (d.gatesKnown) for (var g in d.gatesKnown) if (!gates[g] || gates[g] === "asking") gates[g] = d.gatesKnown[g];
   var t = state.tracked;
   if (t && !t.lost && t.lat !== undefined && !t.gone) {
     trail.push([t.lon, t.lat]);
@@ -1445,7 +1568,11 @@ async function showMap(startPoint) {
       if (!told) { told = true; await tellMyMac(where, cache); }
       if (!name || !atHome) name = atHome ? home.name : await placeName(where, cache);
       const update = { me: { lat: where.lat, lon: where.lon }, radius: SETTINGS.radius, where: name, status: "",
-                       ground: where.groundFt || 0, canFollow: !!SETTINGS.cmd };
+                       ground: where.groundFt || 0, canFollow: !!SETTINGS.cmd, gatesOn: !!SETTINGS.gates };
+      if (ticks === 1 && cache.gates) {  // gates looked up in the last two hours: shown without asking again
+        update.gatesKnown = {};
+        for (const [cs, v] of Object.entries(cache.gates)) if (now - v.at < 2 * 3600) update.gatesKnown[cs] = v.info;
+      }
       if (startPoint && ticks === 1) update.startPoint = true;
       const following = cache.tracking;
       if (!following || ticks % 4 === 1) {  // the planes around you (less often while following a flight)
@@ -1500,6 +1627,8 @@ async function showMap(startPoint) {
       } else if (a.kind === "untrack") {
         cache.tracking = null;
         last = -1e12;
+      } else if (a.kind === "gate") {
+        await page(wv, "setGate(" + JSON.stringify(a.cs) + "," + JSON.stringify(await gateLookup(a.cs, cache)) + ")");
       } else if (a.kind === "follow") {
         // planespotter on your Mac follows it: tells you when it takes off, flies over home, and lands
         const ok = await sendCommand("flight " + a.flight);
