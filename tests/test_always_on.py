@@ -295,5 +295,36 @@ class ServerTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / "p.db.lock").exists())  # it didn't even start
 
 
+
+class NeverStuckTests(unittest.TestCase):
+    """Siri must never get stuck saying something is 'coming over now'."""
+
+    def test_things_that_stay_in_the_zone_are_not_coming_over(self):
+        from planespotter.predict import crossings
+        cfg = make_config(radius_miles=3)
+        hovering = plane("aaa001", lat=HOME[0] + 0.01, speed_kt=3.0, callsign="N44HV")
+        no_speed = plane("aaa002", lat=HOME[0] - 0.01, speed_kt=None, callsign="N55PK")
+        passing = plane("aaa003", lat=HOME[0] + 0.02, speed_kt=160.0, callsign="DAL1")
+        self.assertEqual([c.ac.label for c in crossings(cfg, [hovering, no_speed, passing])], ["DAL1"])
+
+    def test_airport_vehicles_are_not_aircraft(self):
+        from planespotter.adsb import parse_aircraft
+        raw = {"hex": "a33333", "lat": HOME[0], "lon": HOME[1], "alt_baro": 50, "gs": 12, "track": 0}
+        self.assertIsNone(parse_aircraft({**raw, "category": "C2"}))
+        self.assertIsNotNone(parse_aircraft({**raw, "category": "A7"}))
+
+    def test_what_siri_says(self):
+        from planespotter.predict import say_name
+        from planespotter.relay import spoken_now
+        self.assertEqual(say_name("", "~2ABC01"), "An unidentified plane")
+        now = ts(2026, 11, 13, 22)
+        status = {"home": "Anaheim", "updated": now, "nearby": 4,
+                  "next": [{"label": "N944AM", "say": "N944AM", "at": now, "direction": "SE", "alt_ft": 1050}]}
+        self.assertTrue(spoken_now(status, now, str).startswith("N944AM is coming over now at 1,050 feet, look up"))
+        quiet = {"home": "Anaheim", "updated": now, "next": [], "nearby": 4,
+                 "hovering": [{"label": "N44HV", "say": "N44HV", "miles": 0.8}]}
+        self.assertIn("N44HV is hovering nearby, about 1 mile away.", spoken_now(quiet, now, str))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,8 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
         return None
     if (raw.get("seen_pos") or 0) > 60:
         return None
+    if str(raw.get("category") or "").startswith("C"):
+        return None  # airport vehicles and obstacles with transponders: not aircraft
 
     alt = raw.get("alt_baro")
     if not isinstance(alt, (int, float)):

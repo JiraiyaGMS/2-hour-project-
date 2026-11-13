@@ -17,6 +17,7 @@ const HORIZON = 900;        // look this far ahead (seconds)
 const RANGE_NM = 40;        // fetch planes this far around you (nautical miles)
 const HOME_MILES = 5;       // this close to home counts as being at home
 const NEARBY_MILES = 10;
+const HOVER_KT = 40;        // slower than this inside your zone: hovering or parked, not "coming over"
 const DAILY_LIMIT = 400;    // adsb.lol requests a day from this phone (adsb.lol allows about 500)
 const WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west",
                 W: "west", NW: "north-west" };
@@ -109,6 +110,7 @@ function parsePlane(raw, ageS) {
   // Like planespotter's parse_aircraft: skip planes on the ground, without a position, or stale ones.
   if (typeof raw.lat !== "number" || typeof raw.lon !== "number") return null;
   if (raw.alt_baro === "ground" || (raw.seen_pos || 0) > 60) return null;
+  if (String(raw.category || "").startsWith("C")) return null;  // airport vehicles and obstacles: not aircraft
   const alt = typeof raw.alt_baro === "number" ? raw.alt_baro : (typeof raw.alt_geom === "number" ? raw.alt_geom : null);
   const track = typeof raw.track === "number" ? raw.track : (typeof raw.true_heading === "number" ? raw.true_heading : null);
   const p = { hex: String(raw.hex || "").toLowerCase(), callsign: String(raw.flight || "").trim(),
@@ -131,7 +133,7 @@ function crossings(planes, lat, lon, groundFt) {
     const az = bearing(lat, lon, p.lat, p.lon);
     let eta = null;
     if (mi <= SETTINGS.radius && !tooHigh) {
-      eta = 0;
+      if (p.gs !== null && p.gs >= HOVER_KT) eta = 0;  // (hovering or parked isn't coming over)
     } else if (p.gs && p.track !== null && !tooHigh) {
       const x = Math.sin(rad(az)) * mi * MI, y = Math.cos(rad(az)) * mi * MI, v = p.gs * KT;
       const vx = Math.sin(rad(p.track)) * v, vy = Math.cos(rad(p.track)) * v;
@@ -147,6 +149,7 @@ function crossings(planes, lat, lon, groundFt) {
 
 function sayName(callsign, label, airline, city) {
   // "Delta flight 573 from Atlanta" (or the callsign, if we don't know the airline).
+  if (label.startsWith("~")) return "An unidentified plane";  // seen by radar only, with no identity
   airline = (airline || "").trim();
   for (const suffix of [" Air Lines", " Airlines", " Airways"]) {
     if (airline.endsWith(suffix)) airline = airline.slice(0, -suffix.length);
@@ -254,7 +257,14 @@ async function livePlanes(where, cache) {
   if (!got || got.limited) return null;
   const next = (await comingOver(got.planes, where, cache)).map(({ hex, ...rest }) => rest);
   const nearby = got.planes.filter((p) => miles(where.lat, where.lon, p.lat, p.lon) <= NEARBY_MILES).length;
-  cache.live = { lat: where.lat, lon: where.lon, updated: now, next, nearby };
+  // Something staying in your zone (a helicopter hovering): worth a mention, but it isn't "coming over".
+  // Very low and still is probably parked with its transponder on: left out.
+  const ground = where.groundFt !== null && where.groundFt !== undefined ? where.groundFt : 0;
+  const hovering = got.planes
+    .map((p) => ({ p, mi: miles(where.lat, where.lon, p.lat, p.lon) }))
+    .filter(({ p, mi }) => mi <= SETTINGS.radius && (p.gs === null || p.gs < HOVER_KT) && p.alt !== null && p.alt - ground >= 300)
+    .slice(0, 2).map(({ p, mi }) => ({ label: p.label, say: sayName(p.callsign, p.label, "", ""), miles: mi }));
+  cache.live = { lat: where.lat, lon: where.lon, updated: now, next, nearby, hovering };
   return cache.live;
 }
 
@@ -296,7 +306,7 @@ async function gather() {
       atHome && SETTINGS.relay ? getJSON(SETTINGS.relay, forSiri ? 4 : 8) : Promise.resolve(null)]);
     const macKnows = status && now - (status.updated || 0) < 3 * 3600 ? status : null;
     if (live) {
-      data = { updated: live.updated, next: live.next, nearby: live.nearby, source: "live" };
+      data = { updated: live.updated, next: live.next, nearby: live.nearby, hovering: live.hovering, source: "live" };
       if (macKnows) {
         for (const k of ["last", "regulars", "hour_count", "space", "transit"]) {
           if (macKnows[k] !== undefined) data[k] = macKnows[k];
@@ -334,6 +344,10 @@ function nextRegular(data, now) {
 
 // --- Siri ---
 
+function feet(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");  // 12,450
+}
+
 function inMinutes(seconds) {
   const m = Math.max(1, Math.round(seconds / 60));
   return m === 1 ? "in about a minute" : "in about " + m + " minutes";
@@ -358,7 +372,8 @@ function siriSentence(data, now) {
   if (next.length) {
     const p = next[0];
     const wait = p.at - now;
-    let line = (p.say || p.label) + (wait <= 30 ? " is coming over now" : " is due " + inMinutes(wait));
+    const over = " is coming over now" + (typeof p.alt_ft === "number" ? " at " + feet(p.alt_ft) + " feet" : "");
+    let line = (p.say || p.label) + (wait <= 30 ? over : " is due " + inMinutes(wait));
     if (WORDS[p.direction]) line += (wait <= 30 ? ", look up to the " : ", look to the ") + WORDS[p.direction];
     out.push(line + ".");
     if (next.length > 1) {
@@ -367,6 +382,10 @@ function siriSentence(data, now) {
     }
   } else {
     out.push("No planes are due over " + (data.home || "your house") + " in the next few minutes.");
+    for (const h of (data.hovering || []).slice(0, 1)) {
+      const m = Math.max(1, Math.round(h.miles));
+      out.push((h.say || h.label) + " is hovering nearby, about " + m + " mile" + (Math.round(h.miles) > 1 ? "s" : "") + " away.");
+    }
     const r = nextRegular(data, now);
     if (r) {
       out.push("Your next regular, " + (r.say || r.label) + ", usually comes over " +

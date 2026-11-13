@@ -148,7 +148,10 @@ class NtfyTests(unittest.TestCase):
         self.assertEqual(status["next"][0]["say"], "Delta flight 573 from Atlanta")
         self.assertNotIn("spoken", status["next"][0])
         self.assertGreater(status["next"][0]["at"], now)
-        self.assertTrue(status["siri"].startswith("Delta flight 573 from Atlanta is due over about 4:0"), status["siri"])
+        # Older shortcuts read this as it was written, so it says when that was (it may be read much later).
+        self.assertTrue(status["siri"].startswith("At 4:00 pm: Delta flight 573 from Atlanta was due over about 4:0"),
+                        status["siri"])
+        self.assertTrue(status["siri"].endswith("change your Siri shortcut to Scriptable's Run Script."))
         self.assertIn("space station", status["siri"])
         post, clock = FakePost(), [now]
         relay = Relay(PushNotifier(cfg, post=post), lambda: clock[0])

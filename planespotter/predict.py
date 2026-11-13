@@ -15,6 +15,7 @@ from .geo import bearing_deg, compass, distance_miles, offset
 FT = 0.3048
 MI = 1609.344
 KT = 0.514444
+HOVER_KT = 40   # slower than this inside the zone: hovering or parked, not "coming over"
 DIRECTION_WORDS = {"N": "north", "NE": "north-east", "E": "east", "SE": "south-east", "S": "south",
                    "SW": "south-west", "W": "west", "NW": "north-west"}
 
@@ -38,7 +39,8 @@ def crossings(cfg, planes, ground_ft: int = 0, horizon: float = 900) -> list[Cro
         az = bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)
         eta = None
         if miles <= cfg.radius_miles and not too_high:
-            eta = 0.0
+            if ac.speed_kt is not None and ac.speed_kt >= HOVER_KT:
+                eta = 0.0  # (a helicopter hovering, or a plane parked with its transponder on, isn't coming over)
         elif ac.speed_kt and ac.track is not None and not too_high:
             x, y = math.sin(math.radians(az)) * miles * MI, math.cos(math.radians(az)) * miles * MI
             v = ac.speed_kt * KT
@@ -61,6 +63,8 @@ def say_name(callsign: str, label: str, airline: str = "", city: str = "") -> st
         if airline.endswith(suffix):
             airline = airline[: -len(suffix)]
     callsign = callsign or ""
+    if label.startswith("~"):
+        return "An unidentified plane"  # seen by radar only, with no identity
     number = callsign[3:] if len(callsign) > 3 and callsign[:3].isalpha() and callsign[3:4].isdigit() else ""
     if airline and number:
         name = f"{airline} flight {number}"

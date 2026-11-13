@@ -38,20 +38,25 @@ def clock(cfg, ts: float) -> str:
     return cfg.local(ts).strftime("%I:%M %p").lstrip("0").lower()
 
 
-def siri_sentence(cfg, nxt: list[dict], last: dict | None, extra: list[str]) -> str:
-    """What Siri reads out: written with clock times, since it may be read a few minutes later."""
+UPGRADE = "For answers that are always up to date, change your Siri shortcut to Scriptable's Run Script."
+
+
+def siri_sentence(cfg, nxt: list[dict], last: dict | None, extra: list[str], now: float) -> str:
+    """For older Siri shortcuts that read this sentence as it was written. It starts with the time, since
+    it may be read much later (with the Mac asleep, nothing new is posted). The planespotter script on the
+    phone works out its own answer when you ask instead, and never reads this."""
     if nxt:
         p = nxt[0]
-        when = "is over your zone now" if p["eta_s"] == 0 else f"is due over about {clock(cfg, p['at'])}"
+        when = "was over your zone" if p["eta_s"] == 0 else f"was due over about {clock(cfg, p['at'])}"
         text = f"{p['spoken']}{(' from ' + p['from']) if p.get('from') else ''} {when}, " \
                f"coming from the {DIRECTION_WORDS[p['direction']]}."
         if len(nxt) > 1:
             text += f" {len(nxt) - 1} more after that."
     else:
-        text = f"No planes are due over {cfg.home_name} in the next few minutes."
+        text = f"No planes were due over {cfg.home_name}."
         if last:
             text += f" The last one was {last['label']} at {clock(cfg, last['at'])}."
-    return " ".join([text, *extra])
+    return " ".join([f"At {clock(cfg, now)}: {text}", *extra, UPGRADE])
 
 
 def build_status(cfg, crossings, infos: dict, last_row, now: float, extras: dict | None = None) -> dict:
@@ -77,7 +82,7 @@ def build_status(cfg, crossings, infos: dict, last_row, now: float, extras: dict
                 "say": say_name(last_row["callsign"], label, last_row["airline"], last_row["origin_city"])}
     siri_extra = [x for x in (extras.get("space"), extras.get("transit")) if x]
     status = {"v": 1, "home": cfg.home_name, "updated": round(now), "next": nxt, "last": last,
-              "siri": siri_sentence(cfg, nxt, last, siri_extra)}
+              "siri": siri_sentence(cfg, nxt, last, siri_extra, now)}
     for key in ("sky", "best", "space", "flight", "transit", "hour_count", "regulars"):
         if extras.get(key):
             status[key] = extras[key]
@@ -196,7 +201,8 @@ def spoken_now(status: dict | None, now: float, clock_text) -> str:
     if nxt:
         p = nxt[0]
         wait = p["at"] - now
-        line = (p.get("say") or p["label"]) + (" is coming over now" if wait <= 30 else " is due " + in_minutes(wait))
+        over = " is coming over now" + (f" at {p['alt_ft']:,} feet" if isinstance(p.get("alt_ft"), int) else "")
+        line = (p.get("say") or p["label"]) + (over if wait <= 30 else " is due " + in_minutes(wait))
         if p.get("direction") in DIRECTION_WORDS:
             line += (", look up to the " if wait <= 30 else ", look to the ") + DIRECTION_WORDS[p["direction"]]
         out.append(line + ".")
@@ -205,6 +211,9 @@ def spoken_now(status: dict | None, now: float, clock_text) -> str:
             out.append(f"Then {q.get('say') or q['label']} {in_minutes(max(60, q['at'] - now))}.")
     else:
         out.append(f"No planes are due over {status.get('home') or 'your house'} in the next few minutes.")
+        for h in (status.get("hovering") or [])[:1]:
+            out.append(f"{h.get('say') or h['label']} is hovering nearby, about {max(1, _round(h['miles']))} "
+                       f"mile{'s' if _round(h['miles']) > 1 else ''} away.")
         r = next((r for r in status.get("regulars") or [] if r["at"] > now - 10 * 60), None)
         if r:
             when = f"at about {clock_text(r['at'])}" if r["at"] > now else "about now"
