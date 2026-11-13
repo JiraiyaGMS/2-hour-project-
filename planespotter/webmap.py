@@ -682,6 +682,7 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
         "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
     }
     settings["airportsUrl"] = AIRPORTS_URL
+    settings["pointUrl"] = POINT_URL
     if with_keys and cfg.gates_api in GATE_APIS and cfg.gates_key:
         settings["gates"] = {"api": cfg.gates_api, "key": cfg.gates_key, "name": GATE_APIS[cfg.gates_api]["name"],
                              "monthly": cfg.gates_monthly or GATE_APIS[cfg.gates_api]["monthly"]}
@@ -695,6 +696,9 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
 AIRPORTS_URL = ("https://raw.githubusercontent.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
                 "planespotter/data/airports.csv")
 AIRLINES_FOR_PHONE = [list(a) for a in AIRLINES]
+# 🔭 Point runs in Safari (which gives pages the compass), from planespotter's own files, served as a web page.
+POINT_URL = ("https://raw.githack.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
+             "planespotter/web/point.html")
 
 
 def big_airports() -> list[list]:

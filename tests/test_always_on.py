@@ -441,6 +441,23 @@ class SearchAndPointTests(unittest.TestCase):
         both = {**status, "hovering": [{"label": "SWA1672", "say": "SWA1672", "miles": 0.8}]}
         self.assertNotIn("The nearest plane", spoken_now(both, now, str))  # not the same one twice
 
+    def test_point_opens_in_safari(self):
+        # Scriptable's web views can't use the compass, so 🔭 Point hands the planes to a page in Safari.
+        from pathlib import Path
+        from planespotter.webmap import POINT_URL, widget_script
+        repo = Path(__file__).resolve().parent.parent
+        script = widget_script(make_config(ntfy_topic="planespotter-test"), "")
+        self.assertIn(json.dumps(POINT_URL), script)
+        self.assertTrue(POINT_URL.startswith("https://"))  # Safari only gives the compass to https pages
+        page = repo / POINT_URL.split("/claude/exciting-cray-6oq525/", 1)[1]
+        self.assertTrue(page.is_file(), page)
+        html = page.read_text()
+        for needed in ("location.hash", "requestPermission", "webkitCompassHeading", "speechSynthesis", "data.back"):
+            self.assertIn(needed, html)
+        self.assertFalse("https://api.adsb.lol" in html or "/v2/point" in html)  # pages can't ask it: planes come in the link
+        self.assertNotIn("DeviceOrientationEvent", script)  # no compass in Scriptable itself any more
+        self.assertIn("Safari.open(pointLink(", script)
+
 
 
 class WheresMyPlaneTests(unittest.TestCase):

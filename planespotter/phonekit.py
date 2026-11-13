@@ -38,8 +38,8 @@ def kit_email(cfg, k: dict) -> Email:
             "Home screen: press and hold an empty spot → Edit → Add Widget → Scriptable → Add Widget. "
             "Press and hold the widget → Edit Widget → Script: planespotter.",
             "Tap the widget any time for a live map of the planes around you. On the map: ✈︎ Track a flight "
-            "(search by flight number, airline or airport) and 🔭 Point (point your phone at a plane to find out "
-            "what it is).",
+            "(search by flight number, airline or airport) and 🔭 Point (opens Safari: tap Start, allow motion & "
+            "orientation, and point your phone at a plane; the one in the blue beam is the one it tells you about).",
         ]),
         ("2. Siri (works anywhere; set up the widget script first)", [
             "Open Shortcuts and tap +.",

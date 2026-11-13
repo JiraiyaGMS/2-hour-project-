@@ -688,17 +688,25 @@ worldwide list), and flight numbers worldwide. The first time you search for
 a small airport, the phone downloads the full airport list once (about 0.8
 MB) and keeps it.
 
-**🔭 Point.** Tap **Point**, then **Start** (the first time, allow the
-compass). Hold your phone up, look at the screen, and point the back of it at
-a plane: it tells you which plane it is (out loud too; tap **🔊** to mute),
-with its route, height and distance. If there's no plane that way, an arrow
-tells you which way to turn and how far to look up, to the next plane coming
-over you (or the one highest in the sky). Siri itself can't tell which way
-your phone is facing (iPhones don't give it the compass), so this is in the
-map. For a Siri shortcut straight to it, make a second shortcut with one
-action, **Open URLs**, set to `scriptable:///run/planespotter?point=1`, and
-name it **Point Planespotter** (*"Hey Siri, Point Planespotter"*; it opens
-the screen, then tap **Start**).
+**🔭 Point.** Tap **Point**: Safari opens with a map of the planes around
+you and a blue dot for you. Tap **Start**, and the first time tap **Allow**
+when Safari asks about motion and orientation. A blue beam, like the one in
+Life360, shows which way your phone is facing. Hold the phone flat in front of
+you and point its top at a plane: the plane inside the beam is picked (it
+turns orange) and you're told which plane it is, out loud too (tap **🔊** to
+mute), with its route, height and distance. If there's no plane in the beam,
+it tells you which way to turn, and how many degrees, to the next plane coming
+over you (or the one highest in the sky).
+
+It's in Safari because Scriptable can't use the compass. The planes are
+the ones planespotter just got: they keep moving on the map by their speed
+and heading, and after 3 minutes it asks you to tap **↻ Fresh planes**, which
+goes back to Scriptable for new ones (Safari asks *Open in Scriptable?*: tap
+**Open**). Siri itself can't tell which way your phone is facing. For a Siri
+shortcut straight to it, make a second shortcut with one action, **Open
+URLs**, set to `scriptable:///run/planespotter?point=1`, and name it **Point
+Planespotter**. Then say *"Hey Siri, Point Planespotter"*: it opens Safari
+with the planes, and you tap **Start**.
 
 ### Siri: "Hey Siri, Planespotter"
 
@@ -1145,6 +1153,7 @@ carries on by itself once adsb.lol allows more requests.
 | No voice | Turn on **🗣️ Voice**, then click anywhere on the map once (browsers only speak after a click). It's silent during quiet hours. On an iPhone, turn off silent mode. |
 | *This Connection Is Not Private* on the sky view | Expected the first time: see *Sky view* above (Show Details → visit this website). |
 | Sky view says *drag to look around* on a phone | It didn't get the compass. Open it from the **https** address, tap **Start** and allow motion and orientation. On an iPhone, if you tapped Don't Allow, close the tab and open the address again. |
+| Point says *The compass wasn't allowed* | You tapped Don't Allow. Close that Safari tab, then tap 🔭 Point again and tap **Allow**. If it says *The compass isn't coming through*: Settings → Apps → Safari → turn on **Motion & Orientation Access** (if it's there), and Settings → Privacy & Security → Location Services → System Services → **Compass Calibration** on. |
 | The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
 | The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |

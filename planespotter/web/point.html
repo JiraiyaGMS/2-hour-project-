@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>planespotter: what's that plane?</title>
+<!--
+  "Point" for planespotter, opened in Safari from the planespotter script in Scriptable (🔭 on its map).
+  Safari gives pages the compass (Scriptable's own web view doesn't), so a beam shows which way your phone
+  is facing, like Life360, and the plane inside it is picked. The planes come in the link after "#"
+  (that part is never sent to any server), because adsb.lol doesn't let web pages fetch from it directly;
+  they keep moving by their speed and heading, and ↻ goes back to Scriptable for fresh ones.
+-->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root { --bg: #0b0f14; --card: rgba(11, 15, 20, .92); --text: #e8eef5; --muted: #9aa7b6; --amber: #ffb020; --beam: #3b9cff; --green: #3ddc84; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; border: 0; cursor: pointer; }
+  .hidden { display: none !important; }
+  #map { position: absolute; inset: 0; }
+  #top { position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; right: 10px; display: flex;
+    justify-content: space-between; gap: 8px; align-items: center; }
+  .chip { background: var(--card); border-radius: 999px; padding: 7px 12px; font-size: 13px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .chip b { color: var(--text); }
+  .btn { background: #1c2632; border-radius: 12px; padding: 9px 14px; font-weight: 600; font-size: 14px; }
+  .go { background: var(--amber); color: #111; }
+  #card { position: absolute; left: 10px; right: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); background: var(--card);
+    border-radius: 16px; padding: 12px 14px; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+  #card .row { display: flex; align-items: center; gap: 12px; }
+  #arrow { font-size: 40px; line-height: 1; color: var(--amber); min-width: 44px; text-align: center; }
+  #main { font-size: 20px; font-weight: 700; }
+  #sub { color: var(--muted); font-size: 14px; margin-top: 3px; }
+  #also { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  #actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .maplibregl-ctrl-attrib { background: rgba(11, 15, 20, .6) !important; }
+  .maplibregl-ctrl-attrib a { color: var(--muted) !important; }
+  .maplibregl-ctrl-top-right { top: calc(50px + env(safe-area-inset-top)); }
+</style>
+</head><body>
+<div id="map"></div>
+<div id="top"><div class="chip" id="where">✈ planespotter</div><div class="chip" id="age"></div></div>
+<div id="card">
+  <div class="row"><div id="arrow">🧭</div><div style="flex:1;min-width:0">
+    <div id="main">What's that plane?</div>
+    <div id="sub">Hold your phone flat in front of you, top pointing at the plane. Tap Start and allow motion &amp; orientation.</div>
+  </div></div>
+  <div id="also"></div>
+  <div id="actions"><button class="btn go" id="start">Start</button><button class="btn" id="voice">🔊 On</button><button class="btn" id="refresh">↻ Fresh planes</button></div>
+</div>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+"use strict";
+var BEAM = 15, BEAM_MILES = 30, R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] };
+var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
+var data = null, map = null, ready = false, heading = null, voice = true, picked = null, pickedAt = 0, said = "", lastGuide = 0;
+var routes = {};
+function $(id) { return document.getElementById(id); }
+function rad(d) { return d * Math.PI / 180; }
+function deg(r) { return r * 180 / Math.PI; }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
+function miles(a1, o1, a2, o2) {
+  var p1 = rad(a1), p2 = rad(a2), dp = p2 - p1, dl = rad(o2 - o1);
+  var a = Math.pow(Math.sin(dp / 2), 2) + Math.cos(p1) * Math.cos(p2) * Math.pow(Math.sin(dl / 2), 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+function bearing(a1, o1, a2, o2) {
+  var p1 = rad(a1), p2 = rad(a2), dl = rad(o2 - o1);
+  return (deg(Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl))) + 360) % 360;
+}
+function compass(d) { return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.floor((d % 360) / 45 + 0.5) % 8]; }
+function offset(lat, lon, brg, mi) {
+  var d = mi / R, b = rad(brg), p1 = rad(lat), l1 = rad(lon);
+  var p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  var l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [deg(p2), (deg(l2) + 540) % 360 - 180];
+}
+function now() { return Date.now() / 1000; }
+function feet(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+function turnOf(a, b) { return ((a - b + 540) % 360) - 180; }  // + : the plane is to your right
+
+// --- the planes, from the link ---
+function readLink() {
+  try {
+    var d = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+    if (!d || !d.me || !d.p) return null;
+    d.planes = d.p.map(function (x) {
+      return { hex: x[0], label: x[1], cs: x[2], lat: x[3], lon: x[4], alt: x[5], gs: x[6], track: x[7], type: x[8] };
+    });
+    d.due = {};
+    (d.n || []).forEach(function (x) { d.due[x[0]] = x[1]; });
+    return d;
+  } catch (e) {
+    return null;
+  }
+}
+function where(p) {  // now, if it flew straight on since the snapshot (for up to 5 minutes)
+  var s = Math.min(Math.max(0, now() - data.at), 300);
+  if (!p.gs || p.track === null || p.track === undefined) return [p.lat, p.lon];
+  return offset(p.lat, p.lon, p.track, p.gs * 1.15078 * s / 3600);
+}
+function sky() {  // every plane in the air around you: which way and how far
+  var me = data.me;
+  return data.planes.filter(function (p) { return p.alt !== null && p.alt - (data.g || 0) >= 200; }).map(function (p) {
+    var at = where(p), mi = miles(me[0], me[1], at[0], at[1]);
+    var h = Math.max(0, (p.alt - (data.g || 0)) * 0.3048);
+    return { p: p, at: at, mi: mi, az: bearing(me[0], me[1], at[0], at[1]), up: deg(Math.atan2(h, Math.max(1, mi * 1609.344))) };
+  }).filter(function (s) { return s.mi <= 45; });
+}
+
+// --- names and routes (adsbdb lets pages ask it directly) ---
+function airlineOf(p) {
+  var r = routes[p.cs];
+  return r && r.airline ? r.airline.replace(/ (Air Lines|Airlines|Airways)$/, "") : "";
+}
+function sayOf(p) {
+  if (String(p.label).charAt(0) === "~") return "an unidentified plane";
+  var r = routes[p.cs] || {}, a = airlineOf(p), m = /^[A-Z]{3}([0-9].*)$/.exec(p.cs || "");
+  return (a && m ? a + " flight " + m[1] : a ? a + ", " + p.label : p.label) + (r.city ? " from " + r.city : "");
+}
+function wantRoute(s) {
+  var p = s.p;
+  if (!p.cs || p.cs in routes) return;
+  routes[p.cs] = null;
+  fetch("https://api.adsbdb.com/v0/callsign/" + encodeURIComponent(p.cs)).then(function (r) { return r.json(); }).then(function (b) {
+    var fr = b && b.response && b.response.flightroute, out = {};
+    if (fr) {
+      out.airline = (fr.airline && fr.airline.name) || "";
+      var o = fr.origin || {}, d = fr.destination || {};
+      var direct = miles(o.latitude, o.longitude, d.latitude, d.longitude);
+      var via = miles(o.latitude, o.longitude, s.at[0], s.at[1]) + miles(s.at[0], s.at[1], d.latitude, d.longitude);
+      if (isFinite(direct) && isFinite(via) && via <= direct * 1.15 + 60) {  // only if it fits where it's flying
+        out.route = (o.iata_code || o.icao_code) + " → " + (d.iata_code || d.icao_code);
+        out.city = o.municipality || "";
+      }
+    }
+    routes[p.cs] = out;
+  }).catch(function () { routes[p.cs] = {}; });
+}
+
+// --- the compass (Safari asks once) ---
+function onOrientation(e) {
+  var h = null;
+  if (typeof e.webkitCompassHeading === "number" && e.webkitCompassHeading >= 0) h = e.webkitCompassHeading;  // iPhone
+  else if (e.absolute && typeof e.alpha === "number") h = (360 - e.alpha) % 360;                                // others
+  if (h === null) return;
+  var turn = (window.screen && screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  h = (h + turn + 360) % 360;
+  heading = heading === null ? h : (heading + turnOf(h, heading) * 0.25 + 360) % 360;  // smooth the jitter
+}
+function start() {
+  var D = window.DeviceOrientationEvent;
+  var go = function () {
+    window.addEventListener("deviceorientation", onOrientation);
+    window.addEventListener("deviceorientationabsolute", onOrientation);
+    $("start").classList.add("hidden");
+    $("main").textContent = "Point the top of your phone…";
+    $("sub").textContent = "";
+    speak("");  // lets Safari speak later
+    setTimeout(function () {
+      if (heading === null) {
+        $("main").textContent = "The compass isn't coming through";
+        $("sub").textContent = "On your iPhone: Settings → Apps → Safari → turn on Motion & Orientation Access (if it's there), then reload this page.";
+      }
+    }, 3000);
+  };
+  if (D && typeof D.requestPermission === "function") {
+    D.requestPermission().then(function (r) {
+      if (r === "granted") go();
+      else { $("main").textContent = "The compass wasn't allowed"; $("sub").textContent = "Reload the page and tap Allow when Safari asks."; }
+    }, function () { go(); });
+  } else go();
+}
+function speak(text) {
+  if (!voice || !window.speechSynthesis) return;
+  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+}
+
+// --- the beam ---
+function beamShape() {
+  var me = data.me, pts = [[me[1], me[0]]];
+  for (var a = -BEAM; a <= BEAM; a += 3) { var q = offset(me[0], me[1], heading + a, BEAM_MILES); pts.push([q[1], q[0]]); }
+  pts.push([me[1], me[0]]);
+  return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [pts] } };
+}
+function tick() {
+  if (!data) return;
+  var all = sky(), t = now(), age = t - data.at;
+  $("age").textContent = all.length + " planes · " + (age < 90 ? Math.round(age) + " s old" : Math.round(age / 60) + " min old");
+  if (ready) {
+    map.getSource("planes").setData({ type: "FeatureCollection", features: all.map(function (s) {
+      return { type: "Feature", geometry: { type: "Point", coordinates: [s.at[1], s.at[0]] },
+        properties: { track: s.p.track || 0, text: s.p.label, picked: !!(picked && picked.p.hex === s.p.hex) } };
+    }) });
+    map.getSource("beam").setData(heading === null ? EMPTY : beamShape());
+  }
+  if (heading === null) return;
+  if (age > 180) {
+    $("arrow").textContent = "↻"; $("main").textContent = "These planes are " + Math.round(age / 60) + " minutes old";
+    $("sub").textContent = "Tap ↻ Fresh planes to get where they are now."; $("also").textContent = "";
+    return;
+  }
+  // In the beam: the one nearest its middle (nearer planes win a tie).
+  var inBeam = all.map(function (s) { s.off = Math.abs(turnOf(s.az, heading)); return s; })
+    .filter(function (s) { return s.off <= BEAM; })
+    .sort(function (a, b) { return (a.off - b.off) + (a.mi - b.mi) / 20; });
+  var best = inBeam[0] || null;
+  if (best) {
+    wantRoute(best);
+    if (!picked || picked.p.hex !== best.p.hex) pickedAt = Date.now();
+    picked = best;
+    var r = routes[best.p.cs] || {};
+    $("arrow").textContent = "✈";
+    $("main").textContent = best.p.label + (airlineOf(best.p) ? " · " + airlineOf(best.p) : "");
+    $("sub").textContent = [r.route, best.p.type, best.p.alt >= 18000 ? "FL" + Math.round(best.p.alt / 100) : feet(best.p.alt) + " ft",
+      Math.round(best.mi) + " mi away", "about " + Math.round(best.up) + "° up"].filter(Boolean).join(" · ");
+    $("also").textContent = inBeam.length > 1 ? "Also that way: " + inBeam.slice(1, 4).map(function (s) { return s.p.label; }).join(", ") : "";
+    if (Date.now() - pickedAt > 700 && said !== best.p.hex && routes[best.p.cs] !== null) {
+      said = best.p.hex;
+      speak("That's " + sayOf(best.p) + ", " + Math.max(1, Math.round(best.mi)) + " miles away, at " + feet(Math.round(best.p.alt / 100) * 100) + " feet.");
+    }
+    return;
+  }
+  picked = null;
+  // Nothing that way: which way to turn, for the next plane over you (or the one highest in the sky).
+  var dueHex = Object.keys(data.due).filter(function (h) { return data.due[h] > t - 90; })
+    .sort(function (a, b) { return data.due[a] - data.due[b]; })[0];
+  var g = all.filter(function (s) { return s.p.hex === dueHex; })[0] ||
+    all.slice().sort(function (a, b) { return b.up - a.up || a.mi - b.mi; })[0];
+  if (!g) { $("arrow").textContent = "🌙"; $("main").textContent = "No planes in the sky nearby"; $("sub").textContent = ""; $("also").textContent = ""; return; }
+  var turn = turnOf(g.az, heading);
+  $("arrow").textContent = turn > 0 ? "↻" : "↺";
+  $("main").textContent = "No plane that way";
+  $("sub").textContent = (turn > 0 ? "Turn right " : "Turn left ") + Math.round(Math.abs(turn)) + "° for " + g.p.label +
+    " (" + Math.round(g.mi) + " mi " + WORDS[compass(g.az)] + ", about " + Math.round(g.up) + "° up)";
+  $("also").textContent = "";
+  if (Date.now() - lastGuide > 9000 && said !== "guide:" + g.p.hex) {
+    lastGuide = Date.now(); said = "guide:" + g.p.hex;
+    speak("No plane that way. Turn " + (turn > 0 ? "right" : "left") + " about " + Math.round(Math.abs(turn)) + " degrees.");
+  }
+}
+
+// --- start up ---
+data = readLink();
+if (!data) {
+  $("main").textContent = "Open this from planespotter";
+  $("sub").textContent = "In Scriptable, open planespotter and tap 🔭 Point: it brings the planes around you here.";
+  $("start").classList.add("hidden");
+} else {
+  $("where").innerHTML = "✈ <b>" + esc(data.home || "Near you") + "</b>";
+  try {
+    map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/dark", center: [data.me[1], data.me[0]],
+      zoom: 9, attributionControl: false, dragRotate: false, pitchWithRotate: false });
+    map.addControl(new maplibregl.AttributionControl({ compact: true }), "top-right");
+    map.on("load", function () {
+      var c = document.createElement("canvas"); c.width = c.height = 64;
+      var x = c.getContext("2d"); x.fillStyle = "#fff"; x.beginPath();
+      [[32,4],[36,12],[36,24],[58,38],[58,43],[36,36],[35,50],[43,56],[43,60],[32,57],[21,60],[21,56],[29,50],[28,36],[6,43],[6,38],[28,24],[28,12]]
+        .forEach(function (pt, i) { if (i) x.lineTo(pt[0], pt[1]); else x.moveTo(pt[0], pt[1]); });
+      x.closePath(); x.fill();
+      map.addImage("plane", x.getImageData(0, 0, 64, 64), { sdf: true });
+      map.addSource("beam", { type: "geojson", data: EMPTY });
+      map.addSource("planes", { type: "geojson", data: EMPTY });
+      map.addSource("me", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [data.me[1], data.me[0]] } } });
+      map.addLayer({ id: "beam", type: "fill", source: "beam", paint: { "fill-color": "#3b9cff", "fill-opacity": 0.22 } });
+      map.addLayer({ id: "beam-edge", type: "line", source: "beam", paint: { "line-color": "#3b9cff", "line-opacity": 0.6, "line-width": 1.5 } });
+      map.addLayer({ id: "planes", type: "symbol", source: "planes",
+        layout: { "icon-image": "plane", "icon-size": ["case", ["get", "picked"], 0.72, 0.46], "icon-rotate": ["get", "track"],
+          "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true,
+          "text-field": ["get", "text"], "text-font": ["Noto Sans Regular"], "text-size": 11, "text-offset": [0, 1.5], "text-anchor": "top", "text-optional": true },
+        paint: { "icon-color": ["case", ["get", "picked"], "#ffb020", "#c9d3de"], "text-color": "#e8eef5", "text-halo-color": "#0b0f14", "text-halo-width": 1.4 } });
+      map.addLayer({ id: "me", type: "circle", source: "me",
+        paint: { "circle-radius": 8, "circle-color": "#3b9cff", "circle-stroke-width": 3, "circle-stroke-color": "#ffffff" } });
+      var credits = document.querySelector(".maplibregl-ctrl-attrib");
+      if (credits) credits.classList.remove("maplibregl-compact-show");
+      ready = true;
+      tick();
+    });
+  } catch (e) { /* no map (no internet for the map tiles): the card still works */ }
+}
+$("start").onclick = start;
+$("voice").onclick = function () { voice = !voice; this.textContent = voice ? "🔊 On" : "🔇 Off"; };
+$("refresh").onclick = function () { location.href = (data && data.back) || "scriptable:///run/planespotter?point=1"; };
+setInterval(tick, 200);
+</script>
+</body></html>

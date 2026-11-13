@@ -1281,17 +1281,6 @@ const MAP_PAGE = `<!doctype html>
   #sheetTop b { font-size: 18px; }
   #hint, #found { color: #9aa7b6; font-size: 13px; margin: 2px 0 8px; }
   #more { width: 100%; margin-top: 10px; }
-  #point { position: absolute; z-index: 30; top: 0; left: 0; right: 0; bottom: 0; background: rgba(5, 8, 12, .95); display: flex;
-    flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; }
-  #pTop { position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 14px; right: 14px; display: flex;
-    justify-content: space-between; align-items: center; color: #9aa7b6; font-size: 14px; }
-  #reticle { width: 120px; height: 120px; border-radius: 50%; border: 2px solid rgba(255, 176, 32, .8); margin-bottom: 26px;
-    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0); position: relative; }
-  #reticle:after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: #ffb020; }
-  #reticle.hit { border-color: #3ddc84; }
-  #pMain { font-size: 24px; font-weight: 700; } #pSub { color: #9aa7b6; font-size: 15px; margin-top: 6px; max-width: 340px; }
-  #pArrow { font-size: 54px; line-height: 1; margin-bottom: 8px; color: #ffb020; }
-  #pStart { margin-top: 22px; }
   #msg { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: none; align-items: center;
     justify-content: center; text-align: center; padding: 30px; color: #9aa7b6; }
   .maplibregl-ctrl-top-right { top: calc(44px + env(safe-area-inset-top)); }
@@ -1317,12 +1306,6 @@ const MAP_PAGE = `<!doctype html>
     placeholder="UA 1234, Southwest LAX, JFK…"><button class="small go" type="submit">Search</button></form>
   <div id="hint">A flight number, an airline, an airport, or a mix: <b>UA 1234</b> · <b>Southwest 1234</b> · <b>LAX</b> · <b>Delta JFK</b> · <b>N12345</b></div>
   <div id="found"></div><div id="results"></div><button class="small hidden" id="more">Load more</button>
-</div>
-<div id="point" class="hidden">
-  <div id="pTop"><span id="pHead">Point your phone at the sky</span><span><button class="small" id="pVoice">🔊 On</button> <button class="small" id="pClose">Close</button></span></div>
-  <div id="reticle"></div><div id="pArrow"></div><div id="pMain">What's that plane?</div>
-  <div id="pSub">Hold your phone up, look at the screen, and point the back of it at a plane.</div>
-  <button class="small go" id="pStart">Start</button>
 </div>
 <div id="msg"></div>
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
@@ -1647,135 +1630,11 @@ function update(d) {
     if (ready) { frame(); centred = true; }
     else map.jumpTo({ center: [state.me.lon, state.me.lat], zoom: Math.max(7, 10.6 - Math.log2(Math.max(1, state.radius))) });
   }
-  if (d.startPoint) openPoint();
   draw();
   return true;
 }
 
-// --- point at a plane (the phone's compass and tilt, as in the sky view) ---
-var view = { alpha: null, beta: 90, gamma: 0, off: null, on: false, voice: true, said: "", target: null, since: 0, lastGuide: 0, events: 0 };
-function basis() {
-  var a = rad(view.alpha + (view.off || 0)), b = rad(view.beta), g = rad(view.gamma);
-  var cX = Math.cos(b), sX = Math.sin(b), cY = Math.cos(g), sY = Math.sin(g), cZ = Math.cos(a), sZ = Math.sin(a);
-  return [-(cY * sZ * sX + cZ * sY), -(sZ * sY - cZ * cY * sX), -(cX * cY)];  // the back camera's direction
-}
-function azOf(v) { return (deg(Math.atan2(v[0], v[1])) + 360) % 360; }
-function elOf(v) { return deg(Math.asin(Math.max(-1, Math.min(1, v[2])))); }
-function onOrientation(e) {
-  if (e.alpha == null || e.beta == null) return;
-  view.alpha = e.alpha; view.beta = e.beta; view.gamma = e.gamma || 0; view.events++;
-  if (typeof e.webkitCompassHeading === "number") {
-    // iPhone: alpha starts wherever the phone was pointing, so line it up with the compass.
-    var saved = view.off; view.off = 0; var f = basis(); view.off = saved;
-    if (Math.abs(f[2]) < 0.9) {  // the compass is unreliable pointing straight up or down
-      var want = azOf(f) - e.webkitCompassHeading;
-      if (view.off === null) view.off = want;
-      else view.off += (((want - view.off + 540) % 360) - 180) * 0.15;  // smooth out its jitter
-    }
-  } else if (view.off === null) view.off = 0;
-}
-function speak(text) {
-  if (!view.voice || !window.speechSynthesis) return;
-  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
-}
-function openPoint() {
-  $("point").classList.remove("hidden");
-  $("pStart").classList.remove("hidden");
-  $("pArrow").textContent = ""; $("pMain").textContent = "What's that plane?";
-  $("pSub").textContent = "Hold your phone up, look at the screen, and point the back of it at a plane.";
-}
-function closePoint() { $("point").classList.add("hidden"); view.on = false; try { speechSynthesis.cancel(); } catch (e) {} }
-function startPoint() {
-  var D = window.DeviceOrientationEvent;
-  var go = function () {
-    window.addEventListener("deviceorientation", onOrientation);
-    view.on = true; view.off = null; view.events = 0; view.said = "";
-    $("pStart").classList.add("hidden");
-    $("pMain").textContent = "Point at a plane…"; $("pSub").textContent = "";
-    setTimeout(function () {
-      if (view.on && !view.events) noCompass("Your phone isn't sharing its compass with this page.");
-    }, 3000);
-  };
-  if (D && typeof D.requestPermission === "function") {  // iPhone asks first
-    D.requestPermission().then(function (r) { if (r === "granted") go(); else noCompass("The compass wasn't allowed."); },
-                                function () { noCompass("The compass isn't available here."); });
-  } else if (D) go();
-  else noCompass("This phone doesn't share its compass with this page.");
-}
-function noCompass(why) {
-  view.on = false;
-  var g = guidePlane();
-  $("pArrow").textContent = "🧭";
-  $("pMain").textContent = g ? sayOf(g.p) : "No planes nearby";
-  $("pSub").textContent = why + (g ? " " + capital(WORDS[compass(g.az)]) + "ward, about " + Math.round(g.el) + "° up, " +
-    Math.round(g.mi) + " miles away." : "");
-}
-function capital(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ""; }
-function skyOf(p, t) {  // where to look for a plane: {az, el, mi}
-  var at = glided(p, t, p === state.tracked ? state.tracked.at : state.at);
-  var mi = miles(state.me.lat, state.me.lon, at[0], at[1]);
-  var h = Math.max(0, ((p.alt || 0) - (state.ground || 0)) * 0.3048);
-  return { p: p, az: bearing(state.me.lat, state.me.lon, at[0], at[1]), el: deg(Math.atan2(h, Math.max(1, mi * 1609.344))), mi: mi };
-}
-function seen() {  // planes in the sky around you (not on the ground, within 40 miles)
-  var t = Date.now() / 1000, list = state.planes.slice();
-  if (state.tracked && state.tracked.lat !== undefined && !state.tracked.lost) list.push(state.tracked);
-  return list.filter(function (p) { return p.alt !== null && p.alt - (state.ground || 0) >= 200; })
-    .map(function (p) { return skyOf(p, t); }).filter(function (s) { return s.mi <= 40; });
-}
-function guidePlane() {
-  // If you're not pointing at one: the next plane over you, else the one highest in the sky, else the nearest.
-  if (!state.me) return null;
-  var all = seen(), t = Date.now() / 1000;
-  var due = (state.next || []).filter(function (n) { return n.at > t - 90; })[0];
-  var pick = due && all.filter(function (s) { return s.p.hex === due.hex; })[0];
-  if (pick) return pick;
-  all.sort(function (a, b) { return b.el - a.el || a.mi - b.mi; });
-  return all[0] || null;
-}
-function pointTick() {
-  if (!view.on || view.off === null || !state.me) return;
-  var f = basis(), az = azOf(f), el = elOf(f);
-  $("pHead").textContent = "Facing " + compass(az) + " (" + Math.round(az) + "°) · " + Math.round(el) + "° up";
-  var best = null, bestSep = 99;
-  seen().forEach(function (s) {
-    var sep = deg(Math.acos(Math.max(-1, Math.min(1, Math.sin(rad(el)) * Math.sin(rad(s.el)) +
-      Math.cos(rad(el)) * Math.cos(rad(s.el)) * Math.cos(rad(s.az - az))))));
-    if (sep < bestSep) { bestSep = sep; best = s; }
-  });
-  var now = Date.now();
-  if (best && bestSep <= 12) {
-    var p = best.p;
-    wantRoute(p);
-    $("reticle").classList.add("hit");
-    $("pArrow").textContent = "";
-    $("pMain").textContent = p.label + ((routes[p.cs] || {}).airline ? " · " + routes[p.cs].airline : "");
-    var r = routes[p.cs] || {};
-    $("pSub").textContent = [r.origin ? r.origin + " → " + r.destination : "", p.type, altText(p.alt), Math.round(best.mi) + " mi away"].filter(Boolean).join(" · ");
-    if (view.target !== p.hex) { view.target = p.hex; view.since = now; }
-    if (now - view.since > 700 && view.said !== p.hex) {
-      view.said = p.hex;
-      speak("That's " + sayOf(p) + (p.alt ? ", at " + Math.round(p.alt / 100) * 100 + " feet" : "") + ", " + Math.max(1, Math.round(best.mi)) + " miles away.");
-    }
-    return;
-  }
-  $("reticle").classList.remove("hit");
-  view.target = null;
-  var g = guidePlane();
-  if (!g) { $("pArrow").textContent = ""; $("pMain").textContent = "No planes in the sky nearby"; $("pSub").textContent = "Try again in a few minutes."; return; }
-  var turn = ((g.az - az + 540) % 360) - 180, tilt = g.el - el;
-  var side = Math.abs(turn) < 12 ? "" : (turn > 0 ? "Turn right " : "Turn left ") + Math.round(Math.abs(turn)) + "°";
-  var vert = Math.abs(tilt) < 8 ? "" : (tilt > 0 ? "look up " : "look down ") + Math.round(Math.abs(tilt)) + "°";
-  $("pArrow").textContent = side ? (turn > 0 ? "↻" : "↺") : vert ? (tilt > 0 ? "↑" : "↓") : "•";
-  $("pMain").textContent = "No plane that way";
-  $("pSub").textContent = [side, side && vert ? vert : capital(vert)].filter(Boolean).join(" and ") + (side || vert ? " for " : "Look for ") +
-    sayOf(g.p) + ", " + Math.round(g.mi) + " mi away.";
-  if (now - view.lastGuide > 8000 && view.said !== "guide:" + g.p.hex) {
-    view.lastGuide = now; view.said = "guide:" + g.p.hex;
-    speak("No plane that way. " + (side ? side.replace("°", " degrees") : "It's in front of you") + ", for " + sayOf(g.p) + ".");
-  }
-}
-setInterval(pointTick, 200);
+
 
 try {
   map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/dark",
@@ -1823,13 +1682,48 @@ $("trackBtn").onclick = openSearch;
 $("sheetClose").onclick = function () { $("sheet").classList.add("hidden"); };
 $("form").onsubmit = runSearch;
 $("more").onclick = loadMore;
-$("pointBtn").onclick = openPoint;
-$("pStart").onclick = startPoint;
-$("pClose").onclick = closePoint;
-$("pVoice").onclick = function () { view.voice = !view.voice; this.textContent = view.voice ? "🔊 On" : "🔇 Off"; };
+$("pointBtn").onclick = function () { ask({ kind: "point" }); };  // opens Point in Safari (it has the compass)
 setInterval(draw, 1000);
 </script>
 </body></html>`;
+
+function pointLink(planes, next, where, name) {
+  // Point runs in Safari (Scriptable's own web view doesn't get the compass). adsb.lol doesn't let web pages
+  // fetch from it, so the planes go in the link, after "#": that part never leaves your phone.
+  const r4 = (x) => Math.round(x * 1e4) / 1e4;
+  const d = { v: 1, at: Math.round(now), me: [r4(where.lat), r4(where.lon)], g: Math.round(where.groundFt || 0),
+              r: SETTINGS.radius, home: name,
+              p: planes.filter((p) => p.alt !== null).slice(0, 90).map((p) => [p.hex, p.label, p.callsign, r4(p.lat), r4(p.lon),
+                 p.alt, p.gs === null ? null : Math.round(p.gs), p.track === null ? null : Math.round(p.track), p.type]),
+              n: (next || []).map((x) => [x.hex, x.at]),
+              back: URLScheme.forRunningScript() + "?point=1" };
+  return SETTINGS.pointUrl + "#" + encodeURIComponent(JSON.stringify(d));
+}
+
+async function pointNow() {
+  // "Point Planespotter" (or ↻ on the Point page): fresh planes around you, then Point in Safari.
+  const cache = loadCache();
+  const home = SETTINGS.home;
+  const where = (await myLocation(cache)) || { lat: home.lat, lon: home.lon, groundFt: home.groundFt, fresh: false };
+  const atHome = miles(where.lat, where.lon, home.lat, home.lon) <= HOME_MILES;
+  if (atHome && (where.groundFt === null || where.groundFt === undefined)) where.groundFt = home.groundFt;
+  const name = atHome ? home.name : await placeName(where, cache);
+  const got = await fetchPlanes(where, cache);
+  if (!got || !got.planes) {
+    saveCache(cache);
+    const a = new Alert();
+    a.title = "Can't get the planes";
+    a.message = got && got.limited ? "This phone has asked adsb.lol as often as it should today: try tomorrow."
+      : "Check your phone has internet, then try again.";
+    a.addAction("OK");
+    await a.present();
+    return;
+  }
+  remember(cache, got.planes);
+  const next = await comingOver(got.planes, where, cache, 6);
+  saveCache(cache);
+  Safari.open(pointLink(got.planes, next, where, name));
+}
 
 async function page(wv, code) {
   try {
@@ -1839,7 +1733,7 @@ async function page(wv, code) {
   }
 }
 
-async function showMap(startPoint) {
+async function showMap() {
   // A live map of the planes around you. Planes move between updates; it asks adsb.lol every 15 s
   // for the first 10 minutes, then every minute (and pauses for the day at DAILY_LIMIT). It also
   // searches for flights and follows the one you pick, anywhere in the world.
@@ -1850,7 +1744,7 @@ async function showMap(startPoint) {
   let open = true;
   wv.present(true).then(() => { open = false; }, () => { open = false; });
   const started = now;
-  let last = -1e12, name = "", told = false, ticks = 0;
+  let last = -1e12, name = "", told = false, ticks = 0, seenNow = null;
   let where = { lat: home.lat, lon: home.lon, groundFt: home.groundFt, fresh: false };
   while (open) {
     tick();
@@ -1868,12 +1762,12 @@ async function showMap(startPoint) {
         update.gatesKnown = {};
         for (const [cs, v] of Object.entries(cache.gates)) if (now - v.at < 2 * 3600) update.gatesKnown[cs] = v.info;
       }
-      if (startPoint && ticks === 1) update.startPoint = true;
       const following = cache.tracking;
       if (!following || ticks % 4 === 1) {  // the planes around you (less often while following a flight)
         const got = await fetchPlanes(where, cache);
         if (got && got.planes) {
           const next = await comingOver(got.planes, where, cache, 6);
+          seenNow = { planes: got.planes, next, where: { ...where }, name };  // for 🔭 Point
           update.at = got.at;
           update.planes = got.planes.map((p) => ({ hex: p.hex, label: p.label, cs: p.callsign, type: p.type,
             lat: p.lat, lon: p.lon, alt: p.alt, gs: p.gs, track: p.track }));
@@ -1948,6 +1842,9 @@ async function showMap(startPoint) {
       } else if (a.kind === "untrack") {
         cache.tracking = null;
         last = -1e12;
+      } else if (a.kind === "point") {  // 🔭 Point: in Safari, with the planes we just got
+        if (seenNow) Safari.open(pointLink(seenNow.planes, seenNow.next, seenNow.where, seenNow.name));
+        else await pointNow();
       } else if (a.kind === "gaterefresh") {  // ↻ Times: ask the gate service again (one lookup)
         const info = await gateLookup(a.cs, cache, { force: true });
         await page(wv, "setGate(" + JSON.stringify(a.cs) + "," + JSON.stringify(info) + ")");
@@ -1977,7 +1874,8 @@ function siriAsked() {
 if (config.runsInApp) {
   // Tapped the widget, or ran it in Scriptable: the live map. ("point" from a shortcut: straight to pointing.)
   const asked = JSON.stringify((typeof args !== "undefined" && (args.queryParameters || args.plainTexts)) || "");
-  await showMap(/point/i.test(asked));
+  if (/point/i.test(asked)) await pointNow();  // "Point Planespotter", or ↻ on the Point page
+  else await showMap();
 } else if (forSiri && siriAsked()) {
   // "Hey Siri, where's my plane?", or "Hey Siri, find a flight" ... "Alaska 1349"
   const cache = loadCache();
