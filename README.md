@@ -54,9 +54,13 @@ overhead today, and a live 3D/2D map of the sky around you.
   a notification beforehand.
 - **More places:** watch your work or a relative's house too, and save a
   day's **replay as a video**.
-- **Anywhere:** the widget and Siri work away from home too, **travel mode**
-  watches wherever you are, **My flight** follows your flight, your
+- **Anywhere, on its own:** the widget and Siri find the planes around
+  wherever your phone is, even with the Mac off. Your **plane alerts follow
+  your phone** when you travel, **My flight** follows your flight, your
   **family** gets the highlights, and **friends** can compare collections.
+- **Always on:** the Mac runs planespotter **by itself** from login (and
+  restarts it if it ever stops), and you can switch **emails off** and get
+  the reports as phone notifications instead.
 - **Sky extras:** a heads-up when a plane is about to **cross the Moon**,
   planets and bright stars in the sky view, a **contrail forecast**, and the
   **best time to look up** each day, in your **calendar** too.
@@ -176,11 +180,17 @@ while it runs. In Terminal, you can do the same with
 `caffeinate -i python3 -m planespotter watch`. Closing the lid of a laptop
 still puts it to sleep.
 
-### 7. (Optional) Start it automatically when you log in
+### 7. Let it run by itself (recommended)
 
-Open **System Settings → General → Login Items**. Under **Open at Login**,
-click **+**, go to your home folder → **planespotter**, choose
-**Start planespotter.command**, and click **Open**.
+So you never have to start it again:
+
+```bash
+python3 -m planespotter autostart
+```
+
+planespotter then runs in the background all the time: from when you log
+in, and again within a minute if it ever stops. You can close Terminal. See
+*Always on* below.
 
 ---
 
@@ -447,6 +457,52 @@ You don't need to do anything: it happens by itself. Good to know:
 - It uses up to a fifth of the day's adsb.lol allowance, and slows down if
   adsb.lol asks it to.
 
+## Always on
+
+Three things make planespotter something you just check on your phone:
+
+1. **The Mac runs it by itself.** `python3 -m planespotter autostart` sets it
+   up once (a macOS LaunchAgent): it starts when you log in, restarts within
+   a minute if it ever stops, and keeps the Mac awake while it's plugged in.
+   It can never run twice: if you also type `python3 -m planespotter watch`,
+   that one just says it's already running. Check on it with
+   `python3 -m planespotter autostart status` (it shows the latest
+   messages, which are kept in `planespotter.log`), and stop it with
+   `python3 -m planespotter autostart off`.
+2. **The widget and Siri work on their own.** The planespotter script on
+   your phone gets your location and asks adsb.lol which planes are about to
+   come over, right then, from the phone's own connection (it doesn't use up
+   your Mac's daily allowance). So they work at home, at a hotel, on mobile
+   data, and with the Mac off or asleep. At home they also show what the
+   Mac knows: your regular flights, the last plane over, the last hour.
+   If there's no internet, they show the last answer they got.
+3. **Your alerts follow you.** When your phone has moved a couple of miles,
+   the script tells planespotter on your Mac where it is (through your
+   private ntfy command topic). Once you're more than 5 miles from home (and
+   your other places), the Mac watches where you are too, moves the zone as
+   you go, and switches back when you're home: you get one notification when
+   it starts and one when you're back. Turn it off with `FOLLOW_PHONE=off`.
+
+**What still needs the Mac:** push notifications. An iPhone can't run a
+program in the background all day, so the alerts come from planespotter on
+your Mac (or another computer that's always on). If the Mac is asleep or
+off, the widget and Siri carry on by themselves; the alerts pause, and the
+offline log fills in what it missed when the Mac wakes up. A MacBook with
+its lid closed sleeps (unless it's plugged into an external screen), so
+for alerts all the time, leave it open and plugged in at home.
+
+### Emails off
+
+```bash
+python3 -m planespotter emails off
+```
+
+No more emails (or saved email files). Plane alerts were already on your
+phone; the morning report and the weekly report (including what the
+offline log found) now come as phone notifications too. `emails on` brings
+them back. Restart planespotter afterwards (if it runs by itself: run
+`python3 -m planespotter autostart` again).
+
 ## Your phone setup kit (widget, Siri, commands, family, friends)
 
 Once phone notifications are set up (see *Phone notifications*), one command
@@ -459,17 +515,15 @@ python3 -m planespotter phone
 The email has the widget script attached, and links and short steps for
 each part below. (It's also saved in the `phone-setup` folder.)
 
-The widget and Siri **work anywhere**, not just on your home Wi-Fi:
-planespotter posts a small status message (the next planes due with their
-times, the last one, your regular flights, the space station...) to a private
-ntfy topic, and they read the latest one from there. Your Mac just needs to
-be running planespotter.
+The widget and Siri **work anywhere, on their own**: the script finds the
+planes around wherever your phone is, straight from adsb.lol (see *Always
+on*). At home it adds what your Mac knows, from a small status message
+planespotter posts to a private ntfy topic (your regular flights, the last
+plane over, the space station...). planespotter only posts a new one when
+something changes, spread evenly through the day.
 
 Your phone works out what's true *when you look or ask*: planes whose time
-has passed are dropped, and the countdowns tick by themselves. So
-planespotter only needs to post a new status when a new plane is next (or one
-changes course), and it spreads its share of ntfy's daily messages evenly
-through the day.
+has passed are dropped, and the countdowns tick by themselves.
 
 ### Home-screen widget (iPhone)
 
@@ -480,11 +534,15 @@ A widget with the next planes due over your house and a live countdown:
    the whole script at the bottom (press and hold, **Select All**, **Copy**),
    or open the attached `planespotter-widget.js`.
 3. Open **Scriptable**, tap **+**, and paste. Tap the title at the top and
-   name it **planespotter**. Tap **▶** to try it, then **Done**.
-4. Go to your home screen, press and hold an empty spot, tap **Edit** (or
+   name it **planespotter**. Tap **▶** to try it, then **Done**. When it
+   asks to use your location, tap **Allow While Using App**.
+4. In the iPhone's **Settings → Scriptable → Location**, choose **While
+   Using the App or Widgets**, and turn **Precise Location** on (so it knows
+   which planes are over *you*).
+5. Go to your home screen, press and hold an empty spot, tap **Edit** (or
    **+**), then **Add Widget**, search for **Scriptable**, choose the small
    or medium size, and tap **Add Widget**.
-5. Press and hold the new widget, tap **Edit Widget**, and set **Script**
+6. Press and hold the new widget, tap **Edit Widget**, and set **Script**
    to **planespotter**.
 
 What it shows:
@@ -494,7 +552,8 @@ What it shows:
 - **Your next regular flight** when nothing is due yet (a flight that comes
   over at about the same time most days), counting down to its usual time.
 - **The last plane over** (how long ago) and **how many came over in the
-  last hour**.
+  last hour** (at home), or **how many planes are within 10 miles** (away).
+- At the top: **Home**, or the town you're in.
 
 iPhone decides when widgets refresh (often only every 15 to 30 minutes), so
 the countdowns tick by themselves in between. Tapping the widget opens the
@@ -550,12 +609,14 @@ with one tap.
 
 ### Travel mode
 
-Watch wherever you are (a hotel, a friend's house, an airport) for two days,
-as well as home: its own zone, alerts, emails and map (on port 8774). Start
-it with the `travel` command above, or on the map with **📍 Travel → Use this
-computer's location** (or type coordinates). It switches itself off after
-two days, or send `home`. It shares adsb.lol's daily allowance, so home is
-checked a little less often meanwhile.
+Watch wherever you are (a hotel, a friend's house, an airport) as well as
+home: its own zone, alerts and map (on port 8774). **It starts by itself**
+when your phone is more than 5 miles from home (see *Always on*), follows
+you, and switches back when you're home. You can also start it by hand with
+the `travel` command above, or on the map with **📍 Travel → Use this
+computer's location**; a hand-started trip lasts two days, or send `home`. It
+shares adsb.lol's daily allowance, so home is checked a little less often
+meanwhile.
 
 ### My flight
 
@@ -856,6 +917,10 @@ carries on by itself once adsb.lol allows more requests.
 | *couldn't get the forecast / the weather / the orbit of...* in the log | Harmless: those extras (contrails, clouds, the space station) couldn't download, often on hotel or public Wi-Fi. planespotter keeps trying quietly in the background; plane alerts aren't affected. |
 | The offline log found nothing | It only looks back about 20 hours, and can't find planes that have since landed far away. Check the weekly email for how much it covered. |
 | Siri says it can't reach planespotter | planespotter must be running on your Mac and the Mac awake (`caffeinate -i python3 -m planespotter watch` keeps it awake). Run `python3 -m planespotter phone --test` to check the status is being posted. |
+| The widget says *Can't get the planes* | The phone has no internet, or adsb.lol isn't answering: it tries again at the next refresh, and shows its last answer when it has one. |
+| The widget shows **Home** while you're away (or the wrong town) | Scriptable needs your location: iPhone **Settings → Scriptable → Location → While Using the App or Widgets**, with **Precise Location** on. Without it, the widget uses where you last were, or home. |
+| Alerts don't follow you when you travel | The planespotter script on your phone sends your location when the widget refreshes or you ask Siri: make sure it's the newest script (`python3 -m planespotter phone --copy widget`), that planespotter is running on your Mac, and that `FOLLOW_PHONE` isn't `off`. The Mac reacts within a minute or two. |
+| *planespotter is already running* | It's running by itself in the background (see *Always on*), so there's nothing to start. `python3 -m planespotter autostart status` shows what it's doing. |
 | The widget always says *Nothing due right now* | Planes only show a few minutes before they come over, and iPhone refreshes widgets rarely. Update the widget script (`python3 -m planespotter phone --copy widget`, then paste it over the old one in Scriptable): the new one also shows your next regular flight, the last plane over and the last hour's count. |
 | No runway line | It needs a big airport within about 60 miles and planes seen near it. The "planes an hour" part appears after a few days of watching. |
 | No space station notifications | They need phone notifications set up, and only come for visible passes (dark sky, station in sunlight) that climb above 20°. Some weeks there are none. |
@@ -895,6 +960,8 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter test-push` | Sends a test phone notification. |
 | `python3 -m planespotter test-special` | Sends a sample special-plane alert (email and phone). |
 | `python3 -m planespotter phone` | Emails you the phone setup: widget, Siri, commands, family topic, friend code. Add `--copy widget` (or `siri`, `commands`) to copy one part to the clipboard instead, or `--test` to see what Siri and the widget would say. |
+| `python3 -m planespotter autostart` | Mac: runs planespotter by itself from login, all the time (`autostart status` to check on it, `autostart off` to stop). |
+| `python3 -m planespotter emails off` | No more emails: the reports come as phone notifications (`emails on` to undo). |
 
 There are more settings (how often to check, the hourly alert limit and so
 on) in [`.env.example`](.env.example). Copy any of them into your `.env`.

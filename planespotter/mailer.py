@@ -22,6 +22,8 @@ class Mailer:
 
     def send(self, email: Email) -> Path | None:
         """Send ``email``. In dry-run mode returns the path it was saved to."""
+        if not self.cfg.emails:
+            return None  # emails are off (EMAILS=off): phone notifications only, nothing sent or saved
         if self.cfg.dry_run:
             return self._save(email)
 

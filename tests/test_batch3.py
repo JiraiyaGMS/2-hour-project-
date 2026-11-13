@@ -299,7 +299,7 @@ class EndpointTests(unittest.TestCase):
         text = self.get("/api/now.txt")[2].decode()
         self.assertIn("EZY12", text)
         status, headers, body = self.get("/scriptable.js")
-        self.assertIn(b'const PLANESPOTTER = "http://localhost:', body)  # the address the phone used
+        self.assertIn(b'"mac": "http://localhost:', body)  # the address the phone used
         self.assertEqual(self.get("/kiosk")[0], 200)
 
     def test_quiz_and_follow(self):

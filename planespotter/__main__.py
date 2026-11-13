@@ -162,6 +162,15 @@ def print_map_urls(urls: list[str]) -> None:
 
 
 def cmd_watch(cfg: Config, args) -> int:
+    from .autostart import single_instance
+
+    lock = single_instance(cfg.db_path)  # held until planespotter stops
+    if lock is None:
+        print("planespotter is already running (probably by itself in the background), so there's nothing to do.")
+        print("  To check on it:  python3 -m planespotter autostart status")
+        print("  To stop it running by itself:  python3 -m planespotter autostart off")
+        return 0
+    args._lock = lock
     places = cfg.place_configs()
     quota = NtfyQuota(cfg.db_path, cfg.ntfy_server) if cfg.ntfy_topic else None  # ntfy's 250 a day
     shared = {"n": 1 + len(places)}  # how many places share adsb.lol's daily limit (travel mode adds one)
@@ -231,6 +240,76 @@ def cmd_map(cfg: Config, args) -> int:
             time.sleep(3600)
     except KeyboardInterrupt:
         print("\nStopped.")
+    return 0
+
+
+def cmd_autostart(env_path: Path, args) -> int:
+    """Mac: run planespotter by itself from login, restart it if it stops, keep the Mac awake on power."""
+    from . import autostart
+    from .config import PROJECT_DIR
+
+    if sys.platform != "darwin":
+        print("autostart is for Macs. On other computers, start planespotter with your system's own tools")
+        print("(for example a systemd user service on Linux) running:  python3 -m planespotter watch")
+        return 1
+    if args.state == "off":
+        was = autostart.uninstall()
+        print("✔ planespotter has stopped and won't start by itself any more." if was
+              else "planespotter wasn't set to start by itself.")
+        print("  To run it by hand:  python3 -m planespotter watch")
+        return 0
+    if args.state == "status":
+        st = autostart.status()
+        if not st["installed"]:
+            print("planespotter isn't set to start by itself. Set it up with:  python3 -m planespotter autostart")
+            return 1
+        print(f"✔ Set to start by itself. {'Running now (process ' + str(st['pid']) + ').' if st['running'] else 'Not running right now: it starts again within a minute.'}")
+        log_path = PROJECT_DIR / "planespotter.log"
+        if log_path.exists():
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
+            print(f"\nLatest messages ({log_path}):")
+            print("\n".join("  " + line for line in lines))
+        return 0
+    try:
+        Config.load(env_path)
+    except ConfigError as exc:
+        print(f"Fix your settings first: {exc}")
+        return 2
+    ok, detail = autostart.install(env_path, PROJECT_DIR)
+    if not ok:
+        print(f"Couldn't set it up: {detail}")
+        return 1
+    print("✔ planespotter now runs by itself: from when you log in, all the time, and again within a minute")
+    print("  if it ever stops. You don't need to start it any more (and you can close Terminal).")
+    print("  • While it's plugged in, the Mac won't go to sleep (the screen still turns off).")
+    print("    With the lid closed and no external screen, a MacBook sleeps anyway: planespotter carries")
+    print("    on when it wakes, and the offline log fills in what it missed.")
+    print("  • macOS may show a \"Background Items Added\" notification: that's this.")
+    print(f"  • Its messages: {detail}   (or: python3 -m planespotter autostart status)")
+    print("  • If planespotter is also running in a Terminal window, press Ctrl+C there: the background one takes over.")
+    print("  • To stop it:  python3 -m planespotter autostart off")
+    return 0
+
+
+def cmd_emails(env_path: Path, args) -> int:
+    """Turn every email off (the reports come as phone notifications instead), or back on."""
+    from .wizard import set_env_value
+
+    if not env_path.exists():
+        print("No settings yet: run  python3 -m planespotter setup  first.")
+        return 1
+    set_env_value(env_path, "EMAILS", args.state)
+    if args.state == "off":
+        print("✔ Emails are off. No more emails (or saved email files).")
+        print("  Plane alerts, the morning report and the weekly report come as phone notifications instead.")
+        try:
+            if not Config.load(env_path).ntfy_topic:
+                print("  ⚠ Phone notifications aren't set up yet: run  python3 -m planespotter setup  and say yes to them.")
+        except ConfigError:
+            pass
+    else:
+        print("✔ Emails are back on.")
+    print("  Restart planespotter for this to take effect (if it starts by itself: python3 -m planespotter autostart).")
     return 0
 
 
@@ -352,6 +431,12 @@ def cmd_phone(cfg: Config, args) -> int:
     print(f"  Commands page:         {k['cmd_url']}")
     print(f"  Family topic:          {k['family_topic']}")
     print(f"  Your friend code:      {k['friend_code']}\n")
+    if not cfg.emails:
+        print("Emails are off, so here's how to get it onto your iPhone:")
+        print("  • Copy the planespotter script (the widget and Siri), then paste it in Scriptable")
+        print("    (Universal Clipboard: same Apple ID, Bluetooth on):  python3 -m planespotter phone --copy widget")
+        print(f"  • The steps are in {folder / 'phone-setup.txt'} (AirDrop it to your iPhone, or open it here).")
+        return 0
     try:
         saved = Mailer(cfg).send(email)
     except SEND_ERRORS as exc:
@@ -379,6 +464,9 @@ def cmd_test_push(cfg: Config, args) -> int:
 
 
 def cmd_test_email(cfg: Config, args) -> int:
+    if not cfg.emails:
+        print("Emails are off (EMAILS=off). Turn them back on with:  python3 -m planespotter emails on")
+        return 1
     if cfg.dry_run:
         print("No email login is set up yet, so the test email is saved as a file instead.")
     try:
@@ -412,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="planespotter", description="Email alerts for planes over your house.")
     parser.add_argument("--env", help=f"settings file (default: {DEFAULT_ENV})")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--log-file", help="write messages to this file (trimmed at about 1 MB) instead of the screen")
     sub = parser.add_subparsers(dest="command", metavar="command")
     sub.add_parser("setup", help="answer a few questions to create your settings")
     sub.add_parser("check", help="list planes near home right now")
@@ -430,6 +519,10 @@ def main(argv: list[str] | None = None) -> int:
     p_phone.add_argument("--copy", choices=["widget", "siri", "commands", "family", "friend"],
                          help="copy one part to this Mac's clipboard instead (paste it on your iPhone)")
     p_phone.add_argument("--test", action="store_true", help="show what Siri and the widget would say right now")
+    p_emails = sub.add_parser("emails", help="turn emails off (phone notifications only) or back on")
+    p_emails.add_argument("state", choices=["on", "off"])
+    p_auto = sub.add_parser("autostart", help="Mac: run planespotter by itself, from login, all the time")
+    p_auto.add_argument("state", nargs="?", choices=["on", "off", "status"], default="on")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -440,9 +533,16 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    if args.log_file:
+        from .autostart import log_to_file
+        log_to_file(Path(args.log_file).expanduser(), logging.DEBUG if args.verbose else logging.INFO)
     env_path = Path(args.env).expanduser() if args.env else DEFAULT_ENV
     if args.command == "setup":
         return cmd_setup(env_path, args)
+    if args.command == "emails":
+        return cmd_emails(env_path, args)
+    if args.command == "autostart":
+        return cmd_autostart(env_path, args)
 
     try:
         cfg = Config.load(env_path)

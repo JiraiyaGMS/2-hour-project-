@@ -165,6 +165,8 @@ class Config:
     transit_alerts: bool = True  # a heads-up when a plane is about to cross in front of the Moon
     transit_sun: bool = False    # ...and the Sun (only with a proper solar filter!)
     relay: bool = True           # send your status to a private ntfy topic so the widget and Siri work anywhere
+    emails: bool = True          # off: no emails at all (the reports come as phone notifications instead)
+    follow_phone: bool = True    # watch wherever your phone is (it sends its location when it moves)
 
     def place_configs(self) -> list["Config"]:
         """A settings copy for each of your other places: its own spot, zone, database and map."""
@@ -181,6 +183,11 @@ class Config:
     def view_radius_miles(self) -> float:
         """How far out the live map shows planes."""
         return min(115.0, max(self.radius_miles * 4, 15.0))
+
+    @property
+    def pushes_reports(self) -> bool:
+        """Daily and weekly reports go to your phone (emails are off and phone notifications are on)."""
+        return not self.emails and bool(self.ntfy_topic)
 
     @property
     def dry_run(self) -> bool:
@@ -346,6 +353,8 @@ class Config:
             transit_alerts=flag("TRANSIT_ALERTS", True),
             transit_sun=flag("TRANSIT_SUN", False),
             relay=flag("RELAY", True),
+            emails=flag("EMAILS", True),
+            follow_phone=flag("FOLLOW_PHONE", True),
         )
 
 
@@ -358,4 +367,5 @@ KNOWN_KEYS = {
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
     "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES",
     "FAMILY_ALERTS", "FRIENDS", "SHARE_NAME", "TRANSIT_ALERTS", "TRANSIT_SUN", "RELAY",
+    "EMAILS", "FOLLOW_PHONE",
 }

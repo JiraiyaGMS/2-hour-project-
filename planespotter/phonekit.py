@@ -9,14 +9,14 @@ from .notify import derived_topic
 
 
 def kit(cfg, map_url: str) -> dict:
-    from .webmap import relay_url, widget_script
+    from .webmap import command_url, relay_url, widget_script
 
     server = cfg.ntfy_server.rstrip("/")
     topics = {k: derived_topic(cfg.ntfy_topic, k) for k in ("relay", "cmd", "family", "share")}
     return {
         "widget": widget_script(cfg, map_url),
         "siri_url": relay_url(cfg),
-        "cmd_url": f"{server}/{topics['cmd']}",
+        "cmd_url": command_url(cfg),
         "family_topic": topics["family"],
         "family_url": f"{server}/{topics['family']}",
         "friend_code": topics["share"],
@@ -26,11 +26,15 @@ def kit(cfg, map_url: str) -> dict:
 
 def kit_email(cfg, k: dict) -> Email:
     sections = [
-        ("1. The home-screen widget (works anywhere)", [
+        ("1. The home-screen widget (works anywhere, even with your Mac off)", [
             "Install the free Scriptable app.",
             "Open the attached file planespotter-widget.js, or copy the script at the bottom of this email "
             "(press and hold, Select All, Copy).",
-            "In Scriptable tap +, paste, rename it planespotter, tap ▶ to try it, then Done.",
+            "In Scriptable tap +, paste, rename it planespotter, tap ▶ to try it, then Done. "
+            "When it asks for your location, tap Allow While Using App.",
+            "In the iPhone's Settings → Scriptable → Location, choose While Using the App or Widgets, and turn "
+            "Precise Location on. (It finds the planes over wherever you are, even with your Mac off, and tells "
+            "your Mac where you are so your alerts follow you.)",
             "Home screen: press and hold an empty spot → Edit → Add Widget → Scriptable → Add Widget. "
             "Press and hold the widget → Edit Widget → Script: planespotter.",
         ]),

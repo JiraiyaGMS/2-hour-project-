@@ -203,7 +203,7 @@ class NtfyTests(unittest.TestCase):
         self.assertIn("The last one over was Delta flight 573 from Atlanta, 11 minutes ago.", quiet)
         self.assertIn("planespotter last updated 20 minutes ago.", quiet)
         self.assertIn("Is it still running on your Mac", spoken_now(status, posted + 4 * 3600, clock))
-        self.assertIn("can't reach planespotter", spoken_now(None, posted, clock))
+        self.assertIn("can't get the planes", spoken_now(None, posted, clock))
 
     def test_relay_posts_when_the_phone_would_be_wrong(self):
         cfg = make_config(ntfy_topic="planespotter-test")
@@ -437,7 +437,10 @@ class PhoneKitTests(unittest.TestCase):
         cfg = make_config(ntfy_topic="planespotter-test")
         k = kit(cfg, "http://192.168.1.5:8765")
         self.assertIn(f"https://ntfy.sh/{derived_topic('planespotter-test', 'relay')}/raw?poll=1&since=latest", k["widget"])
-        self.assertIn('const PLANESPOTTER = "http://192.168.1.5:8765"', k["widget"])
+        self.assertIn('"mac": "http://192.168.1.5:8765"', k["widget"])
+        self.assertIn(f'"cmd": "{k["cmd_url"]}"', k["widget"])          # it tells your Mac where you are
+        self.assertNotIn("__SETTINGS__", k["widget"])
+        self.assertNotIn("x-api-key", k["widget"])                       # the phone uses its own allowance
         email = kit_email(cfg, k)
         self.assertIn(k["cmd_url"], email.text)
         self.assertIn(k["family_topic"], email.text)

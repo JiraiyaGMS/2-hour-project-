@@ -83,6 +83,7 @@ class Watcher:
         self.open_paths: dict[str, int] = {}
         self.heat = HeatRecorder(store, cfg)
         self.digest_retry_at = 0.0
+        self.weekly_retry_at = 0.0
         self.catchup = None  # the offline log's background thread, while it runs
 
     # --- polling ------------------------------------------------------------
@@ -376,7 +377,7 @@ class Watcher:
     def weekly_due(self, now: float) -> date | None:
         """Today's date if this is the day (and time) for the weekly email and it hasn't gone yet."""
         cfg = self.cfg
-        if not cfg.weekly_report:
+        if not cfg.weekly_report or now < self.weekly_retry_at:
             return None
         local = cfg.local(now)
         if local.weekday() != cfg.weekly_day or local.time() < cfg.digest_time:
@@ -391,14 +392,25 @@ class Watcher:
         return today
 
     def send_weekly(self, today: date) -> bool:
-        email = weekly_email(build_week(self.store, self.cfg, today), self.cfg)
+        week = build_week(self.store, self.cfg, today)
+        if not self.cfg.emails:
+            if self.cfg.pushes_reports and self.notifier:
+                from .pushreports import weekly_push
+                title, message = weekly_push(week, self.cfg)
+                if not self.notifier.send(title, message, click=self.notifier.link(), tags=("calendar",)):
+                    self.weekly_retry_at = self.clock() + 600
+                    return False
+            self.store.set_meta("last_weekly", today.isoformat())
+            return True
+        email = weekly_email(week, self.cfg)
         calendar = self.week_calendar()
         if calendar:
             email.attachments.append(("planespotter.ics", calendar, "text/calendar"))
         try:
             self.mailer.send(email)
         except SEND_ERRORS as exc:
-            log.error("could not send the weekly email: %s", exc)
+            log.error("could not send the weekly email, will retry in 10 minutes: %s", exc)
+            self.weekly_retry_at = self.clock() + 600
             return False
         self.store.set_meta("last_weekly", today.isoformat())
         return True
@@ -455,6 +467,15 @@ class Watcher:
         recap.star = plane_of_the_day(recap.passes, self.store, self.cfg)
         recap.notes = self.morning_notes(self.clock())
         forecast = build_forecast(self.store, self.cfg, today)
+        if not self.cfg.emails:
+            if self.cfg.pushes_reports and self.notifier:
+                from .pushreports import digest_push
+                title, message = digest_push(recap, forecast, self.cfg)
+                if not self.notifier.send(title, message, click=self.notifier.link(), tags=("sunny",)):
+                    self.digest_retry_at = self.clock() + 600
+                    return False
+            self.store.set_meta("last_digest", today.isoformat())
+            return True
         try:
             self.mailer.send(digest_email(recap, forecast, self.cfg))
         except SEND_ERRORS as exc:
@@ -476,7 +497,8 @@ class Watcher:
         log.info(
             "watching %.1f mi around %s (%.4f, %.4f)%s",
             cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon,
-            f" — no email login set, emails are saved in {cfg.outbox_dir}" if cfg.dry_run
+            ", emails off (reports come as phone notifications)" if not cfg.emails
+            else f" — no email login set, emails are saved in {cfg.outbox_dir}" if cfg.dry_run
             else f", emailing {cfg.email_to}",
         )
         if self.budget:

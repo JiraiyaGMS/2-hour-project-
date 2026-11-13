@@ -32,6 +32,9 @@ def handle(text: str, cfg, store, travel, now: float) -> str:
     if not words:
         return ""
     verb, rest = words[0].lower(), (words[1] if len(words) > 1 else "")
+    if verb == "location":  # sent by the planespotter script on your phone when it has moved
+        where = parse_where(rest)
+        return travel.follow(where[0], where[1]) if where and travel is not None else ""
     if verb in ("travel", "here", "watch"):
         if rest.lower() in ("off", "stop", "home"):
             verb = "home"
@@ -68,7 +71,11 @@ def handle(text: str, cfg, store, travel, now: float) -> str:
             return handle("flight off", cfg, store, travel, now)
         lines = []
         t = travel.status() if travel is not None else {"on": False}
-        lines.append(f"🧳 Travel mode: {t['name']} until {t['until_text']}" if t["on"] else "🏠 Watching home")
+        if t["on"]:
+            lines.append(f"📍 Following your phone: watching {t['name']}" if t["auto"]
+                         else f"🧳 Travel mode: {t['name']} until {t['until_text']}")
+        else:
+            lines.append("🏠 Watching home")
         for f in my_flights(store):
             if f["state"] != "done":
                 lines.append(f"✈ {f['label']}: {f['state']}")

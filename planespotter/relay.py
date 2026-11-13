@@ -187,7 +187,7 @@ def last_over(status: dict, now: float) -> dict | None:
 def spoken_now(status: dict | None, now: float, clock_text) -> str:
     """What Siri says when you ask at ``now`` (the same steps as the Scriptable script)."""
     if not status:
-        return "I can't reach planespotter right now. Is it running on your Mac, and is the Mac awake?"
+        return "I can't get the planes right now. Check your phone has internet, then try again."
     age = now - (status.get("updated") or now)
     if age > 3 * 3600:
         return f"planespotter's last update was {ago(age)}. Is it still running on your Mac, and is the Mac awake?"
@@ -212,6 +212,9 @@ def spoken_now(status: dict | None, now: float, clock_text) -> str:
         last = last_over(status, now)
         if last:
             out.append(f"The last one over was {last.get('say') or last['label']}, {ago(now - last['at'])}.")
+        elif isinstance(status.get("nearby"), int):
+            n = status["nearby"]
+            out.append("There's 1 plane within 10 miles." if n == 1 else f"There are {n} planes within 10 miles.")
     if status.get("transit"):
         out.append(status["transit"])
     if not nxt and status.get("space"):

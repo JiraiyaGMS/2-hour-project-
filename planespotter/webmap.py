@@ -659,9 +659,26 @@ def relay_url(cfg: Config) -> str:
     return f"{cfg.ntfy_server.rstrip('/')}/{derived_topic(cfg.ntfy_topic, 'relay')}/raw?poll=1&since=latest"
 
 
+def command_url(cfg: Config) -> str:
+    """Your private ntfy command topic (the phone sends commands, and its location, here)."""
+    return f"{cfg.ntfy_server.rstrip('/')}/{derived_topic(cfg.ntfy_topic, 'cmd')}" if cfg.ntfy_topic else ""
+
+
 def widget_script(cfg: Config, map_url: str) -> str:
+    """The Scriptable script (widget and Siri), with your settings filled in.
+
+    No adsb.lol key: the phone asks adsb.lol from its own connection, within its own free allowance,
+    so it doesn't use up your Mac's.
+    """
+    settings = {
+        "home": {"name": cfg.home_name, "lat": round(cfg.home_lat, 5), "lon": round(cfg.home_lon, 5),
+                 "groundFt": home_elevation_ft(cfg)},
+        "radius": cfg.radius_miles, "maxAlt": cfg.max_altitude_ft,
+        "mac": map_url, "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
+        "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
+    }
     script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
-    return script.replace("__RELAY_URL__", relay_url(cfg)).replace("__PLANESPOTTER_URL__", map_url)
+    return script.replace("__SETTINGS__", json.dumps(settings, ensure_ascii=False))
 
 
 def label_of(row) -> str:

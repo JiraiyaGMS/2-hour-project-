@@ -298,6 +298,21 @@ PLACES={PLACES}
 TEMPLATE_KEYS = set(re.findall(r"\{(\w+)\}", TEMPLATE))
 
 
+def set_env_value(path: Path, key: str, value: str) -> None:
+    """Change one setting in the .env file (or add it), leaving everything else as it is."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    done = False
+    for i, line in enumerate(lines):
+        if line.split("=", 1)[0].strip() == key and not line.lstrip().startswith("#"):
+            lines[i] = f"{key}={value}"
+            done = True
+    if not done:
+        lines.append(f"{key}={value}")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
 def write_env(path: Path, values: dict[str, str]) -> None:
     filled = {key: "" for key in TEMPLATE_KEYS}
     filled.update(SMTP_HOST="smtp.gmail.com", SMTP_PORT="587")
