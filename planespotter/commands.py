@@ -102,8 +102,12 @@ class Commands:
             reply = handle(m.get("message", ""), self.cfg, self.store, self.travel, self.clock())
             if reply:
                 log.info("command %r: %s", m.get("message", ""), reply.splitlines()[0])
+                # Your phone's location arrives by itself: news about it waits for quiet hours to end
+                # (it's dropped then). Answers to commands you sent always come back.
+                automatic = m.get("message", "").strip().lower().startswith("location")
                 if self.notifier.quota is None or self.notifier.quota.allow("reply"):
-                    self.notifier.send("planespotter", reply, tags=("robot",), kind="reply")
+                    self.notifier.send("planespotter", reply, tags=("robot",),
+                                       kind="follow" if automatic else "reply")
                 replies.append(reply)
         if not messages and not self.store.get_meta("cmd_since"):
             self.store.set_meta("cmd_since", str(int(self.clock())))

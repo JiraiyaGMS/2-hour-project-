@@ -537,7 +537,7 @@ def cmd_test_push(cfg: Config, args) -> int:
     ok = PushNotifier(cfg).send(
         f"planespotter is set up for {cfg.home_name}",
         "Phone notifications are working. You'll get one when a plane flies over.",
-        tags=("white_check_mark", "airplane"))
+        tags=("white_check_mark", "airplane"), kind="test")  # (comes through even in quiet hours)
     print(f"✔ Sent a test notification to topic {cfg.ntfy_topic}." if ok else "Sending failed (see above).")
     return 0 if ok else 1
 

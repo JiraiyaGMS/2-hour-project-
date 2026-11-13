@@ -10,8 +10,10 @@ overhead today, and a live 3D/2D map of the sky around you.
 - **Special planes:** separate alerts for emergencies, military aircraft,
   A380s and 747s, helicopters right overhead, and every airline or aircraft
   type you've never spotted before.
-- **Quiet hours:** no alerts overnight. Those planes show up in the
-  morning report instead, marked 🌙.
+- **Quiet hours:** nothing on your phone overnight; notifications start
+  again with the first plane after. Night planes show up in the morning
+  report instead, marked 🌙. The widget, Siri and the phone map work all
+  the time.
 - **Daily report:** the last 24 hours of planes with stats (busiest hour,
   lowest, closest, top airlines, the plane of the day), and a forecast of
   today's regular flights with their usual times.
@@ -1134,9 +1136,16 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   house. If several planes arrive at once, they share one email.
   `MAX_ALERTS_PER_HOUR` (default 12) stops the alerts if you live under a
   busy flight path.
-- **Quiet hours.** Planes are still recorded overnight, but no alerts are
-  sent. The morning report covers the 24 hours since the previous report,
-  so overnight planes appear there, marked 🌙.
+- **Quiet hours.** Planes are still recorded overnight, but nothing is
+  sent to your phone: no plane alerts, special planes, rush, space station,
+  Moon, My flight or offline-log notifications, and no news about following
+  your phone. (Answers to commands you send, and test notifications, still
+  come.) Nothing is saved up either: when quiet hours end, notifications
+  start again with the next plane that flies through your zone. The morning
+  report covers the 24 hours since the previous one, so night planes appear
+  there, marked 🌙; if its time falls inside quiet hours, it waits until they
+  end. The widget, Siri and the phone map aren't notifications: they work
+  all night.
 - **Routes are checked against the real flight.** Route databases map a
   flight number to a single leg, and are often wrong. So planespotter looks
   up the plane's actual flight as soon as it comes over (before the alert

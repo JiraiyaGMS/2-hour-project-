@@ -326,5 +326,89 @@ class NeverStuckTests(unittest.TestCase):
         self.assertIn("N44HV is hovering nearby, about 1 mile away.", spoken_now(quiet, now, str))
 
 
+
+class NightTests(unittest.TestCase):
+    """Quiet hours: nothing on the phone at night; it starts again with the next plane after."""
+
+    def notifier(self, clock, **overrides):
+        from datetime import time as t
+        cfg = make_config(ntfy_topic="planespotter-test", quiet_hours=(t(22), t(7)), **overrides)
+        post = FakePost()
+        n = PushNotifier(cfg, post=post)
+        n.clock = lambda: clock[0]
+        return n, post
+
+    def test_nothing_reaches_the_phone_at_night(self):
+        clock = [ts(2026, 11, 14, 3)]
+        n, post = self.notifier(clock)
+        self.assertFalse(n.send("🛬 BA123 has landed", "in London"))              # my flight: waits
+        self.assertFalse(n.send("📴 found 3 planes", "while you were off"))       # offline log: waits
+        self.assertFalse(n.send("planespotter", "📍 You're near Fullerton", kind="follow"))
+        self.assertTrue(n.send("planespotter", "🏠 Watching home", kind="reply"))  # you asked: answered
+        self.assertTrue(n.send("Test", "it works", kind="test"))
+        self.assertEqual([p["message"] for p in post.sent], ["🏠 Watching home", "it works"])
+        clock[0] = ts(2026, 11, 14, 7)
+        self.assertTrue(n.send("✈ DAL1 over Test House", "…"))                    # quiet hours are over
+
+    def test_alerts_start_again_with_the_next_plane(self):
+        from datetime import time as t
+        watcher, feed, _ = make_watcher(quiet_hours=(t(22), t(7)), ntfy_topic="planespotter-test", emails=False)
+        clock = [ts(2026, 11, 14, 3)]
+        watcher.notifier, post = self.notifier(clock)
+        for hour, hex_code in [(3, "aaa001"), (6, "aaa002")]:
+            clock[0] = ts(2026, 11, 14, hour, 30)
+            feed.planes = [plane(hex_code, callsign=f"NIGHT{hour}")]
+            watcher.send_alerts(watcher.poll(clock[0]), clock[0])
+        self.assertEqual(post.sent, [])
+        clock[0] = ts(2026, 11, 14, 7, 5)
+        feed.planes = [plane("bbb001", callsign="MORNING1")]
+        watcher.send_alerts(watcher.poll(clock[0]), clock[0])
+        self.assertEqual([p["title"] for p in post.sent], ["✈ MORNING1 over Test House"])  # no pile of night ones
+
+    def test_the_morning_report_waits_for_quiet_hours_to_end(self):
+        from datetime import time as t
+        watcher, feed, _ = make_watcher(quiet_hours=(t(22), t(7)), digest_time=t(6, 30), ntfy_topic="planespotter-test",
+                                        emails=False)
+        clock = [ts(2026, 11, 14, 6, 30)]
+        watcher.notifier, post = self.notifier(clock)
+        watcher.clock = lambda: clock[0]
+        watcher.store.set_meta("watch_started", str(ts(2026, 11, 1)))
+        watcher.store.record_sighting(plane("aaa001"), 1.0, 0, ts(2026, 11, 13, 12), gap=60)
+        self.assertFalse(watcher.send_digest(date(2026, 11, 14)))   # 6:30: still quiet hours
+        self.assertIsNone(watcher.digest_due(ts(2026, 11, 14, 6, 35)))  # tries again in 10 minutes
+        clock[0] = ts(2026, 11, 14, 7, 1)
+        self.assertEqual(watcher.digest_due(clock[0]), date(2026, 11, 14))
+        self.assertTrue(watcher.send_digest(date(2026, 11, 14)))
+        self.assertTrue(post.sent[-1]["title"].startswith("☀"))
+
+    def test_location_news_waits_but_your_commands_are_answered(self):
+        from datetime import time as t
+        from planespotter.commands import Commands
+        from planespotter.store import Store
+        clock = [ts(2026, 11, 14, 2)]
+        n, post = self.notifier(clock)
+        msgs = [{"event": "message", "id": "m1", "message": "location 33.8090,-117.9265"},
+                {"event": "message", "id": "m2", "message": "status"}]
+        n.poll = lambda kind, since="latest": list(msgs)
+
+        class Travel:
+            def follow(self, lat, lon):
+                return "📍 You're near Fullerton"
+
+            def status(self):
+                return {"on": True, "auto": True, "name": "Fullerton", "until_text": "Sat 2 PM"}
+        Commands(n.cfg, Store(":memory:"), n, Travel(), clock=lambda: clock[0]).step()
+        self.assertEqual(len(post.sent), 1)
+        self.assertIn("Following your phone", post.sent[0]["message"])
+
+    def test_the_widget_keeps_updating_all_night(self):
+        from planespotter.relay import Relay
+        clock = [ts(2026, 11, 14, 3)]
+        n, post = self.notifier(clock)
+        relay = Relay(n, lambda: clock[0])
+        self.assertTrue(relay.maybe_send({"v": 1, "home": "Home", "updated": clock[0], "next": [], "last": None}))
+        self.assertEqual(len(post.sent), 1)  # its status isn't a notification, so quiet hours don't stop it
+
+
 if __name__ == "__main__":
     unittest.main()

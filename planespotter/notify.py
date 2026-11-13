@@ -43,6 +43,7 @@ def derived_topic(main_topic: str, kind: str) -> str:
 # ntfy.sh allows 250 messages a day from one internet connection (reading is free). Plane alerts
 # always come first; the extras below only use what's left, and never more than these each day.
 EXTRA_CAPS = {"relay": 96, "family": 20, "share": 30, "reply": 20}
+QUIET_OK = {"reply", "test"}  # replies to commands you sent, and test notifications: even in quiet hours
 KEEP_FOR_ALERTS = 80   # stop the extras when ntfy says fewer than this are left today
 
 
@@ -105,6 +106,7 @@ class PushNotifier:
         self.post = post or self._post
         self.quota = quota
         self.retry_wait = 8.0  # seconds before trying again when ntfy says "too many requests"
+        self.clock = time.time
         self.refused_at: dict[str, float] = {}  # when we last logged holding back each kind of extra
 
     def topic(self, kind: str) -> str:
@@ -169,8 +171,15 @@ class PushNotifier:
 
     def send(self, title: str, message: str, click: str = "", tags=("airplane",), priority: int = 3,
              icon: str = "", image: str = "", kind: str = "alert") -> bool:
-        """Post one notification. Returns False (and logs why) if it couldn't be sent."""
+        """Post one notification. Returns False (and logs why) if it couldn't be sent.
+
+        Nothing goes to your phone during quiet hours (they start again with the next plane after);
+        the morning report waits until they're over.
+        """
         if not self.enabled:
+            return False
+        if kind not in QUIET_OK and self.cfg.in_quiet_hours(self.clock()):
+            log.info("quiet hours: not sending to your phone: %s", title)
             return False
         payload = {"topic": self.cfg.ntfy_topic, "title": title, "message": message,
                    "tags": list(tags), "priority": priority}
