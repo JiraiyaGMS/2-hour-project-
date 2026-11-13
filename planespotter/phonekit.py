@@ -37,7 +37,9 @@ def kit_email(cfg, k: dict) -> Email:
             "your Mac where you are so your alerts follow you.)",
             "Home screen: press and hold an empty spot → Edit → Add Widget → Scriptable → Add Widget. "
             "Press and hold the widget → Edit Widget → Script: planespotter.",
-            "Tap the widget any time for a live map of the planes around you.",
+            "Tap the widget any time for a live map of the planes around you. On the map: ✈︎ Track a flight "
+            "(search by flight number, airline or airport) and 🔭 Point (point your phone at a plane to find out "
+            "what it is).",
         ]),
         ("2. Siri (works anywhere; set up the widget script first)", [
             "Open Shortcuts and tap +.",

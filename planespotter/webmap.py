@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import logging
 from dataclasses import asdict
 import socket
@@ -21,6 +22,7 @@ from typing import Any, Callable
 from .adsb import (Aircraft, FeedWithReceiver, LiveFeed, Lookup, PositionLookup, ReceiverFeed,
                    SharedFeed)
 from .airports import airports, route_from_path
+from .airlines import AIRLINES
 from .budget import ApiBudget
 from .collection import build_collection
 from .config import Config
@@ -677,8 +679,28 @@ def widget_script(cfg: Config, map_url: str) -> str:
         "mac": map_url, "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
         "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
     }
+    settings["airportsUrl"] = AIRPORTS_URL
     script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
-    return script.replace("__SETTINGS__", json.dumps(settings, ensure_ascii=False))
+    return (script.replace("__SETTINGS__", json.dumps(settings, ensure_ascii=False))
+            .replace("__AIRLINES__", json.dumps(AIRLINES_FOR_PHONE, ensure_ascii=False, separators=(",", ":")))
+            .replace("__AIRPORTS__", json.dumps(big_airports(), ensure_ascii=False, separators=(",", ":"))))
+
+
+# Every airport, for searches on the phone that aren't one of the big ones (downloaded once, then kept).
+AIRPORTS_URL = ("https://raw.githubusercontent.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
+                "planespotter/data/airports.csv")
+AIRLINES_FOR_PHONE = [list(a) for a in AIRLINES]
+
+
+def big_airports() -> list[list]:
+    """The large airports with a 3-letter code, for searching on the phone: [IATA, ICAO, name, city, lat, lon]."""
+    seen, out = set(), []
+    for a in airports().by_code.values():
+        if a.kind == "L" and len(a.code) == 3 and a.code not in seen:
+            seen.add(a.code)
+            name = re.sub(r"\b(International|Intl\.?|Airport|Aerodrome|Regional)\b", "", a.name)
+            out.append([a.code, a.icao, re.sub(r"\s+", " ", name).strip(" -/"), a.city, round(a.lat, 3), round(a.lon, 3)])
+    return sorted(out)
 
 
 def label_of(row) -> str:

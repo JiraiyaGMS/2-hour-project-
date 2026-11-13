@@ -410,5 +410,37 @@ class NightTests(unittest.TestCase):
         self.assertEqual(len(post.sent), 1)  # its status isn't a notification, so quiet hours don't stop it
 
 
+
+class SearchAndPointTests(unittest.TestCase):
+    def test_airline_table(self):
+        from planespotter.airlines import AIRLINES, IATA_TO_ICAO
+        from planespotter.myflight import callsign_for
+        self.assertEqual(len({a[0] for a in AIRLINES}), len(AIRLINES))  # each airline once
+        self.assertEqual(IATA_TO_ICAO["WN"], "SWA")
+        self.assertEqual((callsign_for("WN 12"), callsign_for("NK 123")), ("SWA12", "NKS123"))
+
+    def test_the_phone_gets_airlines_and_airports(self):
+        from planespotter.webmap import AIRPORTS_URL, big_airports, widget_script
+        script = widget_script(make_config(ntfy_topic="planespotter-test"), "")
+        for left in ("__SETTINGS__", "__AIRLINES__", "__AIRPORTS__"):
+            self.assertNotIn(left, script)
+        self.assertIn('["SWA","WN","Southwest Airlines"]', script)
+        lax = [a for a in big_airports() if a[0] == "LAX"][0]
+        self.assertEqual((lax[1], lax[3]), ("KLAX", "Los Angeles"))
+        self.assertIn(AIRPORTS_URL, script)  # every other airport, when a search needs it
+        self.assertLess(len(script.encode()), 200_000)
+
+    def test_siri_says_where_to_look(self):
+        from planespotter.relay import spoken_now
+        now = ts(2026, 11, 13, 22)
+        status = {"home": "Anaheim", "updated": now, "next": [], "nearby": 6,
+                  "nearest": {"label": "SWA1672", "say": "SWA1672", "miles": 6.2, "direction": "NE", "up": 9}}
+        said = spoken_now(status, now, str)
+        self.assertIn("The nearest plane is SWA1672, about 6 miles away: look north-east, about 9° up.", said)
+        self.assertNotIn("planes within 10 miles", said)
+        both = {**status, "hovering": [{"label": "SWA1672", "say": "SWA1672", "miles": 0.8}]}
+        self.assertNotIn("The nearest plane", spoken_now(both, now, str))  # not the same one twice
+
+
 if __name__ == "__main__":
     unittest.main()

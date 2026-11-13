@@ -7,6 +7,8 @@
 // around you.
 
 const SETTINGS = __SETTINGS__;
+const AIRLINES = __AIRLINES__;  // [ICAO code, IATA code, name]
+const AIRPORTS = __AIRPORTS__;  // the big ones: [IATA, ICAO, name, city, lat, lon] (the rest load when needed)
 
 const AMBER = new Color("#ffb020");
 const MUTED = new Color("#9aa7b6");
@@ -221,18 +223,29 @@ function today() {
   return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
 }
 
-async function fetchPlanes(where, cache) {
-  // Every plane within RANGE_NM, moved on to now. null if adsb.lol didn't answer; {limited} if we've
-  // asked as often as we should today.
+async function adsbGet(path, cache, seconds) {
+  // Planes from adsb.lol (moved on to now). null if it didn't answer; {limited} once we've asked as often
+  // as we should today (the widget, Siri, the map and searches all share DAILY_LIMIT).
   const day = today();
   if (!cache.usage || cache.usage.day !== day) cache.usage = { day, n: 0 };
   if (cache.usage.n >= DAILY_LIMIT) return { limited: true };
   cache.usage.n += 1;
-  const url = SETTINGS.adsb + "/v2/point/" + where.lat.toFixed(4) + "/" + where.lon.toFixed(4) + "/" + RANGE_NM;
-  const body = await getJSON(url, forSiri ? 5 : 10);
+  const body = await getJSON(SETTINGS.adsb + path, seconds || (forSiri ? 5 : 10));
   if (!body || !Array.isArray(body.ac)) return null;
   const age = Math.min(300, Math.max(0, body.now ? now - body.now / 1000 : 0));
   return { planes: body.ac.map((raw) => parsePlane(raw, age)).filter(Boolean), at: now };
+}
+
+async function fetchPlanes(where, cache) {
+  // Every plane within RANGE_NM of where you are.
+  return adsbGet("/v2/point/" + where.lat.toFixed(4) + "/" + where.lon.toFixed(4) + "/" + RANGE_NM, cache);
+}
+
+function lookAt(where, p, groundFt) {
+  // Which way to look for a plane, and how high: {miles, az, up}.
+  const mi = miles(where.lat, where.lon, p.lat, p.lon);
+  const height = Math.max(0, ((p.alt || 0) - (groundFt || 0)) * FT);
+  return { miles: mi, az: bearing(where.lat, where.lon, p.lat, p.lon), up: deg(Math.atan2(height, Math.max(1, mi * MI))) };
 }
 
 async function comingOver(planes, where, cache, howMany) {
@@ -264,7 +277,18 @@ async function livePlanes(where, cache) {
     .map((p) => ({ p, mi: miles(where.lat, where.lon, p.lat, p.lon) }))
     .filter(({ p, mi }) => mi <= SETTINGS.radius && (p.gs === null || p.gs < HOVER_KT) && p.alt !== null && p.alt - ground >= 300)
     .slice(0, 2).map(({ p, mi }) => ({ label: p.label, say: sayName(p.callsign, p.label, "", ""), miles: mi }));
-  cache.live = { lat: where.lat, lon: where.lon, updated: now, next, nearby, hovering };
+  // The nearest plane in the air (for "where should I look?" when nothing is coming over).
+  let nearest = null;
+  const hoveringNow = new Set(hovering.map((h) => h.label));
+  for (const p of got.planes) {
+    if (p.alt === null || p.alt - ground < 300 || hoveringNow.has(p.label)) continue;  // (already mentioned)
+    const l = lookAt(where, p, ground);
+    if (l.miles <= 25 && (!nearest || l.miles < nearest.miles)) {
+      nearest = { label: p.label, say: sayName(p.callsign, p.label, "", ""), miles: l.miles, direction: compass(l.az),
+                  up: Math.round(l.up) };
+    }
+  }
+  cache.live = { lat: where.lat, lon: where.lon, updated: now, next, nearby, hovering, nearest };
   return cache.live;
 }
 
@@ -306,7 +330,8 @@ async function gather() {
       atHome && SETTINGS.relay ? getJSON(SETTINGS.relay, forSiri ? 4 : 8) : Promise.resolve(null)]);
     const macKnows = status && now - (status.updated || 0) < 3 * 3600 ? status : null;
     if (live) {
-      data = { updated: live.updated, next: live.next, nearby: live.nearby, hovering: live.hovering, source: "live" };
+      data = { updated: live.updated, next: live.next, nearby: live.nearby, hovering: live.hovering,
+               nearest: live.nearest, source: "live" };
       if (macKnows) {
         for (const k of ["last", "regulars", "hour_count", "space", "transit"]) {
           if (macKnows[k] !== undefined) data[k] = macKnows[k];
@@ -386,6 +411,12 @@ function siriSentence(data, now) {
       const m = Math.max(1, Math.round(h.miles));
       out.push((h.say || h.label) + " is hovering nearby, about " + m + " mile" + (Math.round(h.miles) > 1 ? "s" : "") + " away.");
     }
+    const n = data.nearest;
+    if (n && WORDS[n.direction] && !(data.hovering || []).some((h) => h.label === n.label)) {
+      const m = Math.max(1, Math.round(n.miles));
+      out.push("The nearest plane is " + (n.say || n.label) + ", about " + m + " mile" + (m > 1 ? "s" : "") +
+        " away: look " + WORDS[n.direction] + ", about " + n.up + "° up.");
+    }
     const r = nextRegular(data, now);
     if (r) {
       out.push("Your next regular, " + (r.say || r.label) + ", usually comes over " +
@@ -393,7 +424,7 @@ function siriSentence(data, now) {
     }
     const last = lastOver(data, now);
     if (last) out.push("The last one over was " + (last.say || last.label) + ", " + ago(now - last.at) + ".");
-    else if (typeof data.nearby === "number") {
+    else if (typeof data.nearby === "number" && !data.nearest) {
       out.push(data.nearby === 1 ? "There's 1 plane within 10 miles." : "There are " + data.nearby + " planes within 10 miles.");
     }
   }
@@ -501,6 +532,216 @@ function buildWidget(data, now) {
   return w;
 }
 
+// --- track a flight: search by flight number, airline, airport, or a mix ---
+
+function norm(text) {
+  return String(text || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function airlineMatches(words) {
+  // Airlines the words name: "SWA", "WN", "Southwest", "south"... best first.
+  const text = " " + words.join(" ") + " ";
+  const out = [];
+  for (const a of AIRLINES) {
+    const [icao, iata, name] = a;
+    const short = norm(name).replace(/ (airlines|airline|airways|air lines)$/, "");
+    let score = 0;
+    for (const w of words) {
+      const W = w.toUpperCase();
+      if (W === icao) score = Math.max(score, 90);
+      else if (iata && W === iata) score = Math.max(score, 88);
+      else if (w.length >= 4 && short.startsWith(w)) score = Math.max(score, 70);
+    }
+    if (text.includes(" " + short + " ") || text.includes(" " + norm(name) + " ")) score = Math.max(score, 95);
+    if (score) out.push({ a, score });
+  }
+  return out.sort((x, y) => y.score - x.score);
+}
+
+function airportMatches(words, list, airlineWords) {
+  // Airports the words name: "LAX", "KLAX", "Los Angeles", "Heathrow"... best first. (Words that named
+  // the airline don't count: "Southwest 1672" isn't about Southwest Florida airport.)
+  words = words.filter((w) => !(airlineWords || new Set()).has(w));
+  const text = " " + words.join(" ") + " ";
+  const out = [];
+  for (const ap of list) {
+    const [iata, icao, name, city] = ap;
+    let score = 0;
+    for (const w of words) {
+      const W = w.toUpperCase();
+      if (iata && W === iata) score = Math.max(score, 90);
+      else if (icao && W === icao) score = Math.max(score, 92);
+    }
+    const c = norm(city), n = norm(name).replace(/\b(international|intl|regional|municipal|airport|airfield|field)\b/g, " ").replace(/\s+/g, " ").trim();
+    // A whole name of two words or more ("Los Angeles") beats a code hidden in it (LOS is Lagos).
+    if (c && text.includes(" " + c + " ")) score = Math.max(score, c.includes(" ") ? 93 : 75);
+    if (n && text.includes(" " + n + " ")) score = Math.max(score, n.includes(" ") ? 94 : 85);
+    else if (n && text.trim().length >= 4 && text.trim().includes(" ") && n.includes(text.trim())) score = Math.max(score, 80);  // "o hare"
+    else if (n && text.trim().length >= 5 && n.replace(/ /g, "").includes(text.replace(/ /g, ""))) score = Math.max(score, 78);  // "ohare"
+    else if (n) {  // some of its name: the more words that match, the better ("John Wayne" is SNA, not Detroit's Wayne County)
+      const nameWords = n.split(" ");
+      const hits = words.filter((w) => w.length >= 4 && nameWords.includes(w)).length;
+      if (hits && words.some((w) => w.length >= 5 && nameWords.includes(w))) score = Math.max(score, Math.min(88, 68 + 5 * hits));
+    }
+    if (score) out.push({ ap, score });
+  }
+  return out.sort((x, y) => y.score - x.score);
+}
+
+function parseCsvLine(line) {
+  const out = [];
+  let cur = "", quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') quoted = false; else cur += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { out.push(cur); cur = ""; } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+async function allAirports() {
+  // Every airport (not just the big ones), downloaded once from planespotter's own files and kept.
+  const path = fm.joinPath(fm.documentsDirectory(), "planespotter-airports.csv");
+  let text = null;
+  try { if (fm.fileExists(path)) text = fm.readString(path); } catch (e) {}
+  if (!text && SETTINGS.airportsUrl) {
+    try {
+      const req = new Request(SETTINGS.airportsUrl);
+      req.timeoutInterval = 20;
+      text = await withTimeout(req.loadString(), 25);
+      if (text && text.includes("code,icao,kind")) fm.writeString(path, text); else text = null;
+    } catch (e) { text = null; }
+  }
+  if (!text) return null;
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (!line || line[0] === "#" || line.startsWith("code,")) continue;
+    const f = parseCsvLine(line);  // code,icao,kind,name,city,country,lat,lon,elevation_ft
+    if (f.length >= 8) out.push([f[0].length === 3 ? f[0] : "", f[1], f[3], f[4], parseFloat(f[6]), parseFloat(f[7])]);
+  }
+  return out;
+}
+
+function readQuery(q, airports) {
+  // What the words ask for: flight numbers (as planes broadcast them), a registration, an airline, an airport.
+  const words = norm(q).split(" ").filter(Boolean);
+  const airlines = airlineMatches(words);
+  const airlineWords = new Set();
+  if (airlines.length && airlines[0].score >= 70) {
+    const [icao, iata, name] = airlines[0].a;
+    const nameWords = norm(name).split(" ");
+    for (const w of words) {
+      if (w.toUpperCase() === icao || w.toUpperCase() === iata || nameWords.includes(w) ||
+          (w.length >= 4 && nameWords[0].startsWith(w))) airlineWords.add(w);
+    }
+  }
+  const ports = airportMatches(words, airports, airlineWords);
+  const callsigns = [];
+  for (const w of words) {  // "ua1234", "ual1234", "wn12" written together
+    const m = w.toUpperCase().match(/^([A-Z]{3}|[A-Z]{2}|[A-Z][0-9]|[0-9][A-Z])0*([0-9]{1,4}[A-Z]?)$/);
+    if (!m) continue;
+    if (m[1].length === 3 && AIRLINES.some((a) => a[0] === m[1])) callsigns.push(m[1] + m[2]);
+    else {
+      const a = AIRLINES.find((x) => x[1] === m[1]);
+      if (a) callsigns.push(a[0] + m[2]);
+    }
+  }
+  const number = words.find((w) => /^[0-9]{1,4}[a-z]?$/.test(w));
+  if (number && airlines.length) {  // "southwest 1234", "ua 1234"
+    for (const x of airlines.slice(0, 2)) callsigns.push(x.a[0] + number.toUpperCase().replace(/^0+(?=.)/, ""));
+  }
+  const raw = q.toUpperCase().split(/\s+/);
+  const reg = raw.find((w) => /^N[0-9][0-9A-Z]{0,4}$/.test(w) || /^[A-Z0-9]{1,2}-[A-Z0-9]{3,5}$/.test(w)) || "";
+  const airline = airlines.length && airlines[0].score >= 70 ? airlines[0].a : null;
+  // A 3-letter word can be both (DAL is Delta, and Dallas Love Field): a flight number wins, then the stronger.
+  let airport = ports.length && ports[0].score >= 72 ? ports[0].ap : null;
+  if (airport && airline && airlines[0].score > ports[0].score && words.length === 1) airport = null;
+  return { words, callsigns: [...new Set(callsigns)], reg, airline, airport,
+           unsure: !airport && words.some((w) => w.length >= 3 && !/^[0-9]/.test(w)) && !airline && !callsigns.length };
+}
+
+function resultOf(p, where, score, why) {
+  const l = where ? lookAt(where, p, 0) : { miles: null };
+  return { hex: p.hex, label: p.label, cs: p.callsign, reg: p.reg, type: p.type, lat: p.lat, lon: p.lon, alt: p.alt,
+           gs: p.gs, track: p.track, miles: l.miles === null ? null : Math.round(l.miles), score, why };
+}
+
+async function search(q, where, cache) {
+  // The planes the search asks for, best match first (up to 100; the map shows 10 at a time).
+  let ask = readQuery(q, AIRPORTS);
+  if (ask.unsure) {  // maybe a smaller airport, or a town: look through every airport
+    const all = await allAirports();
+    if (all) ask = readQuery(q, all);
+  }
+  const found = new Map(), notFlying = [];
+  const add = (r) => { const old = found.get(r.hex); if (!old || old.score < r.score) found.set(r.hex, r); };
+  for (const cs of ask.callsigns.slice(0, 3)) {  // exact flight numbers, anywhere in the world
+    const got = await adsbGet("/v2/callsign/" + cs, cache, 10);
+    if (got && got.limited) return { limited: true, query: q };
+    if (got && got.planes.length) got.planes.forEach((p) => add(resultOf(p, where, 100, "Flight " + cs)));
+    else if (got) notFlying.push(cs);
+  }
+  if (ask.reg) {
+    const got = await adsbGet("/v2/reg/" + encodeURIComponent(ask.reg), cache, 10);
+    if (got && got.planes && got.planes.length) got.planes.forEach((p) => add(resultOf(p, where, 98, "Registration " + ask.reg)));
+    else if (got && !got.limited) notFlying.push(ask.reg);
+  }
+  let understood = ask.callsigns.length ? "Flight " + ask.callsigns.join(" or ") : ask.reg ? "Registration " + ask.reg : "";
+  if (ask.airport || (ask.airline && !ask.callsigns.length)) {
+    const centre = ask.airport ? { lat: ask.airport[4], lon: ask.airport[5] } : where;
+    const code = ask.airport ? ask.airport[0] || ask.airport[1] : "";
+    const nm = ask.airport ? 60 : 200;
+    const got = await adsbGet("/v2/point/" + centre.lat.toFixed(4) + "/" + centre.lon.toFixed(4) + "/" + nm, cache, 15);
+    if (got && got.limited) return { limited: true, query: q };
+    for (const p of (got && got.planes) || []) {
+      if (ask.airline && !p.callsign.startsWith(ask.airline[0])) continue;
+      const d = miles(centre.lat, centre.lon, p.lat, p.lon);
+      // Near an airport: close and low is probably landing there or just took off.
+      const score = ask.airport ? 80 - d * 0.5 - (p.alt || 0) / 1500 : 70 - d / 4;
+      add(resultOf(p, where, score, ask.airport ? (ask.airline ? ask.airline[2] + " near " + code : "Near " + code)
+                                                : ask.airline[2] + " near you"));
+    }
+    understood = understood || (ask.airline ? ask.airline[2] : "Planes") + (ask.airport ? " near " + code + " (" + ask.airport[3] + ")" : " near you");
+  }
+  let results = [...found.values()].sort((a, b) => b.score - a.score);
+  if (ask.airport) {  // flights really going to or from that airport go first
+    const code = ask.airport[0];
+    const top = results.slice(0, 20);
+    const routes = await Promise.all(top.map((r) => routeFor({ callsign: r.cs, lat: r.lat, lon: r.lon }, cache)));
+    top.forEach((r, i) => {
+      const rt = routes[i] || {};
+      r.airline = rt.airline || "";
+      if (rt.origin && rt.destination) r.route = rt.origin + " → " + rt.destination;
+      if (code && (rt.destination === code || rt.origin === code)) {
+        r.score += 40;
+        r.why = (rt.destination === code ? "Flying to " : "Flying from ") + code;
+      }
+    });
+    results.sort((a, b) => b.score - a.score);
+  }
+  if (!understood) understood = "Couldn't tell what that is: try a flight number (UA 1234), an airline or an airport";
+  return { query: q, understood, results: results.slice(0, 100), notFlying, canFollow: !!SETTINGS.cmd };
+}
+
+async function sendCommand(text) {
+  // To planespotter on your Mac (or server), through your private command topic.
+  if (!SETTINGS.cmd) return false;
+  try {
+    const req = new Request(SETTINGS.cmd);
+    req.method = "POST";
+    req.body = text;
+    req.timeoutInterval = 8;
+    const answer = await withTimeout(req.loadString(), 9);
+    return answer !== null && (!req.response || req.response.statusCode < 300);
+  } catch (e) {
+    return false;
+  }
+}
+
 // --- the live map (tap the widget, or run the script in Scriptable) ---
 
 const MAP_PAGE = `<!doctype html>
@@ -511,6 +752,8 @@ const MAP_PAGE = `<!doctype html>
 <style>
   html, body { margin: 0; height: 100%; background: #0b0f14; color: #e8eef5;
     font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; border: 0; cursor: pointer; }
+  .hidden { display: none !important; }
   #map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
   #top { position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; right: 10px;
     display: flex; justify-content: space-between; gap: 8px; pointer-events: none; }
@@ -518,18 +761,49 @@ const MAP_PAGE = `<!doctype html>
     color: #9aa7b6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
   .chip b { color: #e8eef5; font-weight: 600; }
+  #tools { position: absolute; top: calc(48px + env(safe-area-inset-top)); left: 10px; display: flex; gap: 8px; }
+  .tool { background: rgba(20, 27, 36, .92); border-radius: 999px; padding: 8px 14px; font-size: 14px; font-weight: 600;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .35); }
+  #card { position: absolute; top: calc(92px + env(safe-area-inset-top)); left: 10px; right: 10px; background: rgba(11, 15, 20, .94);
+    border: 1px solid rgba(61, 220, 132, .45); border-radius: 14px; padding: 10px 12px; }
+  #card b { font-size: 16px; } #card .sub { color: #9aa7b6; font-size: 13px; margin-top: 2px; }
+  #card .btns { display: flex; gap: 8px; margin-top: 8px; }
+  .small { background: #1c2632; border-radius: 10px; padding: 7px 12px; font-size: 13px; font-weight: 600; }
+  .go { background: #ffb020; color: #111; }
   #panel { position: absolute; left: 10px; right: 10px; bottom: calc(12px + env(safe-area-inset-bottom));
     background: rgba(11, 15, 20, .9); border-radius: 16px; padding: 10px 14px 10px;
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
-  #panel h2 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: .07em;
+  #panel h2, #sheet h2 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: .07em;
     text-transform: uppercase; color: #9aa7b6; }
-  .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, .07); }
+  .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, .07);
+    width: 100%; background: none; text-align: left; }
   .row:first-child { border-top: 0; }
   .who { flex: 1; min-width: 0; }
   .who b { font-weight: 650; }
   .who span { display: block; font-size: 12px; color: #9aa7b6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cd { font-variant-numeric: tabular-nums; font-weight: 700; color: #ffb020; font-size: 17px; }
+  .why { font-size: 11px; color: #ffb020; white-space: nowrap; }
   .empty { color: #9aa7b6; font-size: 14px; padding: 4px 0 2px; }
+  #sheet { position: absolute; z-index: 30; top: 0; left: 0; right: 0; bottom: 0; background: #0b0f14; padding: calc(12px + env(safe-area-inset-top)) 14px 14px;
+    overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  #sheet form { display: flex; gap: 8px; margin: 6px 0 10px; }
+  #q { flex: 1; min-width: 0; background: #141b24; border: 1px solid #2a3644; border-radius: 12px; color: #e8eef5;
+    font: 16px -apple-system, sans-serif; padding: 10px 12px; }
+  #sheetTop { display: flex; justify-content: space-between; align-items: center; }
+  #sheetTop b { font-size: 18px; }
+  #hint, #found { color: #9aa7b6; font-size: 13px; margin: 2px 0 8px; }
+  #more { width: 100%; margin-top: 10px; }
+  #point { position: absolute; z-index: 30; top: 0; left: 0; right: 0; bottom: 0; background: rgba(5, 8, 12, .95); display: flex;
+    flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+  #pTop { position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 14px; right: 14px; display: flex;
+    justify-content: space-between; align-items: center; color: #9aa7b6; font-size: 14px; }
+  #reticle { width: 120px; height: 120px; border-radius: 50%; border: 2px solid rgba(255, 176, 32, .8); margin-bottom: 26px;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0); position: relative; }
+  #reticle:after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: #ffb020; }
+  #reticle.hit { border-color: #3ddc84; }
+  #pMain { font-size: 24px; font-weight: 700; } #pSub { color: #9aa7b6; font-size: 15px; margin-top: 6px; max-width: 340px; }
+  #pArrow { font-size: 54px; line-height: 1; margin-bottom: 8px; color: #ffb020; }
+  #pStart { margin-top: 22px; }
   #msg { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: none; align-items: center;
     justify-content: center; text-align: center; padding: 30px; color: #9aa7b6; }
   .maplibregl-ctrl-top-right { top: calc(44px + env(safe-area-inset-top)); }
@@ -541,20 +815,50 @@ const MAP_PAGE = `<!doctype html>
   .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #141b24; }
   .pop b { font-size: 16px; }
   .pop div { color: #9aa7b6; font-size: 13px; margin-top: 3px; }
+  .pop button { margin-top: 8px; }
 </style>
 </head><body>
 <div id="map"></div>
 <div id="top"><div class="chip" id="where">✈ planespotter</div><div class="chip" id="status">Finding planes…</div></div>
+<div id="tools"><button class="tool" id="trackBtn">✈︎ Track a flight</button><button class="tool" id="pointBtn">🔭 Point</button></div>
+<div id="card" class="hidden"></div>
 <div id="panel"><h2>Next over you</h2><div id="list"><div class="empty">Looking…</div></div></div>
+<div id="sheet" class="hidden">
+  <div id="sheetTop"><b>Track a flight</b><button class="small" id="sheetClose">Close</button></div>
+  <form id="form"><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="characters"
+    placeholder="UA 1234, Southwest LAX, JFK…"><button class="small go" type="submit">Search</button></form>
+  <div id="hint">A flight number, an airline, an airport, or a mix: <b>UA 1234</b> · <b>Southwest 1234</b> · <b>LAX</b> · <b>Delta JFK</b> · <b>N12345</b></div>
+  <div id="found"></div><div id="results"></div><button class="small hidden" id="more">Load more</button>
+</div>
+<div id="point" class="hidden">
+  <div id="pTop"><span id="pHead">Point your phone at the sky</span><span><button class="small" id="pVoice">🔊 On</button> <button class="small" id="pClose">Close</button></span></div>
+  <div id="reticle"></div><div id="pArrow"></div><div id="pMain">What's that plane?</div>
+  <div id="pSub">Hold your phone up, look at the screen, and point the back of it at a plane.</div>
+  <button class="small go" id="pStart">Start</button>
+</div>
 <div id="msg"></div>
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
-var state = { planes: [], at: 0, me: null, radius: 3, next: [], due: {}, status: "", where: "" };
-var routes = {}, wanted = [], popup = null, popupHex = null, ready = false, centred = false, map = null;
-var R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] };
+var state = { planes: [], at: 0, me: null, radius: 3, next: [], due: {}, status: "", where: "", ground: 0,
+              tracked: null, canFollow: false };
+var routes = {}, asks = [], popup = null, popupHex = null, ready = false, centred = false, map = null;
+var search = { results: [], shown: 0, notFlying: [], busy: false }, trail = [], movedAt = 0, followed = {};
+var R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] }, NL = String.fromCharCode(10);
+var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
+function $(id) { return document.getElementById(id); }
 function rad(d) { return d * Math.PI / 180; }
 function deg(r) { return r * 180 / Math.PI; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
+function miles(a1, o1, a2, o2) {
+  var p1 = rad(a1), p2 = rad(a2), dp = p2 - p1, dl = rad(o2 - o1);
+  var a = Math.pow(Math.sin(dp / 2), 2) + Math.cos(p1) * Math.cos(p2) * Math.pow(Math.sin(dl / 2), 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+function bearing(a1, o1, a2, o2) {
+  var p1 = rad(a1), p2 = rad(a2), dl = rad(o2 - o1);
+  return (deg(Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl))) + 360) % 360;
+}
+function compass(d) { return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.floor((d % 360) / 45 + 0.5) % 8]; }
 function offset(lat, lon, brg, mi) {
   var d = mi / R, b = rad(brg), p1 = rad(lat), l1 = rad(lon);
   var p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
@@ -566,13 +870,24 @@ function circle(lat, lon, mi) {
   for (var i = 0; i <= 64; i++) { var q = offset(lat, lon, i * 360 / 64, mi); pts.push([q[1], q[0]]); }
   return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [pts] } };
 }
-function glided(p, t) {  // where it is now, if it flew straight on since the update
-  if (!p.gs || p.track === null) return [p.lat, p.lon];
-  return offset(p.lat, p.lon, p.track, p.gs * 1.15078 * Math.min(Math.max(0, t - state.at), 300) / 3600);
+function glided(p, t, since) {  // where it is now, if it flew straight on since the update
+  if (!p.gs || p.track === null || p.track === undefined) return [p.lat, p.lon];
+  return offset(p.lat, p.lon, p.track, p.gs * 1.15078 * Math.min(Math.max(0, t - since), 300) / 3600);
 }
-function altText(a) { return a === null ? "" : a >= 18000 ? "FL" + Math.round(a / 100) : a.toLocaleString() + " ft"; }
+function altText(a) { return a === null || a === undefined ? "" : a >= 18000 ? "FL" + Math.round(a / 100) : a.toLocaleString("en-US") + " ft"; }
 function clockText(s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2); }
 function agoText(s) { return s < 60 ? Math.round(s) + " s ago" : Math.round(s / 60) + " min ago"; }
+function ask(a) { asks.push(a); }
+function takeAsks() { var a = asks; asks = []; return JSON.stringify(a); }
+function wantRoute(p) { if (p.cs && !(p.cs in routes)) { routes[p.cs] = null; ask({ kind: "route", cs: p.cs, lat: p.lat, lon: p.lon }); } }
+function setRoute(cs, r) { routes[cs] = r || {}; draw(); renderResults(); return true; }
+function sayOf(p) {  // "Southwest flight 1672 from Las Vegas"
+  if (String(p.label || "").charAt(0) === "~") return "an unidentified plane";
+  var r = (p.cs && routes[p.cs]) || {}, airline = (r.airline || p.airline || "").replace(/ (Air Lines|Airlines|Airways)$/, "");
+  var m = /^[A-Z]{3}([0-9].*)$/.exec(p.cs || "");
+  var name = airline && m ? airline + " flight " + m[1] : airline ? airline + ", " + p.label : p.label;
+  return name + (r.city ? " from " + r.city : "");
+}
 function planeIcon() {
   var c = document.createElement("canvas"); c.width = c.height = 64;
   var x = c.getContext("2d"); x.fillStyle = "#fff"; x.beginPath();
@@ -582,53 +897,160 @@ function planeIcon() {
   x.closePath(); x.fill();
   return x.getImageData(0, 0, 64, 64);
 }
-function showMsg(text) { var m = document.getElementById("msg"); m.textContent = text; m.style.display = "flex"; }
+function showMsg(text) { var m = $("msg"); m.textContent = text; m.style.display = "flex"; }
+function planeByHex(hex) {
+  if (state.tracked && state.tracked.hex === hex && state.tracked.lat !== undefined) return state.tracked;
+  return state.planes.filter(function (q) { return q.hex === hex; })[0];
+}
 function popupHtml(p) {
   var r = p.cs ? routes[p.cs] : null, bits = [];
   if (r && (r.airline || r.origin)) bits.push(esc(r.airline || "") + (r.origin ? " · " + esc(r.origin) + " → " + esc(r.destination) : ""));
-  else if (p.cs && !(p.cs in routes)) bits.push("Looking up its route…");
+  else if (p.cs && r === null) bits.push("Looking up its route…");
   var what = [p.type, altText(p.alt), p.gs ? Math.round(p.gs) + " kt" : ""].filter(Boolean).join(" · ");
+  var tracking = state.tracked && state.tracked.hex === p.hex;
   return '<div class="pop"><b>' + esc(p.label) + "</b>" + bits.map(function (b) { return "<div>" + b + "</div>"; }).join("") +
-    (what ? "<div>" + esc(what) + "</div>" : "") + "</div>";
+    (what ? "<div>" + esc(what) + "</div>" : "") +
+    (tracking ? "" : '<button class="small go" onclick="trackIt(' + "'" + esc(p.hex) + "'" + ')">✈︎ Track this flight</button>') + "</div>";
 }
 function openPopup(hex) {
-  var p = state.planes.filter(function (q) { return q.hex === hex; })[0];
+  var p = planeByHex(hex);
   if (!p) return;
-  if (p.cs && !(p.cs in routes)) wanted.push({ cs: p.cs, lat: p.lat, lon: p.lon });
+  wantRoute(p);
   if (popup) popup.remove();
-  var at = glided(p, Date.now() / 1000);
+  var at = glided(p, Date.now() / 1000, p === state.tracked ? state.tracked.at : state.at);
   popupHex = hex;
   map.easeTo({ center: [at[1], at[0]], duration: 400 });  // bring it into view (it may be at the edge)
   popup = new maplibregl.Popup({ closeButton: false, offset: 16, maxWidth: "260px" })
     .setLngLat([at[1], at[0]]).setHTML(popupHtml(p)).addTo(map);
   popup.on("close", function () { if (popupHex === hex) popupHex = null; });
 }
+
+// --- tracking a flight ---
+function trackIt(hex) {
+  var p = planeByHex(hex) || search.results.filter(function (r) { return r.hex === hex; })[0];
+  if (!p) return;
+  if (popup) popup.remove();
+  trail = [];
+  state.tracked = { hex: p.hex, label: p.label, cs: p.cs, lat: p.lat, lon: p.lon, alt: p.alt, gs: p.gs, track: p.track,
+                    type: p.type, at: Date.now() / 1000, pending: true };
+  wantRoute(p);
+  movedAt = 0;
+  $("sheet").classList.add("hidden");
+  if (map && ready) map.flyTo({ center: [p.lon, p.lat], zoom: 8, duration: 800 });
+  ask({ kind: "track", hex: p.hex, label: p.label, cs: p.cs });
+  draw();
+}
+function stopTracking() { state.tracked = null; trail = []; ask({ kind: "untrack" }); draw(); }
+function followIt(flight) { followed[flight] = "asking"; ask({ kind: "follow", flight: flight }); draw(); renderResults(); }
+function followDone(r) { followed[r.flight] = r.ok ? "yes" : "no"; draw(); renderResults(); return true; }
+function renderCard() {
+  var t = state.tracked, card = $("card");
+  if (!t) { card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+  if (t.lost) {
+    card.innerHTML = "<b>" + esc(t.label) + "</b><div class='sub'>Not showing any more: it has probably landed (or flown out of range).</div>" +
+      "<div class='btns'><button class='small' onclick='stopTracking()'>OK</button></div>";
+    return;
+  }
+  var r = (t.cs && routes[t.cs]) || {}, now = Date.now() / 1000, at = glided(t, now, t.at), bits = [];
+  if (r.airline || t.airline) bits.push(r.airline || t.airline);
+  if (r.origin) bits.push(r.origin + " → " + r.destination + (r.city ? " (from " + r.city + ")" : ""));
+  var meta = [t.type, altText(t.alt), t.gs ? Math.round(t.gs) + " kt" : ""];
+  if (state.me && t.lat !== undefined) meta.push(Math.round(miles(state.me.lat, state.me.lon, at[0], at[1])) + " mi " +
+    compass(bearing(state.me.lat, state.me.lon, at[0], at[1])) + " of you");
+  var f = t.cs ? followed[t.cs] : null;
+  var follow = !state.canFollow || !t.cs ? "" : f === "yes" ? "<span class='sub'>🔔 Your Mac will tell you when it lands</span>"
+    : f === "no" ? "<span class='sub'>Couldn't reach your Mac</span>"
+    : '<button class="small" onclick="followIt(' + "'" + esc(t.cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Notify me when it lands") + "</button>";
+  if (t.gone && t.lat === undefined) {
+    card.innerHTML = "<b>✈︎ " + esc(t.label) + "</b><div class='sub'>" + (t.unseen > 120 ? "Not seen for " + Math.round(t.unseen / 60) +
+      " min: out of range of receivers (over the ocean, say), or it has landed. Still looking…" : "Looking for it…") + "</div>" +
+      "<div class='btns'><button class='small' onclick='stopTracking()'>Stop</button></div>";
+    return;
+  }
+  card.innerHTML = "<b>✈︎ " + esc(t.label) + "</b>" + (t.gone ? " <span class='sub'>(not seen for a moment)</span>" : "") +
+    "<div class='sub'>" + esc(bits.join(" · ")) + "</div><div class='sub'>" + esc(meta.filter(Boolean).join(" · ")) + "</div>" +
+    "<div class='btns'>" + follow + "<button class='small' onclick='stopTracking()'>Stop</button></div>";
+}
+
+// --- the search sheet ---
+function openSearch() { $("sheet").classList.remove("hidden"); setTimeout(function () { $("q").focus(); }, 50); }
+function runSearch(e) {
+  if (e) e.preventDefault();
+  var q = $("q").value.trim();
+  if (!q || search.busy) return false;
+  search = { results: [], shown: 0, notFlying: [], busy: true, query: q };
+  $("found").textContent = "Searching…"; $("results").innerHTML = ""; $("more").classList.add("hidden");
+  $("q").blur();
+  ask({ kind: "search", q: q });
+  return false;
+}
+function searchDone(res) {
+  search.busy = false;
+  if (res.limited) { $("found").textContent = "Paused for today (adsb.lol's daily allowance for this phone)."; return true; }
+  search.results = res.results || []; search.notFlying = res.notFlying || []; search.shown = Math.min(10, search.results.length);
+  state.canFollow = res.canFollow;
+  $("found").textContent = res.understood + " · " + (search.results.length ? search.results.length + " found" : "nothing in the air");
+  renderResults();
+  return true;
+}
+function renderResults() {
+  if ($("sheet").classList.contains("hidden")) return;
+  var html = search.notFlying.map(function (cs) {
+    var f = followed[cs];
+    return '<div class="row"><div class="who"><b>' + esc(cs) + "</b><span>Not in the air right now</span></div>" +
+      (!state.canFollow ? "" : f === "yes" ? '<span class="why">🔔 You’ll hear when it takes off</span>'
+        : '<button class="small" onclick="followIt(' + "'" + esc(cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Tell me when it flies") + "</button>") + "</div>";
+  }).join("");
+  html += search.results.slice(0, search.shown).map(function (r, i) {
+    wantRoute(r);
+    var rt = routes[r.cs] || {}, sub = [rt.airline || r.airline, rt.origin ? rt.origin + " → " + rt.destination : r.route].filter(Boolean).join(" · ");
+    var meta = [r.type, altText(r.alt), r.miles !== null ? r.miles + " mi away" : ""].filter(Boolean).join(" · ");
+    return '<button class="row" onclick="trackIt(' + "'" + esc(r.hex) + "'" + ')"><div class="who"><b>' + esc(r.label) + "</b><span>" +
+      esc(sub || "Route not known") + "</span><span>" + esc(meta) + '</span></div><div class="why">' + esc(r.why) + "</div></button>";
+  }).join("");
+  $("results").innerHTML = html;
+  $("more").classList.toggle("hidden", search.shown >= search.results.length);
+}
+function loadMore() { search.shown = Math.min(search.results.length, search.shown + 10); renderResults(); }
+
+// --- drawing ---
 function draw() {
   var t = Date.now() / 1000;
   var next = (state.next || []).filter(function (p) { return p.at > t - 90; }).slice(0, 3);
-  document.getElementById("list").innerHTML = next.length ? next.map(function (p) {
+  $("list").innerHTML = next.length ? next.map(function (p) {
     var sub = [p.route || p.airline, "look " + p.direction + ", " + p.up + "° up"].filter(Boolean).join(" · ");
     return '<div class="row"><div class="who"><b>' + esc(p.label) + "</b><span>" + esc(sub) + "</span></div>" +
       '<div class="cd">' + (p.at <= t + 5 ? "overhead" : clockText(p.at - t)) + "</div></div>";
   }).join("") : '<div class="empty">Nothing due over you in the next 15 minutes.</div>';
-  document.getElementById("where").innerHTML = "✈ <b>" + esc(state.where || "planespotter") + "</b>";
-  document.getElementById("status").textContent = state.status ||
-    (state.at ? state.planes.length + " planes · " + agoText(t - state.at) : "Finding planes…");
+  $("where").innerHTML = "✈ <b>" + esc(state.where || "planespotter") + "</b>";
+  $("status").textContent = state.status || (state.at ? state.planes.length + " planes · " + agoText(t - state.at) : "Finding planes…");
+  renderCard();
   if (!ready) return;
-  var features = state.planes.map(function (p) {
-    var at = glided(p, t);
+  var tracked = state.tracked && state.tracked.lat !== undefined && !state.tracked.lost ? state.tracked : null;
+  var features = state.planes.filter(function (p) { return !tracked || p.hex !== tracked.hex; }).map(function (p) {
+    var at = glided(p, t, state.at);
     return { type: "Feature", geometry: { type: "Point", coordinates: [at[1], at[0]] },
       properties: { hex: p.hex, track: p.track || 0, alt: p.alt === null ? 99999 : p.alt, due: !!state.due[p.hex],
                     text: p.label + (p.alt !== null ? "\\n" + altText(p.alt) : "") } };
   });
   map.getSource("planes").setData({ type: "FeatureCollection", features: features });
+  if (tracked) {
+    var at = glided(tracked, t, tracked.at);
+    map.getSource("tracked").setData({ type: "Feature", geometry: { type: "Point", coordinates: [at[1], at[0]] },
+      properties: { hex: tracked.hex, track: tracked.track || 0, text: tracked.label + "\\n" + altText(tracked.alt) } });
+    map.getSource("trail").setData({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: trail.concat([[at[1], at[0]]]) } });
+  } else {
+    map.getSource("tracked").setData(EMPTY);
+    map.getSource("trail").setData(EMPTY);
+  }
   if (state.me) {
     map.getSource("zone").setData(circle(state.me.lat, state.me.lon, state.radius));
     map.getSource("me").setData({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [state.me.lon, state.me.lat] } });
   }
   if (popup && popupHex) {
-    var p = state.planes.filter(function (q) { return q.hex === popupHex; })[0];
-    if (p) { var at = glided(p, t); popup.setLngLat([at[1], at[0]]).setHTML(popupHtml(p)); }
+    var p = planeByHex(popupHex);
+    if (p) { var pa = glided(p, t, p === state.tracked ? state.tracked.at : state.at); popup.setLngLat([pa[1], pa[0]]).setHTML(popupHtml(p)); }
   }
 }
 function frame() {
@@ -637,54 +1059,198 @@ function frame() {
   var z = circle(state.me.lat, state.me.lon, state.radius).geometry.coordinates[0];
   pts.push(z[0], z[16], z[32], z[48]);
   state.planes.forEach(function (p) {
-    if (state.due[p.hex]) { var at = glided(p, t); pts.push([at[1], at[0]]); }
+    if (state.due[p.hex]) { var at = glided(p, t, state.at); pts.push([at[1], at[0]]); }
   });
   var b = new maplibregl.LngLatBounds(pts[0], pts[0]);
   pts.forEach(function (q) { b.extend(q); });
-  var panel = document.getElementById("panel").offsetHeight;
-  map.fitBounds(b, { padding: { top: 70, bottom: panel + 40, left: 40, right: 40 }, maxZoom: 11, duration: 0 });
+  map.fitBounds(b, { padding: { top: 100, bottom: $("panel").offsetHeight + 40, left: 40, right: 40 }, maxZoom: 11, duration: 0 });
 }
 function update(d) {
   for (var k in d) state[k] = d[k];
-  if (!centred && state.me && map) {
+  var t = state.tracked;
+  if (t && !t.lost && t.lat !== undefined && !t.gone) {
+    trail.push([t.lon, t.lat]);
+    if (map && ready && Date.now() - movedAt > 20000) map.easeTo({ center: [t.lon, t.lat], duration: 800 });  // follow it
+  }
+  if (!centred && state.me && map && !t) {
     draw();  // the panel first, so the map knows how much room it takes
     if (ready) { frame(); centred = true; }
     else map.jumpTo({ center: [state.me.lon, state.me.lat], zoom: Math.max(7, 10.6 - Math.log2(Math.max(1, state.radius))) });
   }
+  if (d.startPoint) openPoint();
   draw();
   return true;
 }
-function takeWanted() { var w = wanted; wanted = []; return JSON.stringify(w); }
-function setRoute(cs, r) { routes[cs] = r || {}; draw(); return true; }
+
+// --- point at a plane (the phone's compass and tilt, as in the sky view) ---
+var view = { alpha: null, beta: 90, gamma: 0, off: null, on: false, voice: true, said: "", target: null, since: 0, lastGuide: 0, events: 0 };
+function basis() {
+  var a = rad(view.alpha + (view.off || 0)), b = rad(view.beta), g = rad(view.gamma);
+  var cX = Math.cos(b), sX = Math.sin(b), cY = Math.cos(g), sY = Math.sin(g), cZ = Math.cos(a), sZ = Math.sin(a);
+  return [-(cY * sZ * sX + cZ * sY), -(sZ * sY - cZ * cY * sX), -(cX * cY)];  // the back camera's direction
+}
+function azOf(v) { return (deg(Math.atan2(v[0], v[1])) + 360) % 360; }
+function elOf(v) { return deg(Math.asin(Math.max(-1, Math.min(1, v[2])))); }
+function onOrientation(e) {
+  if (e.alpha == null || e.beta == null) return;
+  view.alpha = e.alpha; view.beta = e.beta; view.gamma = e.gamma || 0; view.events++;
+  if (typeof e.webkitCompassHeading === "number") {
+    // iPhone: alpha starts wherever the phone was pointing, so line it up with the compass.
+    var saved = view.off; view.off = 0; var f = basis(); view.off = saved;
+    if (Math.abs(f[2]) < 0.9) {  // the compass is unreliable pointing straight up or down
+      var want = azOf(f) - e.webkitCompassHeading;
+      if (view.off === null) view.off = want;
+      else view.off += (((want - view.off + 540) % 360) - 180) * 0.15;  // smooth out its jitter
+    }
+  } else if (view.off === null) view.off = 0;
+}
+function speak(text) {
+  if (!view.voice || !window.speechSynthesis) return;
+  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+}
+function openPoint() {
+  $("point").classList.remove("hidden");
+  $("pStart").classList.remove("hidden");
+  $("pArrow").textContent = ""; $("pMain").textContent = "What's that plane?";
+  $("pSub").textContent = "Hold your phone up, look at the screen, and point the back of it at a plane.";
+}
+function closePoint() { $("point").classList.add("hidden"); view.on = false; try { speechSynthesis.cancel(); } catch (e) {} }
+function startPoint() {
+  var D = window.DeviceOrientationEvent;
+  var go = function () {
+    window.addEventListener("deviceorientation", onOrientation);
+    view.on = true; view.off = null; view.events = 0; view.said = "";
+    $("pStart").classList.add("hidden");
+    $("pMain").textContent = "Point at a plane…"; $("pSub").textContent = "";
+    setTimeout(function () {
+      if (view.on && !view.events) noCompass("Your phone isn't sharing its compass with this page.");
+    }, 3000);
+  };
+  if (D && typeof D.requestPermission === "function") {  // iPhone asks first
+    D.requestPermission().then(function (r) { if (r === "granted") go(); else noCompass("The compass wasn't allowed."); },
+                                function () { noCompass("The compass isn't available here."); });
+  } else if (D) go();
+  else noCompass("This phone doesn't share its compass with this page.");
+}
+function noCompass(why) {
+  view.on = false;
+  var g = guidePlane();
+  $("pArrow").textContent = "🧭";
+  $("pMain").textContent = g ? sayOf(g.p) : "No planes nearby";
+  $("pSub").textContent = why + (g ? " " + capital(WORDS[compass(g.az)]) + "ward, about " + Math.round(g.el) + "° up, " +
+    Math.round(g.mi) + " miles away." : "");
+}
+function capital(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ""; }
+function skyOf(p, t) {  // where to look for a plane: {az, el, mi}
+  var at = glided(p, t, p === state.tracked ? state.tracked.at : state.at);
+  var mi = miles(state.me.lat, state.me.lon, at[0], at[1]);
+  var h = Math.max(0, ((p.alt || 0) - (state.ground || 0)) * 0.3048);
+  return { p: p, az: bearing(state.me.lat, state.me.lon, at[0], at[1]), el: deg(Math.atan2(h, Math.max(1, mi * 1609.344))), mi: mi };
+}
+function seen() {  // planes in the sky around you (not on the ground, within 40 miles)
+  var t = Date.now() / 1000, list = state.planes.slice();
+  if (state.tracked && state.tracked.lat !== undefined && !state.tracked.lost) list.push(state.tracked);
+  return list.filter(function (p) { return p.alt !== null && p.alt - (state.ground || 0) >= 200; })
+    .map(function (p) { return skyOf(p, t); }).filter(function (s) { return s.mi <= 40; });
+}
+function guidePlane() {
+  // If you're not pointing at one: the next plane over you, else the one highest in the sky, else the nearest.
+  if (!state.me) return null;
+  var all = seen(), t = Date.now() / 1000;
+  var due = (state.next || []).filter(function (n) { return n.at > t - 90; })[0];
+  var pick = due && all.filter(function (s) { return s.p.hex === due.hex; })[0];
+  if (pick) return pick;
+  all.sort(function (a, b) { return b.el - a.el || a.mi - b.mi; });
+  return all[0] || null;
+}
+function pointTick() {
+  if (!view.on || view.off === null || !state.me) return;
+  var f = basis(), az = azOf(f), el = elOf(f);
+  $("pHead").textContent = "Facing " + compass(az) + " (" + Math.round(az) + "°) · " + Math.round(el) + "° up";
+  var best = null, bestSep = 99;
+  seen().forEach(function (s) {
+    var sep = deg(Math.acos(Math.max(-1, Math.min(1, Math.sin(rad(el)) * Math.sin(rad(s.el)) +
+      Math.cos(rad(el)) * Math.cos(rad(s.el)) * Math.cos(rad(s.az - az))))));
+    if (sep < bestSep) { bestSep = sep; best = s; }
+  });
+  var now = Date.now();
+  if (best && bestSep <= 12) {
+    var p = best.p;
+    wantRoute(p);
+    $("reticle").classList.add("hit");
+    $("pArrow").textContent = "";
+    $("pMain").textContent = p.label + ((routes[p.cs] || {}).airline ? " · " + routes[p.cs].airline : "");
+    var r = routes[p.cs] || {};
+    $("pSub").textContent = [r.origin ? r.origin + " → " + r.destination : "", p.type, altText(p.alt), Math.round(best.mi) + " mi away"].filter(Boolean).join(" · ");
+    if (view.target !== p.hex) { view.target = p.hex; view.since = now; }
+    if (now - view.since > 700 && view.said !== p.hex) {
+      view.said = p.hex;
+      speak("That's " + sayOf(p) + (p.alt ? ", at " + Math.round(p.alt / 100) * 100 + " feet" : "") + ", " + Math.max(1, Math.round(best.mi)) + " miles away.");
+    }
+    return;
+  }
+  $("reticle").classList.remove("hit");
+  view.target = null;
+  var g = guidePlane();
+  if (!g) { $("pArrow").textContent = ""; $("pMain").textContent = "No planes in the sky nearby"; $("pSub").textContent = "Try again in a few minutes."; return; }
+  var turn = ((g.az - az + 540) % 360) - 180, tilt = g.el - el;
+  var side = Math.abs(turn) < 12 ? "" : (turn > 0 ? "Turn right " : "Turn left ") + Math.round(Math.abs(turn)) + "°";
+  var vert = Math.abs(tilt) < 8 ? "" : (tilt > 0 ? "look up " : "look down ") + Math.round(Math.abs(tilt)) + "°";
+  $("pArrow").textContent = side ? (turn > 0 ? "↻" : "↺") : vert ? (tilt > 0 ? "↑" : "↓") : "•";
+  $("pMain").textContent = "No plane that way";
+  $("pSub").textContent = [side, side && vert ? vert : capital(vert)].filter(Boolean).join(" and ") + (side || vert ? " for " : "Look for ") +
+    sayOf(g.p) + ", " + Math.round(g.mi) + " mi away.";
+  if (now - view.lastGuide > 8000 && view.said !== "guide:" + g.p.hex) {
+    view.lastGuide = now; view.said = "guide:" + g.p.hex;
+    speak("No plane that way. " + (side ? side.replace("°", " degrees") : "It's in front of you") + ", for " + sayOf(g.p) + ".");
+  }
+}
+setInterval(pointTick, 200);
+
 try {
   map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/dark",
     center: [-98, 39], zoom: 3, attributionControl: false, dragRotate: false, pitchWithRotate: false });
   map.addControl(new maplibregl.AttributionControl({ compact: true }), "top-right");
+  map.on("dragstart", function () { movedAt = Date.now(); });
   map.on("load", function () {
     map.addImage("plane", planeIcon(), { sdf: true });
-    ["zone", "me", "planes"].forEach(function (id) { map.addSource(id, { type: "geojson", data: EMPTY }); });
+    ["zone", "me", "planes", "tracked", "trail"].forEach(function (id) { map.addSource(id, { type: "geojson", data: EMPTY }); });
     map.addLayer({ id: "zone-fill", type: "fill", source: "zone", paint: { "fill-color": "#ffb020", "fill-opacity": 0.08 } });
     map.addLayer({ id: "zone-line", type: "line", source: "zone",
       paint: { "line-color": "#ffb020", "line-width": 1.5, "line-opacity": 0.75, "line-dasharray": [2, 2] } });
+    map.addLayer({ id: "trail", type: "line", source: "trail", paint: { "line-color": "#3ddc84", "line-width": 2.5, "line-opacity": 0.8 } });
+    var label = { "text-field": ["get", "text"], "text-font": ["Noto Sans Regular"], "text-size": 11, "text-offset": [0, 1.5],
+      "text-anchor": "top", "text-optional": true };
     map.addLayer({ id: "planes", type: "symbol", source: "planes",
-      layout: { "icon-image": "plane", "icon-size": ["case", ["get", "due"], 0.62, 0.46], "icon-rotate": ["get", "track"],
-        "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true,
-        "text-field": ["get", "text"], "text-font": ["Noto Sans Regular"], "text-size": 11, "text-offset": [0, 1.5],
-        "text-anchor": "top", "text-optional": true },
+      layout: Object.assign({ "icon-image": "plane", "icon-size": ["case", ["get", "due"], 0.62, 0.46], "icon-rotate": ["get", "track"],
+        "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true }, label),
       paint: { "icon-color": ["case", ["get", "due"], "#ffb020", ["<", ["get", "alt"], 10000], "#7cc4ff", "#c9d3de"],
         "text-color": "#e8eef5", "text-halo-color": "#0b0f14", "text-halo-width": 1.4 } });
+    map.addLayer({ id: "tracked", type: "symbol", source: "tracked",
+      layout: Object.assign({ "icon-image": "plane", "icon-size": 0.75, "icon-rotate": ["get", "track"],
+        "icon-rotation-alignment": "map", "icon-allow-overlap": true, "icon-ignore-placement": true }, label),
+      paint: { "icon-color": "#3ddc84", "text-color": "#3ddc84", "text-halo-color": "#0b0f14", "text-halo-width": 1.4 } });
     map.addLayer({ id: "me", type: "circle", source: "me",
       paint: { "circle-radius": 7, "circle-color": "#3b9cff", "circle-stroke-width": 2.5, "circle-stroke-color": "#ffffff" } });
     map.on("click", "planes", function (e) { openPopup(e.features[0].properties.hex); });
+    map.on("click", "tracked", function (e) { openPopup(e.features[0].properties.hex); });
     var credits = document.querySelector(".maplibregl-ctrl-attrib");
     if (credits) credits.classList.remove("maplibregl-compact-show");  // just the (i) button until tapped
     ready = true;
-    if (!centred && state.me) { frame(); centred = true; }
+    if (!centred && state.me && !state.tracked) { frame(); centred = true; }
     draw();
   });
 } catch (e) {
   showMsg("The map couldn't start (it needs an internet connection). The list below still works.");
 }
+$("trackBtn").onclick = openSearch;
+$("sheetClose").onclick = function () { $("sheet").classList.add("hidden"); };
+$("form").onsubmit = runSearch;
+$("more").onclick = loadMore;
+$("pointBtn").onclick = openPoint;
+$("pStart").onclick = startPoint;
+$("pClose").onclick = closePoint;
+$("pVoice").onclick = function () { view.voice = !view.voice; this.textContent = view.voice ? "🔊 On" : "🔇 Off"; };
 setInterval(draw, 1000);
 </script>
 </body></html>`;
@@ -697,9 +1263,10 @@ async function page(wv, code) {
   }
 }
 
-async function showMap() {
+async function showMap(startPoint) {
   // A live map of the planes around you. Planes move between updates; it asks adsb.lol every 15 s
-  // for the first 10 minutes, then every minute (and pauses for the day at DAILY_LIMIT).
+  // for the first 10 minutes, then every minute (and pauses for the day at DAILY_LIMIT). It also
+  // searches for flights and follows the one you pick, anywhere in the world.
   const cache = loadCache();
   const home = SETTINGS.home;
   const wv = new WebView();
@@ -707,37 +1274,78 @@ async function showMap() {
   let open = true;
   wv.present(true).then(() => { open = false; }, () => { open = false; });
   const started = now;
-  let last = -1e12, name = "", told = false;
+  let last = -1e12, name = "", told = false, ticks = 0;
+  let where = { lat: home.lat, lon: home.lon, groundFt: home.groundFt, fresh: false };
   while (open) {
     tick();
     if (now - last >= (now - started < 600 ? 15 : 60)) {
       last = now;
-      const where = (await myLocation(cache)) || { lat: home.lat, lon: home.lon, groundFt: home.groundFt, fresh: false };
+      ticks += 1;
+      where = (await myLocation(cache)) || where;
       const atHome = miles(where.lat, where.lon, home.lat, home.lon) <= HOME_MILES;
       if (atHome && (where.groundFt === null || where.groundFt === undefined)) where.groundFt = home.groundFt;
       if (!told) { told = true; await tellMyMac(where, cache); }
       if (!name || !atHome) name = atHome ? home.name : await placeName(where, cache);
-      const got = await fetchPlanes(where, cache);
-      const update = { me: { lat: where.lat, lon: where.lon }, radius: SETTINGS.radius, where: name, status: "" };
-      if (got && got.planes) {
-        const next = await comingOver(got.planes, where, cache, 6);
-        update.at = got.at;
-        update.planes = got.planes.map((p) => ({ hex: p.hex, label: p.label, cs: p.callsign, type: p.type,
-          lat: p.lat, lon: p.lon, alt: p.alt, gs: p.gs, track: p.track }));
-        update.next = next;
-        update.due = Object.fromEntries(next.map((p) => [p.hex, true]));
-      } else if (got && got.limited) {
-        update.status = "Paused for today (adsb.lol's daily allowance)";
+      const update = { me: { lat: where.lat, lon: where.lon }, radius: SETTINGS.radius, where: name, status: "",
+                       ground: where.groundFt || 0, canFollow: !!SETTINGS.cmd };
+      if (startPoint && ticks === 1) update.startPoint = true;
+      const following = cache.tracking;
+      if (!following || ticks % 4 === 1) {  // the planes around you (less often while following a flight)
+        const got = await fetchPlanes(where, cache);
+        if (got && got.planes) {
+          const next = await comingOver(got.planes, where, cache, 6);
+          update.at = got.at;
+          update.planes = got.planes.map((p) => ({ hex: p.hex, label: p.label, cs: p.callsign, type: p.type,
+            lat: p.lat, lon: p.lon, alt: p.alt, gs: p.gs, track: p.track }));
+          update.next = next;
+          update.due = Object.fromEntries(next.map((p) => [p.hex, true]));
+        } else if (got && got.limited) {
+          update.status = "Paused for today (adsb.lol's daily allowance)";
+        } else {
+          update.status = "No connection: trying again…";
+        }
+      }
+      if (following) {  // the flight you're following, wherever it is
+        const got = await adsbGet("/v2/hex/" + following.hex, cache, 10);
+        if (got && got.planes && got.planes.length) {
+          following.seen = now;
+          const p = got.planes[0];
+          const r = await routeFor(p, cache);
+          update.tracked = { ...resultOf(p, where, 0, ""), at: now, airline: r.airline || "" };
+        } else if (got && !got.limited) {
+          // Not showing: out of range of receivers for a while (over an ocean), or it has landed.
+          const unseen = now - (following.seen || following.since || now);
+          update.tracked = { hex: following.hex, label: following.label, cs: following.cs, gone: true,
+                             unseen: Math.round(unseen) };
+          if (unseen > 3 * 3600) {
+            cache.tracking = null;
+            update.tracked = { hex: following.hex, label: following.label, lost: true };
+          }
+        }
       } else {
-        update.status = "No connection: trying again…";
+        update.tracked = null;
       }
       await page(wv, "update(" + JSON.stringify(update) + ")");
       saveCache(cache);
     }
-    const asked = await page(wv, "takeWanted()");
-    for (const w of JSON.parse(asked || "[]")) {
-      const r = await routeFor({ callsign: w.cs, lat: w.lat, lon: w.lon }, cache);
-      await page(wv, "setRoute(" + JSON.stringify(w.cs) + "," + JSON.stringify(r || {}) + ")");
+    for (const a of JSON.parse((await page(wv, "takeAsks()")) || "[]")) {
+      if (a.kind === "route") {
+        const r = await routeFor({ callsign: a.cs, lat: a.lat, lon: a.lon }, cache);
+        await page(wv, "setRoute(" + JSON.stringify(a.cs) + "," + JSON.stringify(r || {}) + ")");
+      } else if (a.kind === "search") {
+        await page(wv, "searchDone(" + JSON.stringify(await search(a.q, where, cache)) + ")");
+      } else if (a.kind === "track") {
+        cache.tracking = { hex: a.hex, label: a.label, cs: a.cs, since: now, seen: now };
+        last = -1e12;  // show it now
+      } else if (a.kind === "untrack") {
+        cache.tracking = null;
+        last = -1e12;
+      } else if (a.kind === "follow") {
+        // planespotter on your Mac follows it: tells you when it takes off, flies over home, and lands
+        const ok = await sendCommand("flight " + a.flight);
+        await page(wv, "followDone(" + JSON.stringify({ flight: a.flight, ok }) + ")");
+      }
+      saveCache(cache);
     }
     await sleep(1);
   }
@@ -745,7 +1353,9 @@ async function showMap() {
 }
 
 if (config.runsInApp) {
-  await showMap();  // tapped the widget, or ran it in Scriptable
+  // Tapped the widget, or ran it in Scriptable: the live map. ("point" from a shortcut: straight to pointing.)
+  const asked = JSON.stringify((typeof args !== "undefined" && (args.queryParameters || args.plainTexts)) || "");
+  await showMap(/point/i.test(asked));
 } else {
   const data = await gather();
   if (forSiri) {

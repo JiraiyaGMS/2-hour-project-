@@ -15,6 +15,7 @@ import time
 import urllib.error
 from datetime import date, timedelta
 
+from .airlines import IATA_TO_ICAO  # flight numbers use 2-letter codes; planes broadcast 3-letter ones
 from .adsb import Lookup, get_json, key_header, parse_aircraft
 from .airports import airports
 from .geo import distance_miles
@@ -24,19 +25,6 @@ log = logging.getLogger(__name__)
 CHECK_EVERY = 4 * 60
 FETCH_ERRORS = (urllib.error.URLError, TimeoutError, OSError, ValueError)
 
-# Flight numbers on tickets use the airline's 2-letter code; planes broadcast the 3-letter one.
-IATA_TO_ICAO = {
-    "AA": "AAL", "DL": "DAL", "UA": "UAL", "WN": "SWA", "AS": "ASA", "B6": "JBU", "NK": "NKS", "F9": "FFT",
-    "HA": "HAL", "G4": "AAY", "SY": "SCX", "MX": "MXY", "XP": "VXP", "QX": "QXE", "OO": "SKW", "YX": "RPA",
-    "MQ": "ENY", "9E": "EDV", "OH": "JIA", "YV": "ASH", "ZW": "AWI", "PT": "PDT", "C5": "UCA", "G7": "GJS",
-    "AC": "ACA", "WS": "WJA", "PD": "POE", "TS": "TSC", "AM": "AMX", "Y4": "VOI", "VB": "VIV",
-    "BA": "BAW", "VS": "VIR", "U2": "EZY", "FR": "RYR", "LH": "DLH", "AF": "AFR", "KL": "KLM", "IB": "IBE",
-    "EI": "EIN", "LX": "SWR", "OS": "AUA", "SK": "SAS", "AY": "FIN", "TP": "TAP", "AZ": "ITY", "TK": "THY",
-    "EK": "UAE", "QR": "QTR", "EY": "ETD", "SV": "SVA", "LY": "ELY", "QF": "QFA", "VA": "VOZ", "NZ": "ANZ",
-    "JL": "JAL", "NH": "ANA", "KE": "KAL", "OZ": "AAR", "CX": "CPA", "SQ": "SIA", "CI": "CAL", "BR": "EVA",
-    "CA": "CCA", "MU": "CES", "CZ": "CSN", "PR": "PAL", "AI": "AIC", "LA": "LAN", "AV": "AVA", "CM": "CMP",
-    "FX": "FDX", "5X": "UPS", "W8": "CJT", "K4": "CKS", "5Y": "GTI",
-}
 
 
 def callsign_for(text: str) -> str:

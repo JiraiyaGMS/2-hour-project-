@@ -214,6 +214,12 @@ def spoken_now(status: dict | None, now: float, clock_text) -> str:
         for h in (status.get("hovering") or [])[:1]:
             out.append(f"{h.get('say') or h['label']} is hovering nearby, about {max(1, _round(h['miles']))} "
                        f"mile{'s' if _round(h['miles']) > 1 else ''} away.")
+        n = status.get("nearest")
+        hovering = {h["label"] for h in status.get("hovering") or []}
+        if n and n.get("direction") in DIRECTION_WORDS and n["label"] not in hovering:
+            m, way = max(1, _round(n["miles"])), DIRECTION_WORDS[n["direction"]]
+            out.append(f"The nearest plane is {n.get('say') or n['label']}, about {m} mile{'s' if m > 1 else ''} "
+                       f"away: look {way}, about {n['up']}° up.")
         r = next((r for r in status.get("regulars") or [] if r["at"] > now - 10 * 60), None)
         if r:
             when = f"at about {clock_text(r['at'])}" if r["at"] > now else "about now"
@@ -221,7 +227,7 @@ def spoken_now(status: dict | None, now: float, clock_text) -> str:
         last = last_over(status, now)
         if last:
             out.append(f"The last one over was {last.get('say') or last['label']}, {ago(now - last['at'])}.")
-        elif isinstance(status.get("nearby"), int):
+        elif isinstance(status.get("nearby"), int) and not status.get("nearest"):
             n = status["nearby"]
             out.append("There's 1 plane within 10 miles." if n == 1 else f"There are {n} planes within 10 miles.")
     if status.get("transit"):

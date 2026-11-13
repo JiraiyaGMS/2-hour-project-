@@ -657,15 +657,51 @@ a swipe down.
 
 It asks adsb.lol from your phone every 15 seconds for the first 10 minutes,
 then every minute, and pauses for the day if the phone has asked about 400
-times (adsb.lol allows about 500 a day per connection). It doesn't need your
-Mac or the server.
+times (adsb.lol allows about 500 a day per connection; the widget, Siri and
+searches share that). It doesn't need your Mac or the server.
+
+**✈︎ Track a flight.** Tap it and type a flight number, an airline, an
+airport, or a mix, then **Search**:
+
+| You type | You get |
+| --- | --- |
+| `UA 1234`, `UAL1234`, `United 1234` | That flight, wherever it is in the world |
+| `N12345` | That plane (by its registration) |
+| `Southwest` | Southwest planes near you, nearest first |
+| `LAX`, `Los Angeles`, `Heathrow`, `John Wayne` | Planes near that airport: ones flying to or from it first |
+| `Southwest LAX`, `Delta JFK` | That airline's planes near that airport |
+
+The best 10 show first; **Load more** shows 10 more. Tap one to track it: the
+map follows it (green, with its trail) wherever it goes, and a card shows its
+route, height, speed and how far it is from you. **🔔 Notify me when it lands**
+asks planespotter on your Mac (or server) to follow it too, so you get
+notifications when it takes off, flies over home and lands. A flight that
+isn't in the air yet shows **🔔 Tell me when it flies**. Airlines and airports
+are found by searching the sky around you or the airport (adsb.lol has no
+worldwide list), and flight numbers worldwide. The first time you search for
+a small airport, the phone downloads the full airport list once (about 0.8
+MB) and keeps it.
+
+**🔭 Point.** Tap **Point**, then **Start** (the first time, allow the
+compass). Hold your phone up, look at the screen, and point the back of it at
+a plane: it tells you which plane it is (out loud too; tap **🔊** to mute),
+with its route, height and distance. If there's no plane that way, an arrow
+tells you which way to turn and how far to look up, to the next plane coming
+over you (or the one highest in the sky). Siri itself can't tell which way
+your phone is facing (iPhones don't give it the compass), so this is in the
+map. For a Siri shortcut straight to it, make a second shortcut with one
+action, **Open URLs**, set to `scriptable:///run/planespotter?point=1`, and
+name it **Point Planespotter** (*"Hey Siri, Point Planespotter"*; it opens
+the screen, then tap **Start**).
 
 ### Siri: "Hey Siri, Planespotter"
 
 Siri answers: *"Air Canada flight 791 from Montreal is due in about 4
 minutes, look to the east. Then Delta flight 573 from Atlanta in about 9
-minutes."* When nothing is due, it tells you your next regular flight and the
-last plane over.
+minutes."* When nothing is due, it tells you where the nearest plane is and
+which way to look (*"The nearest plane is Southwest flight 1672, about 6 miles
+away: look north-east, about 9° up"*), your next regular flight and the last
+plane over.
 
 Siri uses the planespotter script in Scriptable, so set up the widget first
 (above). Then:
