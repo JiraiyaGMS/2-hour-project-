@@ -24,15 +24,21 @@ from .airports import airports, route_from_path
 from .budget import ApiBudget
 from .collection import build_collection
 from .config import Config
-from .geo import bearing_deg, distance_miles, miles_to_nm, offset
+from .geo import bearing_deg, compass, distance_miles, miles_to_nm, offset
 from .heat import backfill as backfill_heat
 from .heat import heat_json
 from .fullpath import WAITING, FlightLookup, Point, as_path, simplify
 from .logos import LogoCache
+from .flow import flow_report
+from .follow import follow, following, unfollow
+from .games import bingo, old_friends, profile, quiz_answer, quiz_question, quiz_score, wrapped
 from .noise import build_noise, loudness, noise_csv
+from .predict import crossings, describe, glide
+from .schedule import delays_for, today_board
+from .space import SpaceWatch, pass_text
 from .noise import settle as settle_noise
 from .records import build_records, busiest, plane_of_the_day, streak
-from .sky import SkyWatch
+from .sky import SkyWatch, sky_note
 from .specials import short_label, special_reasons
 from .store import Store
 from .tls import TLSServer, ensure_certificate
@@ -49,6 +55,7 @@ STATIC_FILES = {
     "/sky": ("sky.html", "text/html; charset=utf-8"),
     "/sky.html": ("sky.html", "text/html; charset=utf-8"),
     "/sky.js": ("sky.js", "text/javascript; charset=utf-8"),
+    "/kiosk": ("index.html", "text/html; charset=utf-8"),
 }
 MAX_UPLOAD = 16 * 1024 * 1024  # bytes: a photo (sent as text) or a batch of noise levels
 MAX_PHOTO = 8 * 1024 * 1024
@@ -101,6 +108,7 @@ def pass_json(cfg: Config, row) -> dict[str, Any]:
         "alerted": bool(row["alerted"]), "quiet": cfg.in_quiet_hours(row["first_seen"]),
         "route_checked": bool(row["route_checked"]),
         "noise_db": loudness(row),  # how much louder than the background it was, if the noise meter was on
+        "offline": bool(row["offline"]),  # found afterwards by the offline log
     }
 
 
@@ -178,6 +186,8 @@ class MapApp:
         self.sky = sky if sky is not None else (SkyWatch(cfg) if cfg.weather else None)
         self.photo_dir = Path(cfg.db_path).parent / "photos"
         self.secure_url = ""  # the https address for phones, once it's running
+        self.space = SpaceWatch(cfg, self.store) if cfg.space_alerts else None
+        self.places: list[dict] = []  # the maps of your other places, if any: [{name, url}]
         self.clock = clock
         self.budget = budget
         self.feed = feed or shared_feed(cfg, budget)
@@ -218,12 +228,17 @@ class MapApp:
             "quiet_hours": [t.strftime("%H:%M") for t in cfg.quiet_hours] if cfg.quiet_hours else None,
             "home_elevation_ft": home_elevation_ft(cfg),
             "secure_url": self.secure_url,
+            "rush_count": cfg.rush_count,
+            "places": self.places,
         }
 
     def flights_json(self, days: float) -> dict[str, Any]:
         since = 0.0 if days <= 0 else self.clock() - days * 86400
         rows = self.store().recent_passes(since, limit=3000)
-        return {"flights": [pass_json(self.cfg, r) for r in rows]}
+        # How late or early your regular flights were, for the last couple of days.
+        recent = [r for r in rows if r["first_seen"] >= self.clock() - 2 * 86400]
+        delays = delays_for(self.store(), self.cfg, recent)
+        return {"flights": [{**pass_json(self.cfg, r), "delay": delays.get(r["id"])} for r in rows]}
 
     def flight_json(self, pass_id: int) -> dict[str, Any]:
         """One spotted flight, with its whole path when that's been looked up."""
@@ -325,7 +340,9 @@ class MapApp:
             if star:
                 star["yesterday"] = True
         return {**data, "records": build_records(rows), "busiest": busiest(rows, cfg), "star": star,
-                "streak": streak(store.eye_times(), cfg, today), "photos": len(store.photos())}
+                "streak": streak(store.eye_times(), cfg, today), "photos": len(store.photos()),
+                "bingo": bingo(store, cfg, now, home_elevation_ft(cfg)), "quiz": quiz_score(store),
+                "friends": old_friends(store), "year": str(today.year), "month": today.strftime("%Y-%m")}
 
     def yours_json(self) -> dict[str, Any]:
         """Your photos and the planes you've seen with your own eyes (for marking them on the map)."""
@@ -337,7 +354,7 @@ class MapApp:
                    "first_seen": r["first_seen"]} for r in store.photos()]
         since = self.clock() - 30 * 86400
         eyes = [[r["hex"], r["at"]] for r in store.db.execute("SELECT hex, at FROM eyes WHERE at >= ?", (since,))]
-        return {"photos": photos, "eyes": eyes,
+        return {"photos": photos, "eyes": eyes, "following": following(store),
                 "streak": streak(store.eye_times(), self.cfg, self.cfg.local(self.clock()).date())}
 
     def saw(self, body: dict) -> dict[str, Any]:
@@ -410,6 +427,99 @@ class MapApp:
     def noise_csv(self, days: int) -> str:
         return noise_csv(self.store(), self.cfg, self.clock(), days, home_elevation_ft(self.cfg))
 
+    def follow(self, body: dict) -> dict[str, Any]:
+        """Follow a flight (a notification when it lands), or stop following it."""
+        hex_code = clean_hex(body.get("hex", ""))
+        if not hex_code:
+            raise ValueError("which plane?")
+        if body.get("undo"):
+            unfollow(self.store(), hex_code)
+        else:
+            follow(self.store(), hex_code, str(body.get("callsign", ""))[:10].upper(), self.clock())
+        return self.yours_json()
+
+    def quiz_new(self, query: dict) -> dict[str, Any]:
+        """Ask "which kind of plane is it?" about a live plane."""
+        hex_code = clean_hex(query.get("hex", ""))
+        planes, _ = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
+        ac = next((a for a in planes or [] if a.hex == hex_code), None)
+        q = quiz_question(self.store(), hex_code, ac.type_code if ac else "", self.clock()) if ac else None
+        if q is None:
+            raise ValueError("can't make a question about that plane (its type isn't known)")
+        return {**q, "score": quiz_score(self.store())}
+
+    def quiz_reply(self, body: dict) -> dict[str, Any]:
+        return quiz_answer(self.store(), int(body.get("id") or 0), str(body.get("chosen", ""))[:60])
+
+    def flow_json(self) -> dict[str, Any]:
+        weather = self.sky.weather() if self.sky else None
+        return flow_report(self.store(), self.cfg, self.clock(), weather)
+
+    def space_json(self) -> dict[str, Any]:
+        """Satellite passes over home for the next 3 days, and tracks for any happening now or soon."""
+        if not self.space:
+            return {"passes": [], "tracks": []}
+        now = self.clock()
+        upcoming = self.space.upcoming()
+        tracks = []
+        for p in upcoming:
+            if p["start"] - now < 20 * 60 and p["end"] > now:
+                start = max(now - 30, p["start"] - 60)
+                tracks.append({"number": p["number"], "name": p["name"], "visible": p["visible"],
+                               "points": self.space.track(p["number"], start, p["end"] + 60 - start)})
+        return {"passes": [{**{k: p[k] for k in ("name", "number", "start", "end", "visible", "visible_from",
+                                                    "visible_to", "max_el", "max_t", "start_dir", "max_dir",
+                                                    "end_dir", "minutes")},
+                            "text": pass_text(p, self.cfg)} for p in upcoming], "tracks": tracks}
+
+    def coming(self, horizon: float = 900) -> list:
+        """Planes due over the zone soon (positions moved on to now), with their details."""
+        planes, fetched_at = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
+        now = self.clock()
+        ground = home_elevation_ft(self.cfg)
+        moved = [glide(ac, now - fetched_at + (ac.seen_pos or 0)) for ac in planes or []]
+        return crossings(self.cfg, moved, ground, horizon)
+
+    def next_json(self) -> dict[str, Any]:
+        """For the home-screen widget: the next few planes and when they'll be over."""
+        now = self.clock()
+        lookup = Lookup(self.store(), self.cfg.adsbdb_api)
+        report = self.sky.report() if self.sky else None
+        out = []
+        for c in self.coming()[:4]:
+            info = lookup.info(c.ac, now)
+            note = sky_note(report, c.ac.alt_ft, c.miles, home_elevation_ft(self.cfg))
+            out.append({"hex": c.ac.hex, "label": c.ac.label, "airline": info.airline,
+                        "route": f"{info.origin or '?'} → {info.destination or '?'}" if info.origin or info.destination else "",
+                        "eta_s": round(c.eta), "at": round(now + c.eta), "direction": compass(c.az), "up": round(c.up),
+                        "alt_ft": c.ac.alt_ft, "sky": note, "text": describe(c, info, note)})
+        last = self.store().recent_passes(0, limit=1)
+        return {"home": self.cfg.home_name, "time": now, "next": out,
+                "last": {"label": label_of(last[0]), "at": last[0]["first_seen"]} if last else None}
+
+    def now_text(self) -> str:
+        """What Siri says: the plane overhead or coming next."""
+        data = self.next_json()
+        if data["next"]:
+            text = data["next"][0]["text"]
+            if len(data["next"]) > 1:
+                more = len(data["next"]) - 1
+                text += f" {more} more plane{'s' if more != 1 else ''} after that in the next 15 minutes."
+            return text
+        last = data["last"]
+        if last:
+            ago = round((self.clock() - last["at"]) / 60)
+            when = f"{ago} minutes ago" if ago < 120 else self.cfg.local(last["at"]).strftime("at %I:%M %p").replace(" 0", " ")
+            return f"No planes are coming over {self.cfg.home_name} in the next 15 minutes. The last one was {last['label']}, {when}."
+        return f"No planes are coming over {self.cfg.home_name} in the next 15 minutes."
+
+    def scriptable(self, host: str) -> str:
+        """The widget script for the Scriptable app, with this map's address already filled in."""
+        script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
+        host = host if host and all(c.isalnum() or c in ".-:[]" for c in host) else f"localhost:{self.cfg.map_port}"
+        scheme = "https" if self.secure_url and host in self.secure_url else "http"
+        return script.replace("__PLANESPOTTER_URL__", f"{scheme}://{host}")
+
     def trace_json(self, hex_code: str) -> dict[str, Any]:
         """The flight a live plane is on, from takeoff until now."""
         hex_code = "".join(c for c in hex_code.lower() if c in "0123456789abcdef")[:6]
@@ -435,6 +545,10 @@ class MapApp:
                       registration="", type_code="", lat=lat, lon=lon, alt_ft=None, speed_kt=None, track=None)
         info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, self.clock())
         return asdict(info)
+
+
+def label_of(row) -> str:
+    return row["callsign"] or row["registration"] or row["hex"].upper()
 
 
 def clean_hex(text: str) -> str:
@@ -504,6 +618,27 @@ def make_handler(app: MapApp):
                     self.send_json(app.collection_json())
                 elif url.path == "/api/sky":
                     self.send_json(app.sky_json())
+                elif url.path == "/api/bingo":
+                    self.send_json(bingo(app.store(), app.cfg, app.clock(), home_elevation_ft(app.cfg)))
+                elif url.path == "/api/quiz":
+                    self.send_json(app.quiz_new(query))
+                elif url.path == "/api/wrapped":
+                    self.send_json(wrapped(app.store(), app.cfg, query.get("period", "")[:7] or
+                                           str(app.cfg.local(app.clock()).year), home_elevation_ft(app.cfg)))
+                elif url.path == "/api/plane":
+                    self.send_json(profile(app.store(), app.cfg, clean_hex(query.get("hex", ""))))
+                elif url.path == "/api/today":
+                    self.send_json(today_board(app.store(), app.cfg, app.clock()))
+                elif url.path == "/api/flow":
+                    self.send_json(app.flow_json())
+                elif url.path == "/api/space":
+                    self.send_json(app.space_json())
+                elif url.path == "/api/next":
+                    self.send_json(app.next_json())
+                elif url.path == "/api/now.txt":
+                    self.send(200, app.now_text().encode(), "text/plain; charset=utf-8")
+                elif url.path == "/scriptable.js":
+                    self.send(200, app.scriptable(self.headers.get("Host", "")).encode(), "text/plain; charset=utf-8")
                 elif url.path == "/api/yours":
                     self.send_json(app.yours_json())
                 elif url.path == "/api/noise":
@@ -554,7 +689,7 @@ def make_handler(app: MapApp):
         def do_POST(self):
             url = urllib.parse.urlsplit(self.path)
             routes = {"/api/saw": app.saw, "/api/photo": app.add_photo, "/api/photo/delete": app.delete_photo,
-                      "/api/noise/levels": app.add_noise}
+                      "/api/noise/levels": app.add_noise, "/api/follow": app.follow, "/api/quiz": app.quiz_reply}
             try:
                 if url.path not in routes:
                     self.send_json({"error": "not found"}, 404)
@@ -616,6 +751,7 @@ def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_loo
             f"It may already be running: try http://localhost:{port}"
         ) from None
     server.daemon_threads = True
+    server.app = app  # so the caller can tell it about other places' maps
     threading.Thread(target=server.serve_forever, name="map-server", daemon=True).start()
     port = server.server_address[1]
     urls = [f"http://localhost:{port}"]

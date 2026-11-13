@@ -304,6 +304,11 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
         + "</p>"
     ]
     text = [f"Daily sky report — {cfg.home_name}", ""]
+    for note in recap.notes:
+        html.append(f'<p style="font-size:14px;margin:10px 0 0">{escape(note)}</p>')
+        text.append(note)
+    if recap.notes:
+        text.append("")
 
     # Expected today
     html.append(_h2("Expected overhead today", today_label))
@@ -387,6 +392,13 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
             html.append(f'<p style="font-size:14px;margin:0 0 12px">{escape(note)}</p>')
             text.append(note)
 
+        offline = sum(1 for p in recap.passes if field(p, "offline", 0))
+        if offline:
+            note = (f"📴 {offline} plane{'s were' if offline != 1 else ' was'} found afterwards: planespotter "
+                    "wasn't running when they came over, so they were looked up in adsb.lol's records.")
+            html.append(f'<p style="font-size:14px;margin:0 0 12px">{escape(note)}</p>')
+            text.append(note)
+
         rows: list = []
         current_day = cfg.local(recap.start).date()
         for p in recap.passes[:DIGEST_ROW_LIMIT]:
@@ -396,6 +408,8 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
                 rows.append(_day(seen))  # a divider row at midnight
                 text.append(f"  -- {_day(seen)} --")
             moon = " 🌙" if cfg.in_quiet_hours(p["first_seen"]) else ""
+            if field(p, "offline", 0):
+                moon += " 📴"  # found afterwards by the offline log
             rows.append([
                 f'<span style="white-space:nowrap">{seen:%H:%M}{moon}</span>',
                 _flight_cell(label(p), short_route(p), p["airline"], aircraft(p), track_url(p["hex"])),

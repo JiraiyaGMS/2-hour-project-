@@ -194,18 +194,23 @@ class FlightLookup:
         hit = self.cache.get(url)
         if hit and now - hit[0] < 120:
             return hit[1]
-        if self.budget is not None:
-            if not self.budget.allow(kind):
-                raise OverBudget(kind)
-            self.budget.record("trace")
-        try:
-            pts = parse_trace(self.fetch(url))
-        except TraceNotFound:
-            pts = None
+        data = self.fetch_raw(hex_code, kind)
+        pts = parse_trace(data) if data else None
         if len(self.cache) > 40:
             self.cache.clear()
         self.cache[url] = (now, pts)
         return pts
+
+    def fetch_raw(self, hex_code: str, kind: str = "trace") -> dict | None:
+        """The aircraft's trace as adsb.lol sends it (one request), or None if it has none."""
+        if self.budget is not None:
+            if not self.budget.allow(kind):
+                raise OverBudget(kind)
+            self.budget.record("catchup" if kind == "catchup" else "trace")
+        try:
+            return self.fetch(trace_url(hex_code, self.api_base))
+        except TraceNotFound:
+            return None
 
     def flight(self, hex_code: str, t_from: float, t_to: float) -> tuple[list[Point] | None, bool]:
         """(points of the flight, whether it has finished), or (None, False) if not found."""

@@ -11,6 +11,7 @@ from html import escape
 from .config import Config
 from .emails import (INK, LINE, MUTED, Email, _day, _flight_cell, _h2, _page, _table, _tile, _two_line, aircraft,
                      fmt_alt, fmt_dist, label, short_route, track_url)
+from .catchup import offline_summary
 from .store import Store
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -31,6 +32,8 @@ class Week:
     rarest: tuple[object, int] | None = None    # (pass, how many times that type has ever been seen)
     firsts: list[tuple[object, str]] = field(default_factory=list)
     specials: list[tuple[str, int]] = field(default_factory=list)
+    offline: dict = field(default_factory=dict)  # planes found by the offline log (catchup.offline_summary)
+    games: list = field(default_factory=list)    # lines about bingo, guess the plane and punctuality
 
 
 def build_week(store: Store, cfg: Config, today: date) -> Week:
@@ -38,7 +41,8 @@ def build_week(store: Store, cfg: Config, today: date) -> Week:
     start = cfg.at(today - timedelta(days=7), cfg.digest_time)
     before = cfg.at(today - timedelta(days=14), cfg.digest_time)
     passes = store.passes_between(start, end)
-    week = Week(start=start, end=end, passes=passes, previous_count=len(store.passes_between(before, start)))
+    week = Week(start=start, end=end, passes=passes, previous_count=len(store.passes_between(before, start)),
+                offline=offline_summary(store, start, end), games=games_lines(store, cfg, start, end))
     if not passes:
         return week
 
@@ -67,6 +71,30 @@ def build_week(store: Store, cfg: Config, today: date) -> Week:
                             (start, end)).fetchall()
     week.specials = [(kinds.get(r[0], r[0]), r[1]) for r in rows]
     return week
+
+
+def games_lines(store, cfg, start: float, end: float) -> list[str]:
+    """Bingo, guess the plane and your regular flights' punctuality, as a few short lines."""
+    from .games import bingo, quiz_score
+    from .schedule import punctuality
+
+    lines = []
+    if store.passes_between(start, end):
+        card = bingo(store, cfg, end - 1)
+        lines.append(f"🎱 Spotting bingo: {card['filled']} of 9 squares"
+                     + (f", {card['lines']} line{'s' if card['lines'] != 1 else ''}" if card["lines"] else "")
+                     + (" (full house!)" if card["full_house"] else ""))
+    score = quiz_score(store, start)
+    if score["answered"]:
+        lines.append(f"🎯 Guess the plane: {score['right']} of {score['answered']} right ({score['percent']}%)")
+    p = punctuality(store, cfg, start, end)
+    if p:
+        best, worst = p["best"], p["worst"]
+        lines.append(f"⏱️ Your regular flights were on time {p['on_time']} of {p['flights']} times. "
+                     f"Most punctual: {best['callsign']} (usually within {abs(best['average'])} min). "
+                     + (f"Latest: {worst['callsign']} (on average {worst['average']} min late)."
+                        if worst["average"] > 10 and worst["callsign"] != best["callsign"] else ""))
+    return lines
 
 
 def weekly_email(week: Week, cfg: Config) -> Email:
@@ -126,6 +154,48 @@ def weekly_email(week: Week, cfg: Config) -> Email:
         html.append("".join(f'<p style="font-size:14px;margin:4px 0">{escape(k)}: <strong>{c}</strong></p>'
                             for k, c in week.specials))
         text += [f"{k}: {c}" for k, c in week.specials]
+
+    if week.games:
+        html.append(_h2("Games"))
+        html.append("".join(f'<p style="font-size:14px;margin:4px 0">{escape(x)}</p>' for x in week.games))
+        text += [""] + week.games
+
+    off = week.offline
+    if off and (off["found"] or off["off_s"] >= 3600):
+        hours = off["off_s"] / 3600
+        found = off["found"]
+        times = f" ({off['gaps']} times)" if off["gaps"] > 1 else ""
+        intro = f"planespotter wasn't running for {hours:.0f} hour{'s' if round(hours) != 1 else ''} this week{times}. "
+        if found:
+            intro += f"It looked those hours up in adsb.lol's records and found {len(found)} plane{'s' if len(found) != 1 else ''} that came over:"
+        else:
+            intro += "It found no planes over your zone in the part it could look up."
+        html.append(_h2("📴 Found while planespotter was off", f"{len(found)} plane{'s' if len(found) != 1 else ''}"))
+        html.append(f'<p style="font-size:14px;margin:0 0 8px">{escape(intro)}</p>')
+        text += ["", f"FOUND WHILE PLANESPOTTER WAS OFF: {len(found)}", intro]
+        if found:
+            rows = []
+            for p in found[:15]:
+                origin = p["origin_city"] or p["origin"]
+                rows.append([cfg.local(p["first_seen"]).strftime("%a %H:%M"),
+                             _flight_cell(label(p), short_route(p), p["airline"], aircraft(p), track_url(p["hex"])),
+                             _two_line(fmt_alt(p["closest_alt_ft"]), fmt_dist(p["closest_miles"]))])
+                text.append(f"  {cfg.local(p['first_seen']):%a %H:%M}  {label(p):<8} {short_route(p):<12} "
+                            f"{('from ' + origin) if origin else ''}")
+            html.append(_table(["When", "Flight", "Closest"], rows, right={2}))
+            if len(found) > 15:
+                html.append(f'<p style="font-size:13px;color:{MUTED}">…and {len(found) - 15} more.</p>')
+            origins = Counter(p["origin_city"] or p["origin"] for p in found if p["origin_city"] or p["origin"])
+            if origins:
+                where = ", ".join(f"{city} ({n})" for city, n in origins.most_common(6))
+                html.append(f'<p style="font-size:14px;margin:8px 0 0"><strong>Where they came from:</strong> {escape(where)}</p>')
+                text.append(f"Where they came from: {where}")
+        missed = (off["off_s"] - off["checked_s"]) / 3600
+        if missed >= 1:
+            note = (f"The other {missed:.0f} hour{'s' if round(missed) != 1 else ''} were too long ago to look up "
+                    "(adsb.lol remembers about a day), so start planespotter again within a day to catch everything.")
+            html.append(f'<p style="font-size:13px;color:{MUTED};margin:8px 0 0">{escape(note)}</p>')
+            text.append(note)
 
     if week.top_routes:
         html.append(_h2("Busiest routes overhead"))

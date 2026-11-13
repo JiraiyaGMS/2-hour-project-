@@ -39,6 +39,21 @@ overhead today, and a live 3D/2D map of the sky around you.
   can download.
 - **Your own receiver** (optional): plug in a cheap ADS-B radio for
   unlimited, real-time data.
+- **Offline log:** when planespotter wasn't running (Mac asleep, switched
+  off), it looks up the planes that came over meanwhile, up to about 20
+  hours back, and puts them in your reports marked 📴.
+- **Games:** a weekly **spotting bingo** card, **guess the plane**, **your
+  year (or month) in planes**, and a **profile** of every aircraft you've seen.
+- **Smarter predictions:** which way your airport is **landing today** and
+  what that means for you, whether your regular flights are **late or
+  early**, a **rush alert** when lots of planes are about to come over, and
+  **follow a flight** to get told when it lands.
+- **On your phone:** *"Hey Siri, what's that plane?"*, a **home-screen
+  widget** with a countdown, and **kiosk mode** for an old tablet or a TV.
+- **Space station passes:** when the ISS will fly over and be visible, with
+  a notification beforehand.
+- **More places:** watch your work or a relative's house too, and save a
+  day's **replay as a video**.
 - Free data and no API keys. Nothing extra to install besides Python.
 
 ---
@@ -254,6 +269,39 @@ browser on your Mac.
   lowest, closest, fastest, highest, longest flight, the plane you see most
   (your *old friend*), and the busiest day and hour. Tap one to see it.
 - **Noise** (fourth tab): see *Noise log* below.
+- **🛬 The runway line** under the weather says which way your nearest big
+  airport is landing (*LAX is landing towards the west, into a 12 kt west
+  wind*). After a few days of watching it adds what that means for you:
+  *about 6 planes an hour over you (1 an hour when it lands towards the east)*.
+  Airports land into the wind, so when the wind changes, so does your sky.
+- **Your regular flights today** (bottom of *In the air*): the flights that
+  come over most days, with their usual time and whether today's was on
+  time, late, early, still due, or hasn't shown up. Spotted flights by
+  regulars get an *on time* / *12 min late* badge too.
+- **🛰️ Space station and friends** (bottom of *In the air*): the next times
+  the space station (and China's Tiangong and Hubble) cross your sky where
+  you can see them. While one is overhead, the Look up! card points to it.
+- **🎯 Guess** on the Look up! card: before you look it up, guess what kind
+  of plane it is (Boeing 737, Airbus A320 family, E-Jet...) from four
+  choices. Your score is in Collection.
+- **🔔 Follow** on a plane that's flying: your phone gets a notification
+  when it lands, wherever that is (*DAL573 has landed in Atlanta (ATL)*).
+  Needs phone notifications set up.
+- **✈ This plane** on any flight's card: its profile. Every time you've
+  seen that aircraft, its routes, and the time it usually comes over.
+  *Collection → Old friends* lists the aircraft you see most.
+- **🎱 Spotting bingo** (Collection): a new card every Monday with 8 things to
+  spot (a 787, a cargo plane, a plane before 7 am...) picked from what flies
+  near you, plus a free square. Squares fill in by themselves; your score
+  is in the weekly email.
+- **✨ Your year in planes** and **this month in planes** (Collection): your
+  totals, top airline and aircraft, the farthest-away airport, the rarest
+  plane, busiest day, and a chart, with **↗ Share** for a picture.
+- **📴** marks planes the offline log found (see *The offline log* below).
+- **🎬 Save video** (in Replay): plays the day from the first plane to the
+  last and saves it as a video to share.
+- **Other places** (if you set some up): a picker next to your house's name
+  switches to that place's map.
 
 **On your phone:** when planespotter starts, it prints a second address
 like `http://192.168.1.23:8765`. Open that on your phone while it's on
@@ -359,6 +407,128 @@ that number is sent to planespotter, which keeps it for 3 days. The noise
 meter only works on the Mac itself (or on the secure https address);
 browsers block the microphone on plain addresses.
 
+## The offline log
+
+planespotter can only watch while it's running. When it starts again (or the
+Mac wakes up), it works out how long it was off and looks the gap up in
+adsb.lol's records:
+
+1. It asks adsb.lol for every plane within 250 nautical miles right now,
+   including ones parked at nearby airports.
+2. It picks the ones that could have come over: planes whose course leads
+   back past your house, planes that landed nearby, and planes you see
+   often.
+3. It looks up each one's recorded track and keeps every time it crossed
+   your zone while planespotter was off.
+
+These planes go in the daily and weekly emails, the map, the heat map and
+your collection, marked **📴 found while offline**. They don't get an alert
+each (they're long gone), but your phone gets one summary: *📴 23 planes
+came over while planespotter was off*. The weekly email has a section
+listing them and where they came from.
+
+You don't need to do anything: it happens by itself. Good to know:
+
+- adsb.lol only keeps about the **last 20 hours** of each plane. If
+  planespotter is off for longer, only the last 20 hours can be filled in
+  (the weekly email says how much was missed).
+- It can't find planes that have since landed far away or flown out of
+  range, so it finds most planes, not all. To catch everything, keep the
+  Mac awake while it runs, or run planespotter on a Raspberry Pi (see
+  *Other computers*).
+- It uses up to a fifth of the day's adsb.lol allowance, and slows down if
+  adsb.lol asks it to.
+
+## Siri: "What's that plane?"
+
+Ask Siri which plane is overhead (or coming next) and it answers: *"Delta
+flight 573 from Atlanta is coming over in about 40 seconds. Look
+south-east, 25 degrees up. It's at 3,400 feet."* Set it up once on your
+iPhone:
+
+1. Open the **Shortcuts** app and tap **+** to make a new shortcut.
+2. Tap **Add Action**, search for **Get Contents of URL**, and tap it.
+3. Tap the blue **URL** and type your map's phone address followed by
+   `/api/now.txt`, like `http://192.168.1.23:8765/api/now.txt` (the address
+   planespotter prints as *Map on your phone*).
+4. Tap the search bar at the bottom, search for **Speak Text**, and tap it.
+   It speaks the *Contents of URL* by itself.
+5. Tap the name at the top, choose **Rename**, call it **What's that plane**,
+   and tap **Done**.
+6. Say **"Hey Siri, what's that plane?"** (on your home Wi-Fi, with
+   planespotter running).
+
+## Home-screen widget (iPhone)
+
+A widget with the next planes due over your house and a live countdown:
+
+1. Install the free **Scriptable** app from the App Store.
+2. On your iPhone, on home Wi-Fi, open Safari and go to your map's phone
+   address followed by `/scriptable.js`, like
+   `http://192.168.1.23:8765/scriptable.js`. It shows a short script with
+   your address already filled in.
+3. Press and hold the text, tap **Select All**, then **Copy**.
+4. Open **Scriptable**, tap **+**, and paste. Tap the title at the top and
+   name it **planespotter**. Tap **▶** to try it, then **Done**.
+5. Go to your home screen, press and hold an empty spot, tap **Edit** (or
+   **+**), search for **Scriptable**, choose the small or medium size, and
+   tap **Add Widget**.
+6. Press and hold the new widget, tap **Edit Widget**, and set **Script**
+   to **planespotter**.
+
+The countdown ticks by itself; iPhone refreshes the list every few minutes.
+It works on your home Wi-Fi only (where it can reach your Mac).
+
+## Kiosk mode (an old tablet or a TV)
+
+Open `http://192.168.1.23:8765/kiosk` (your map's phone address plus
+`/kiosk`) on a tablet or a TV's browser: a full-screen map with a big clock,
+the Look up! card and the next planes with countdowns. Nothing to tap.
+
+- On an iPad, tap **Share → Add to Home Screen** so it opens full screen,
+  and set **Settings → Display & Brightness → Auto-Lock** to **Never**
+  while it's plugged in.
+- On an Android tablet, add it to the home screen from Chrome's menu, and
+  keep the screen on in the developer options or with a "stay awake" app.
+
+## Space station passes
+
+planespotter works out when the International Space Station (and China's
+Tiangong station and the Hubble telescope) fly over your house, using their
+published orbits. A pass is **visible** when the station is lit by the sun
+but your sky is dark, usually an hour or two after sunset or before
+sunrise: it looks like a very bright, steady star moving fast, with no
+blinking lights, and takes about 5 minutes to cross.
+
+- The map lists the next visible passes (bottom of *In the air*), and the
+  Look up! card points to the station while it's crossing.
+- Your phone gets a notification 10 minutes before each visible pass that
+  climbs at least 20° (not during quiet hours).
+- The morning email lists tonight's passes.
+- The sky view shows it too.
+
+`SPACE_ALERTS=false` in `.env` turns it off.
+
+## More places
+
+Watch somewhere else as well, like work or a relative's house. Each place
+gets its own alerts, daily and weekly emails, offline log, and map. Run
+`python3 -m planespotter setup` and fill in question 8, or add a line to
+`.env`:
+
+```
+PLACES=Work @ 47.6101,-122.3343 r2; Mum's house @ 51.5007,-0.1246
+```
+
+Each place is a name, `@`, its coordinates (from Google Maps, as in step 5),
+and optionally `r` and a radius in miles (otherwise it uses yours). Separate
+places with `;`. When planespotter starts it prints each place's map
+address (the second place's is port 8767, the next 8768...), and a picker on
+the map switches between them.
+
+All places share adsb.lol's daily allowance, so each one is checked less
+often: with a free key and two places, about every 4 minutes each.
+
 ---
 
 ## Phone notifications
@@ -384,6 +554,15 @@ your phone is on your home Wi-Fi).
 
 Anyone who knows your topic name could read your alerts, which is why it's
 long and random. Keep it to yourself; the alerts never say where you live.
+
+Besides the plane alerts, your phone also gets:
+
+- **🛫 Rush alerts** when 5 or more planes are about to come over in the next
+  15 minutes (at most one an hour; not in quiet hours). Change the number
+  with `RUSH_COUNT` in `.env`, or turn them off with `RUSH_ALERTS=false`.
+- **🛬 Landed** for flights you follow.
+- **🛰️ Space station** 10 minutes before a visible pass.
+- **📴 Found while offline**: a summary after planespotter has been off.
 
 ## Special planes
 
@@ -519,6 +698,12 @@ carries on by itself once adsb.lol allows more requests.
 | The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
 | The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
+| The offline log found nothing | It only looks back about 20 hours, and can't find planes that have since landed far away. Check the weekly email for how much it covered. |
+| Siri says it can't connect | Your phone must be on your home Wi-Fi, planespotter running, and the address in the shortcut must be the *Map on your phone* one plus `/api/now.txt`. |
+| The widget says *Can't reach planespotter* | Same as for Siri. The widget only works on your home Wi-Fi. |
+| No runway line | It needs a big airport within about 60 miles and planes seen near it. The "planes an hour" part appears after a few days of watching. |
+| No space station notifications | They need phone notifications set up, and only come for visible passes (dark sky, station in sunlight) that climb above 20°. Some weeks there are none. |
+| No rush alerts | They need phone notifications set up, and 5 planes (`RUSH_COUNT`) due within 15 minutes. |
 | No weather line | The nearest airport weather station may be far away or not reporting; it tries again every 10 minutes. `WEATHER=false` turns it off. |
 | *Your receiver isn't answering* | Open the receiver's address in a browser to check it's on, and check the address in setup. planespotter uses adsb.lol meanwhile. |
 | The map says *adsb.lol's daily limit reached* | The free allowance is used up for now; it carries on by itself. A free key doubles it (see above). |
@@ -648,6 +833,18 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   when it was closest (from its path), takes the loudest second within 75
   seconds of that, and compares it with the quieter moments in the 10
   minutes around it.
+- **The offline log** asks adsb.lol once for every plane within 250 nautical
+  miles, picks the ones whose course leads back past your house (or that
+  landed nearby, or that you see often), then looks up each one's track
+  (`/1/trace/full`) and checks it against your zone.
+- **The runway flow** comes from the direction of planes low (under 2,500 ft)
+  and close (within 10 km) to your nearest big airport, from the live feed
+  and from the whole flights of planes that crossed your zone. Each hour's
+  flow is matched with how many planes came over you in that hour.
+- **Satellite passes** use orbital elements from
+  [CelesTrak](https://celestrak.org) (refreshed twice a day) and the
+  standard SGP4 model, worked out on your Mac. A pass counts as visible when
+  the satellite is in sunlight and the sun is more than 6° below your horizon.
 - **The secure address** uses a certificate planespotter makes once with
   `openssl` (kept in the `https-cert` folder; remade if your Mac's network
   address changes).
@@ -674,3 +871,4 @@ python3 -m unittest discover -s tests
 - A tiny e-ink or LED display by the window showing the next plane over.
 - Smart lights (Philips Hue, Home Assistant) that flash when a plane is
   about to come over.
+- Wind forecasts, to predict tomorrow's runway direction (and your sky).

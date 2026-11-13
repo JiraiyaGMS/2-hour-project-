@@ -9,7 +9,9 @@ stop the email alerts, so everything that talks to adsb.lol shares one budget:
 * checking for planes over home gets most of it, spread evenly over the day,
   and faster while someone is looking at the live map;
 * whole-flight lookups get a quarter;
-* where planes are now (for the map) gets a little.
+* where planes are now (for the map) gets a little;
+* the offline log (planes that came over while planespotter was off) gets up
+  to a fifth, once, when it starts again.
 
 Usage is stored in the database, so restarts and a separate `map` window
 share the same count.
@@ -24,6 +26,7 @@ from pathlib import Path
 
 POLL_SHARE = 0.70      # spread evenly over the day for the alerts
 TRACE_SHARE = 0.25     # whole-flight lookups
+CATCHUP_SHARE = 0.20   # the offline log
 VIEWING_FAST = 30      # seconds between checks while someone is watching the live map
 VIEWING_UNTIL = 0.60   # ...as long as less than this much of the day's budget is used
 NEARLY_OUT = 0.97      # keep a little back for the person clicking around on the map
@@ -89,6 +92,8 @@ class ApiBudget:
         used = self.used()
         if kind == "trace":
             return used < self.limit * 0.90 and self.used("trace") < self.limit * TRACE_SHARE
+        if kind == "catchup":
+            return used < self.limit * 0.85 and self.used("catchup") < self.limit * CATCHUP_SHARE
         if kind == "positions":
             return used < self.limit * 0.85
         return used < self.limit * NEARLY_OUT  # "click": something the person asked for on the map

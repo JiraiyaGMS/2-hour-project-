@@ -83,6 +83,42 @@ CREATE TABLE IF NOT EXISTS photos (
 );
 CREATE INDEX IF NOT EXISTS photos_by_pass ON photos (pass_id);
 
+-- Times planespotter wasn't running, and what the offline log found for them.
+CREATE TABLE IF NOT EXISTS offline_gaps (
+    start        REAL NOT NULL,
+    end          REAL NOT NULL,
+    checked_from REAL NOT NULL,   -- adsb.lol only remembers about a day, so older parts can't be checked
+    found        INTEGER NOT NULL,
+    looked_up    INTEGER NOT NULL,
+    done_at      REAL NOT NULL
+);
+
+-- Guess the plane: the right answer, and what you chose.
+CREATE TABLE IF NOT EXISTS quiz (
+    id      INTEGER PRIMARY KEY,
+    hex     TEXT NOT NULL,
+    at      REAL NOT NULL,
+    answer  TEXT NOT NULL,
+    chosen  TEXT,
+    correct INTEGER
+);
+
+-- Flights you're following: a notification when each lands.
+CREATE TABLE IF NOT EXISTS follows (
+    hex       TEXT PRIMARY KEY,
+    callsign  TEXT NOT NULL DEFAULT '',
+    since     REAL NOT NULL,
+    airborne  INTEGER NOT NULL DEFAULT 0,   -- seen in the air since following (so a landing is a landing)
+    last_lat  REAL,
+    last_lon  REAL,
+    last_alt  INTEGER,
+    last_seen REAL
+);
+
+-- Which way the nearest big airport is landing, seen from planes coming in.
+CREATE TABLE IF NOT EXISTS flow_obs (t REAL NOT NULL, airport TEXT NOT NULL, heading REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS flow_obs_by_time ON flow_obs (t);
+
 -- Microphone levels from the noise meter: the loudest moment of each second, in dB (full scale).
 CREATE TABLE IF NOT EXISTS noise_levels (t INTEGER PRIMARY KEY, db REAL NOT NULL);
 
@@ -131,10 +167,14 @@ class Store:
             "noise_peak": "REAL",
             "noise_bg": "REAL",
             "noise_state": "INTEGER NOT NULL DEFAULT 0",  # 0 not yet, 1 measured, 2 no recording
+            # 1 = found afterwards by the offline log (planespotter wasn't running then)
+            "offline": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, kind in added.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE passes ADD COLUMN {name} {kind}")
+        if "callsign" in columns:  # for late/early: a flight's earlier days
+            self.db.execute("CREATE INDEX IF NOT EXISTS passes_by_callsign ON passes (callsign, first_seen)")
         self.db.commit()
 
     def close(self) -> None:
@@ -178,6 +218,17 @@ class Store:
             )
         self.db.commit()
         return int(row["id"]), False
+
+    def add_offline_pass(self, ac: Aircraft, first_seen: float, last_seen: float, distance: float,
+                         bearing: float, path: list) -> int:
+        """A pass found afterwards in adsb.lol's records (see catchup.py)."""
+        cur = self.db.execute(
+            "INSERT INTO passes (hex, callsign, registration, type_code, first_seen, last_seen, closest_miles, "
+            "closest_alt_ft, closest_bearing, speed_kt, track, path, offline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            (ac.hex, ac.callsign, ac.registration, ac.type_code, first_seen, last_seen, distance, ac.alt_ft,
+             bearing, ac.speed_kt, ac.track, json.dumps(path)))
+        self.db.commit()
+        return int(cur.lastrowid)
 
     def set_info(self, pass_id: int, info: FlightInfo) -> None:
         fields = asdict(info)

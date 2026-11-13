@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 import time
 import webbrowser
 from datetime import date
 from pathlib import Path
 
-from .adsb import Lookup
+from .adsb import Lookup, PositionLookup
+from .follow import start_follow_worker
+from .space import SpaceWatch
 from .config import DEFAULT_ENV, Config, ConfigError, fmt_clock_range
 from .emails import fmt_alt, test_email
 from .fullpath import FlightLookup, start_full_path_worker
@@ -25,15 +28,36 @@ from .webmap import (MapServerError, home_elevation_ft, make_budget, shared_feed
 from .wizard import Cancelled, Wizard
 
 
-def build(cfg: Config) -> Watcher:
+def build(cfg: Config, budget=None, share: int = 1) -> Watcher:
     store = Store(cfg.db_path)
-    budget = make_budget(cfg)
+    budget = budget or make_budget(cfg)
     flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
                if cfg.whole_flights else None)
-    return Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
-                   budget=budget, flights=flights, notifier=PushNotifier(cfg),
-                   sky=SkyWatch(cfg) if cfg.weather else None,
-                   ground_ft=home_elevation_ft(cfg))
+    watcher = Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
+                      budget=budget, flights=flights, notifier=PushNotifier(cfg),
+                      sky=SkyWatch(cfg) if cfg.weather else None,
+                      ground_ft=home_elevation_ft(cfg),
+                      space=SpaceWatch(cfg, lambda: store) if cfg.space_alerts else None)
+    watcher.share = share
+    return watcher
+
+
+def start_place(cfg: Config, budget, share: int, maps: list) -> threading.Thread:
+    """Watch one of your other places in the background, with its own map."""
+    def run():
+        watcher = build(cfg, budget=budget, share=share)
+        if cfg.map_enabled:
+            try:
+                server, urls = start_map_server(cfg, feed=watcher.feed, budget=budget, sky=watcher.sky)
+                server.app.places = maps
+                watcher.notifier.map_url = phone_url(urls)
+            except MapServerError as exc:
+                print(f"  (No map for {cfg.home_name}: {exc})")
+        watcher.run()
+
+    thread = threading.Thread(target=run, name=f"place-{cfg.home_name}", daemon=True)
+    thread.start()
+    return thread
 
 
 def cmd_setup(env_path: Path, args) -> int:
@@ -111,18 +135,28 @@ def print_map_urls(urls: list[str]) -> None:
 
 
 def cmd_watch(cfg: Config, args) -> int:
-    watcher = build(cfg)
+    places = cfg.place_configs()
+    watcher = build(cfg, share=1 + len(places))  # other places share adsb.lol's daily limit
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
+    maps = [{"name": c.home_name, "port": c.map_port} for c in [cfg, *places]] if places else []
     if cfg.map_enabled:
         try:
-            _, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget, sky=watcher.sky)
+            server, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget, sky=watcher.sky)
+            server.app.places = maps
             print_map_urls(urls)
             watcher.notifier.map_url = phone_url(urls)  # tapping a phone notification opens the map (home Wi-Fi)
+            for c in places:
+                print(f"  Map of {c.home_name}:{' ' * max(1, 14 - len(c.home_name))}http://localhost:{c.map_port}")
             print()
             if args.open:
                 webbrowser.open(urls[0])
         except MapServerError as exc:
             print(f"  (No map: {exc})\n")
+    start_follow_worker(cfg, PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=watcher.budget),
+                        watcher.notifier)
+    for c in places:
+        print(f"Also watching {c.home_name} ({c.radius_miles:g} mi zone).")
+        start_place(c, watcher.budget, 1 + len(places), maps)
     try:
         watcher.run()
     except KeyboardInterrupt:
@@ -142,6 +176,7 @@ def cmd_map(cfg: Config, args) -> int:
     start_feed_poller(cfg, feed, budget)  # no watcher here, so the map keeps its own planes fresh
     if cfg.whole_flights:
         start_full_path_worker(cfg, budget)
+    start_follow_worker(cfg, PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), PushNotifier(cfg))
     print("The live map is running. Press Ctrl+C to stop.\n")
     print_map_urls(urls)
     print("\nThe Spotted list fills up while `watch` is running.")

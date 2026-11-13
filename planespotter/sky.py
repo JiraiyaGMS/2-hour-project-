@@ -107,6 +107,8 @@ def parse_metar(m: dict, home_lat: float, home_lon: float) -> dict[str, Any]:
         "ceiling_ft": ceiling,  # above the ground
         "visibility_miles": _visibility_miles(m.get("visib")),
         "weather": m.get("wxString") or "",  # e.g. "-RA BR" (light rain, mist)
+        "wind_dir": m.get("wdir") if isinstance(m.get("wdir"), (int, float)) else None,  # where it blows from
+        "wind_kt": m.get("wspd") if isinstance(m.get("wspd"), (int, float)) else None,
         "raw": m.get("rawOb", ""),
     }
 

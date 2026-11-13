@@ -55,6 +55,7 @@ class WizardTests(unittest.TestCase):
             "y",                     # phone notifications
             "my-adsb-key",
             "",                      # no receiver
+            "Work @ 47.6101,-122.3343 r2",
         ])
         self.assertEqual((cfg.home_lat, cfg.home_lon), (51.50071, -0.12462))
         self.assertEqual(cfg.home_name, "My House")
@@ -69,11 +70,12 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(cfg.adsb_api_key, "my-adsb-key")
         self.assertTrue(cfg.ntfy_topic.startswith("planespotter-") and len(cfg.ntfy_topic) == 27)
         self.assertEqual(cfg.adsb_daily_limit, 1000)
+        self.assertEqual(cfg.place_configs()[0].home_name, "Work")
         if os.name == "posix":
             self.assertEqual(stat.S_IMODE(self.env.stat().st_mode), 0o600)
 
     def test_defaults_and_no_email(self):
-        cfg = self.run_wizard(["40.7, -74.0", "", "", "", "", "", "", "", "", ""])
+        cfg = self.run_wizard(["40.7, -74.0", "", "", "", "", "", "", "", "", "", ""])
         self.assertEqual(cfg.home_name, "Home")
         self.assertEqual(cfg.radius_miles, 3)
         self.assertIsNone(cfg.max_altitude_ft)
@@ -83,7 +85,7 @@ class WizardTests(unittest.TestCase):
 
     def test_bad_answers_are_asked_again(self):
         ask = scripted(["my house", "51.5 -0.1", "", "zero", "5", "", "late", "none", "", "nope", "", "", "",
-                        "not-a-url", ""])
+                        "not-a-url", "", "Work at 1,2", ""])
         wizard = Wizard(self.env, ask=ask, ask_secret=lambda p: "")
         wizard.save(wizard.run())
         cfg = Config.load(self.env)
@@ -92,13 +94,14 @@ class WizardTests(unittest.TestCase):
         self.assertIsNone(cfg.quiet_hours)
         self.assertTrue(cfg.dry_run)
         self.assertEqual(sum("Coordinates" in p for p in ask.prompts), 2)
+        self.assertEqual(sum("Other places" in p for p in ask.prompts), 2)  # asked again after a bad answer
 
     def test_rerunning_keeps_existing_answers_and_extra_settings(self):
-        self.run_wizard(["51.5, -0.1", "Flat", "4", "", "", "08:30", "me@icloud.com", "", "y", "", ""])
+        self.run_wizard(["51.5, -0.1", "Flat", "4", "", "", "08:30", "me@icloud.com", "", "y", "", "", ""])
         with self.env.open("a") as fh:
             fh.write("POLL_SECONDS=45\n")
         topic = Config.load(self.env).ntfy_topic
-        again = Wizard(self.env, ask=scripted([""] * 11), ask_secret=lambda p: "")
+        again = Wizard(self.env, ask=scripted([""] * 12), ask_secret=lambda p: "")
         again.save(again.run())
         cfg = Config.load(self.env)
         self.assertEqual(cfg.home_name, "Flat")

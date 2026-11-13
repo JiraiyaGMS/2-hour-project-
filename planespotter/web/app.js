@@ -84,6 +84,10 @@
     yours: { photos: [], eyes: [], streak: null },  // your photos and "I saw it" planes
     noise: null,                // the noise tab (api/noise)
     noiseDays: saved.get('noiseDays', 30),
+    flow: null,                 // which way the airport is landing (api/flow)
+    today: null,                // your regular flights today: on time, late... (api/today)
+    space: null,                // space station passes and tracks (api/space)
+    quiz: null,                 // the question you're answering
   };
 
   // ---------- small helpers ----------
@@ -414,15 +418,19 @@
     const time = state.sort === 'newest' ? fmtTime(f.first_seen)
       : new Date(f.first_seen * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' });
     return `<button class="item${selected}" data-kind="history" data-key="${f.id}" role="listitem">
-      <div class="time">${time}${f.quiet ? '<br>🌙' : ''}</div>
+      <div class="time">${time}${f.quiet ? '<br>🌙' : ''}${f.offline ? '<br><span title="Found afterwards: planespotter wasn’t running then">📴</span>' : ''}</div>
       ${logo(f.callsign)}
       <div class="main">
-        <div class="title"><span class="callsign">${esc(label(f))}</span>${isFlying(f.id) ? '<span class="badge air">In the air</span>' : ''}<span class="route">${esc(routeShort(f))}</span></div>
+        <div class="title"><span class="callsign">${esc(label(f))}</span>${isFlying(f.id) ? '<span class="badge air">In the air</span>' : ''}${delayBadge(f.delay)}<span class="route">${esc(routeShort(f))}</span></div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
       <div class="meta"><div class="alt">${fmtAlt(f.closest_alt_ft)}</div><div class="dist">${fmtDist(f.closest_miles)} ${compass(f.bearing)}</div></div>
     </button>`;
   }
+
+  /** "12 min late" / "on time" for your regular flights. */
+  const delayBadge = (d) => (d == null ? '' : Math.abs(d) <= 10 ? '<span class="badge ok">on time</span>'
+    : `<span class="badge ${d > 0 ? 'late' : 'ok'}">${Math.abs(d)} min ${d > 0 ? 'late' : 'early'}</span>`);
 
   const empty = (text) => `<div class="empty">${text}</div>`;
   const moreButton = (shown, total) =>
@@ -444,14 +452,16 @@
         .filter((w) => w.flying && !nearby.has(w.hex))
         .map((w) => ({ w, f: flightById(w.id) }))
         .filter(({ f }) => f && matches(f));
+      const extra = state.query ? '' : extraLiveSections();
       if (!items.length && !away.length) {
         el.innerHTML = empty(state.query ? 'No planes in the air match your search.'
-          : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.');
+          : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.') + extra;
         render();
         return;
       }
       el.innerHTML = items.slice(0, state.listLimit).map(liveItem).join('') + moreButton(state.listLimit, items.length)
-        + (away.length ? `<div class="list-section">Went over you · still flying</div>${away.map(awayItem).join('')}` : '');
+        + (away.length ? `<div class="list-section">Went over you · still flying</div>${away.map(awayItem).join('')}` : '')
+        + extra;
     } else {
       updateHistoryView();
       const items = state.historyView;
@@ -689,10 +699,14 @@
     const at = thing.plane ? Date.now() / 1000 : thing.flight.first_seen;
     const recent = Date.now() / 1000 - at < 7 * 86400;
     const seen = sawIt(hex, at);
+    const flying = thing.plane ? !thing.lost : isFlying(thing.flight.id);
+    const known = thing.flight || state.flights.some((f) => f.hex === hex);
     return `<div class="actions">
       ${recent ? `<button class="act${seen ? ' done' : ''}" data-action="saw" data-at="${at}">${seen ? '✓ You saw it' : '👀 I saw it'}</button>` : ''}
+      ${flying ? `<button class="act${isFollowing(hex) ? ' done' : ''}" data-action="follow" title="A notification on your phone when it lands">${isFollowing(hex) ? '🔔 Following' : '🔔 Follow'}</button>` : ''}
       <button class="act" data-action="add-photo">📷 Add photo</button>
-      <button class="act" data-action="share">↗ Share</button></div>`;
+      <button class="act" data-action="share">↗ Share</button>
+      ${known ? '<button class="act" data-action="profile">✈ This plane</button>' : ''}</div>`;
   }
 
   let lastDetailHtml = '';
@@ -737,6 +751,8 @@
           ${stat(`Seen ${['Today', 'Yesterday'].includes(dayLabel(f.first_seen)) ? dayLabel(f.first_seen).toLowerCase() : dayLabel(f.first_seen)}`, fmtTime(f.first_seen))}${stat('Closest', `${fmtDist(f.closest_miles)} ${compass(f.bearing)}`)}${stat('Altitude', fmtAlt(f.closest_alt_ft))}
         </div>
         <div class="note">${esc(why)}</div>
+        ${f.offline ? '<div class="note">📴 Found afterwards: planespotter wasn’t running when it came over, so it was looked up in adsb.lol’s records.</div>' : ''}
+        ${f.delay != null ? `<div class="note">⏱️ A regular: ${esc(Math.abs(f.delay) <= 10 ? 'on time' : `${Math.abs(f.delay)} min ${f.delay > 0 ? 'late' : 'early'}`)} compared with its usual time.</div>` : ''}
         ${f.noise_db != null ? `<div class="note">🎙️ ${esc(`+${f.noise_db} dB louder than the background`)}</div>` : ''}
         ${wholeNote()}
         ${actionsHtml(thing)}
@@ -951,6 +967,18 @@
   let lastLookUpHtml = '';
   function renderLookUp(now) {
     const el = $('#lookup');
+    const sat = state.replay.on ? null : satTarget();
+    if (sat) {
+      // The space station (or another bright satellite) is crossing your sky right now.
+      const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
+        + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(sat.az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
+        <div class="what"><div class="head">Look up · <strong>${compass(sat.az)}, ${Math.round(sat.el)}° up</strong></div>
+        <div class="sub"><span>🛰️ <strong>${esc(sat.name)}</strong> is crossing your sky now: a bright, steady star moving fast</span></div></div>`;
+      if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
+      el.hidden = false;
+      el.onclick = null;
+      return;
+    }
     const target = state.replay.on ? null : lookUpTarget(now);
     if (!target) { el.hidden = true; lastLookUpHtml = ''; return; }
     const { p, miles, az, up, eta } = target;
@@ -963,7 +991,8 @@
       <div class="what"><div class="head">Look up · <strong>${compass(az)}, ${Math.round(up)}° up</strong></div>
       <div class="sub">${logo(p.callsign)}<span><strong>${esc(label(p))}</strong> ${esc(routeShort(info))} · ${when} · ${esc(fists(up))}</span></div>
       ${note ? `<div class="sky-note">${esc(note)}</div>` : ''}</div>
-      <button class="saw${seen ? ' done' : ''}" data-saw="${esc(p.hex)}" data-callsign="${esc(p.callsign || '')}" title="Tap when you've spotted it in the sky">${seen ? '✓ Seen' : '👀 I saw it'}</button>`;
+      <div class="lookup-buttons"><button class="saw${seen ? ' done' : ''}" data-saw="${esc(p.hex)}" data-callsign="${esc(p.callsign || '')}" title="Tap when you've spotted it in the sky">${seen ? '✓ Seen' : '👀 I saw it'}</button>
+      ${p.type ? `<button class="saw guess" data-guess="${esc(p.hex)}" title="Guess what kind of plane it is">🎯 Guess</button>` : ''}</div>`;
     if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
     el.hidden = false;
     el.onclick = (e) => { if (!e.target.closest('.saw')) select('live', p.hex); };
@@ -1580,10 +1609,324 @@
       ? `<div class="gallery">${photos.slice(0, 60).map((ph) => `<button data-view-photo="${ph.id}" title="${esc(ph.callsign || ph.hex)}"><img src="photo/${ph.id}-thumb.jpg" alt="${esc(ph.callsign || '')}" loading="lazy"></button>`).join('')}</div>`
       : '<p class="csub">Select a plane and tap “📷 Add photo” to keep your own pictures of it here.</p>';
     return {
-      top: starHtml + streak,
+      top: starHtml + streak + `<div class="wrapped-links">
+          <button class="btn ghost" data-wrapped="${esc(c.year)}">✨ Your ${esc(c.year)} in planes</button>
+          <button class="btn ghost" data-wrapped="${esc(c.month)}">${esc(new Date(`${c.month}-15T12:00:00`).toLocaleDateString([], { month: 'long' }))} in planes</button></div>`
+        + bingoHtml(c.bingo)
+        + (c.quiz && c.quiz.answered ? `<div class="ctiles"><div class="ctile"><div class="k">🎯 Guess the plane</div><div class="v">${c.quiz.right} / ${c.quiz.answered}</div>
+            <div class="note">${c.quiz.percent}% right · best run ${c.quiz.best_run}</div></div></div>` : ''),
       records: recs || busy ? `<h3>Records</h3>${recs}${busy}` : '',
-      photos: `<h3>Your photos <span>${photos.length}</span></h3>${gallery}`,
+      photos: `<h3>Your photos <span>${photos.length}</span></h3>${gallery}`
+        + ((c.friends || []).length ? `<h3>Old friends <span>planes you see again and again</span></h3>` + c.friends.map((f) => `
+          <button class="crow flight" data-profile="${esc(f.hex)}">${logo(f.callsign)}<span class="cname"><strong>${esc(f.registration || f.callsign)}</strong>
+          <span class="muted">${esc([f.aircraft, f.airline].filter(Boolean).join(' · '))}</span></span><span class="cnum">${f.times}×</span></button>`).join('') : ''),
     };
+  }
+
+  // ---------- runway flow, today's regulars, space station ----------
+  async function loadFlow() {
+    try { state.flow = await getJSON('api/flow'); } catch { /* keep the last one */ }
+    const el = $('#flow-line');
+    const text = state.flow && state.flow.text;
+    el.hidden = !text;
+    if (text) { el.textContent = `🛬 ${text}`; el.title = 'Worked out from planes landing and taking off near the airport'; }
+  }
+
+  async function loadToday() {
+    try { state.today = await getJSON('api/today'); } catch { /* keep the last one */ }
+    if (state.tab === 'live') renderListSoon();
+  }
+
+  async function loadSpace() {
+    try {
+      const data = await getJSON('api/space');
+      const t = Date.now() / 1000;
+      for (const tr of data.tracks) tr.loadedAt = t;
+      state.space = data;
+    } catch { /* keep the last one */ }
+    if (state.tab === 'live') renderListSoon();
+  }
+
+  const clockTime = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  function dayWord(ts) {
+    const d = dayLabel(ts);
+    const h = new Date(ts * 1000).getHours();
+    if (d === 'Today') return h >= 17 ? 'Tonight' : 'Today';
+    if (d === 'Yesterday') return d;
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    return sameDay(new Date(ts * 1000), tomorrow) ? (h >= 17 ? 'Tomorrow night' : 'Tomorrow') : d;
+  }
+
+  /** "Due today" and "space station" sections at the bottom of In the air. */
+  function extraLiveSections() {
+    let html = '';
+    const b = state.today;
+    if (b && b.flights && b.flights.length) {
+      const icon = { seen: '✓', due: '🕒', late: '⏳', missing: '—' };
+      html += `<div class="list-section">Your regular flights today</div>` + b.flights.map((f) => `
+        <div class="reg ${f.state}"${f.id ? ` data-open-flight="${f.id}"` : ''}><span class="t">${esc(f.usual)}</span>
+          ${logo(f.callsign)}<span class="who"><strong>${esc(f.callsign)}</strong> <span class="muted">${esc(f.origin && f.destination ? `${f.origin} → ${f.destination}` : f.airline || '')}</span></span>
+          <span class="st">${icon[f.state] || ''} ${esc(f.text)}</span></div>`).join('');
+    }
+    const passes = ((state.space && state.space.passes) || []).filter((p) => p.visible && p.max_el >= 15).slice(0, 3);
+    if (passes.length) {
+      html += '<div class="list-section">🛰️ Space station and friends: when to look</div>' + passes.map((p) => `
+        <div class="reg sat"><span class="t">${esc(clockTime(p.visible_from || p.start))}</span>
+          <span class="who"><strong>${esc(p.name)}</strong> <span class="muted">${esc(dayWord(p.visible_from || p.start))}</span></span>
+          <span class="st">${esc(p.start_dir)} → ${esc(p.end_dir)}, up to ${p.max_el}°</span></div>`).join('')
+        + '<p class="hint">A bright, steady star moving fast across the sky, with no blinking lights.</p>';
+    }
+    return html;
+  }
+
+  /** A satellite crossing your sky right now (visible), from its track: where to look. */
+  function satTarget() {
+    const now = Date.now() / 1000;
+    for (const tr of (state.space && state.space.tracks) || []) {
+      if (!tr.visible) continue;
+      const pts = tr.points;
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i][0] < now) continue;
+        const [t0, az0, el0] = pts[i - 1], [t1, az1, el1] = pts[i];
+        const k = (now - t0) / Math.max(1, t1 - t0);
+        if (k < 0 || k > 1) break;
+        let daz = az1 - az0; if (daz > 180) daz -= 360; if (daz < -180) daz += 360;
+        const az = (az0 + daz * k + 360) % 360, el = el0 + (el1 - el0) * k;
+        return el >= 8 ? { name: tr.name, az, el, number: tr.number } : null;
+      }
+    }
+    return null;
+  }
+
+  // ---------- follow a flight ----------
+  const isFollowing = (hex) => (state.yours.following || []).some((f) => f.hex === hex);
+
+  async function toggleFollow(hex, callsign) {
+    const undo = isFollowing(hex);
+    try { state.yours = await postJSON('api/follow', { hex, callsign, undo }); }
+    catch (err) { toast(`Couldn’t do that: ${err.message}`); return; }
+    lastDetailHtml = '';
+    renderDetail();
+    toast(undo ? 'Stopped following' : '🔔 Following: you’ll get a notification on your phone when it lands');
+  }
+
+  // ---------- guess the plane ----------
+  async function startQuiz(hex) {
+    let q;
+    try { q = await getJSON(`api/quiz?hex=${encodeURIComponent(hex)}`); }
+    catch (err) { toast(err.message); return; }
+    state.quiz = { ...q, hex };
+    const p = state.live.find((x) => x.hex === hex);
+    const where = p ? `${compass(p.bearing)} of you, ${fmtAlt(p.alt_ft)}` : '';
+    openOverlay(`<div class="quiz"><div class="k">🎯 Guess the plane</div>
+      <h2>What kind of plane is ${esc(p ? label(p) : 'it')}?</h2>
+      <p class="muted">Look up (${esc(where)}) and pick one. Score so far: ${q.score.right} of ${q.score.answered}.</p>
+      <div class="quiz-options">${q.options.map((o) => `<button class="btn ghost" data-quiz-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
+      <div id="quiz-result"></div></div>`);
+  }
+
+  async function answerQuiz(chosen) {
+    const q = state.quiz;
+    if (!q) return;
+    let r;
+    try { r = await postJSON('api/quiz', { id: q.id, chosen }); } catch (err) { toast(err.message); return; }
+    for (const b of document.querySelectorAll('[data-quiz-answer]')) {
+      b.disabled = true;
+      b.classList.toggle('right', b.dataset.quizAnswer === r.answer);
+      b.classList.toggle('wrong', b.dataset.quizAnswer === chosen && !r.correct);
+    }
+    const p = state.live.find((x) => x.hex === q.hex);
+    const info = p ? infoFor(p) || {} : {};
+    $('#quiz-result').innerHTML = `<p class="quiz-verdict">${r.correct ? '✓ Right!' : '✗ Not quite.'} It's ${esc(info.aircraft_desc || r.answer)}${info.airline ? ` (${esc(info.airline)})` : ''}.</p>
+      <p class="muted">Score: ${r.score.right} of ${r.score.answered}${r.score.run > 1 ? ` · ${r.score.run} right in a row` : ''}</p>`;
+    state.quiz = null;
+  }
+
+  // ---------- spotting bingo, your year, plane profiles ----------
+  function bingoHtml(b) {
+    if (!b) return '';
+    const lit = new Set(b.line_cells.flat());
+    return `<h3>Spotting bingo <span>${b.filled} of 9${b.lines ? ` · ${b.lines} line${b.lines === 1 ? '' : 's'}` : ''}</span></h3>
+      <div class="bingo">${b.squares.map((sq, i) => `<div class="sq${sq.by ? ' hit' : ''}${lit.has(i) ? ' line' : ''}"
+        ${sq.by ? `data-open-flight="${sq.by.id}" title="${esc(sq.by.label)}, ${esc(shortWhen(sq.by.when))}"` : ''}>
+        <div class="e">${sq.emoji}</div><div class="x">${esc(sq.text)}</div>${sq.by ? `<div class="by">${esc(sq.by.label)}</div>` : ''}</div>`).join('')}</div>
+      <p class="hint">A new card every Monday. Squares fill in by themselves as planes come over.${b.full_house ? ' 🎉 Full house!' : ''}</p>`;
+  }
+
+  async function openWrapped(period) {
+    let w;
+    try { w = await getJSON(`api/wrapped?period=${encodeURIComponent(period)}`); } catch (err) { toast(err.message); return; }
+    state.wrappedData = w;
+    if (!w.planes) { openOverlay(`<div class="wrapped"><h2>${esc(w.name)} in planes</h2><p class="muted">Nothing spotted yet.</p></div>`); return; }
+    const big = (k, v, note = '') => `<div class="wt"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>${note ? `<div class="n">${esc(note)}</div>` : ''}</div>`;
+    const tips = w.chart.map((n, i) => `${w.year ? w.ticks[i] : `${w.ticks[i]} ${w.name.split(' ')[0]}`} · ${n} plane${n === 1 ? '' : 's'}`);
+    const ticks = w.year ? w.ticks.map((t, i) => [i, t]).filter(([i]) => i % 2 === 0)
+      : w.ticks.map((t, i) => [i, t]).filter(([i]) => i % 7 === 0);
+    openOverlay(`<div class="wrapped">
+      <div class="k">✈ planespotter</div><h2>${esc(w.name)} in planes</h2>
+      <div class="wgrid">
+        ${big('Planes over you', w.planes.toLocaleString())}
+        ${big('Airlines', w.airlines, w.new_airlines ? `${w.new_airlines} new` : '')}
+        ${big('Aircraft types', w.types, w.new_types ? `${w.new_types} new` : '')}
+        ${big('Countries', w.countries)}
+        ${w.top_airline ? big('Top airline', w.top_airline[0], `${w.top_airline[1]} flights`) : ''}
+        ${w.top_type ? big('Top aircraft', w.top_type[0], `${w.top_type[1]} times`) : ''}
+        ${w.top_route ? big('Busiest route', w.top_route[0], `${w.top_route[1]} flights`) : ''}
+        ${w.farthest ? big('Came the farthest', `${w.farthest.city} (${w.farthest.code})`, `${w.farthest.miles.toLocaleString()} mi · ${w.farthest.label}`) : ''}
+        ${w.rarest ? big('Rarest', w.rarest.aircraft, `${w.rarest.label} · seen ${w.rarest.times}×`) : ''}
+        ${big('Busiest day', new Date(`${w.busiest_day.date}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }), `${w.busiest_day.count} planes`)}
+        ${big('Favourite hour', `${String(w.favourite_hour).padStart(2, '0')}:00`)}
+        ${big('Old friend', w.regular.label, `${w.regular.times} visits`)}
+        ${w.lowest ? big('Lowest', w.lowest.alt, w.lowest.label) : ''}
+        ${big('At night', w.night)}
+        ${big('Seen with your own eyes', w.eyes)}
+        ${w.quiz.answered ? big('Guess the plane', `${w.quiz.right} / ${w.quiz.answered}`) : big('Your photos', w.photos)}
+      </div>
+      <h3>${w.year ? 'Planes by month' : 'Planes by day'}</h3>
+      ${columnChart(w.chart, tips, ticks)}
+      ${w.offline ? `<p class="muted">Includes ${w.offline} found while planespotter was off 📴</p>` : ''}
+      <div class="overlay-actions" style="margin-top:12px"><button class="btn" data-action="share-wrapped">↗ Share</button></div>
+    </div>`, true);
+  }
+
+  async function shareWrapped() {
+    const w = state.wrappedData;
+    if (!w) return;
+    const W = 1080, H = 1350, ACC = '#ffb020', MUTED = '#9aa7b6';
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    const bg = g.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, '#101826'); bg.addColorStop(1, '#070a0e');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    fitText(g, `${w.name} in planes`, 80, 150, 84, 800, W - 160, '#ffffff');
+    fitText(g, `${w.planes.toLocaleString()}`, 80, 330, 200, 800, W - 160, ACC);
+    fitText(g, 'planes flew over my house', 80, 400, 44, 600, W - 160, '#e8edf3');
+    const rows = [
+      ['Airlines', String(w.airlines)], ['Aircraft types', String(w.types)], ['Countries', String(w.countries)],
+      w.top_airline ? ['Top airline', w.top_airline[0]] : null, w.top_type ? ['Top aircraft', w.top_type[0]] : null,
+      w.farthest ? ['Came the farthest', `${w.farthest.city} · ${w.farthest.miles.toLocaleString()} mi`] : null,
+      w.rarest ? ['Rarest', w.rarest.aircraft] : null,
+    ].filter(Boolean);
+    rows.forEach(([k, v], i) => {
+      const y = 520 + i * 105;
+      g.font = `700 26px ${CARD_FONT}`; g.fillStyle = MUTED; g.fillText(k.toUpperCase(), 80, y);
+      fitText(g, v, 80, y + 50, 46, 700, W - 160, '#ffffff');
+    });
+    const max = Math.max(1, ...w.chart), bw = (W - 160) / w.chart.length;
+    w.chart.forEach((n, i) => {
+      const h = (n / max) * 120;
+      g.fillStyle = ACC; roundRect(g, 80 + i * bw + 2, 1260 - h, Math.max(2, bw - 4), Math.max(2, h), 4); g.fill();
+    });
+    g.font = `800 28px ${CARD_FONT}`; g.fillStyle = MUTED; g.fillText('planespotter', W - 80 - g.measureText('planespotter').width, 1312);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const file = new File([blob], `${w.name} in planes.png`, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: `${w.name} in planes` }); return; } catch (err) { if (err.name === 'AbortError') return; }
+    }
+    const url = URL.createObjectURL(blob);
+    openOverlay(`<img class="share-card" data-blob="1" src="${url}" alt="">
+      <div class="overlay-row"><div class="muted">Save the picture, then send it however you like.</div>
+      <div class="overlay-actions"><a class="btn" href="${url}" download="${esc(file.name)}">Download</a></div></div>`);
+  }
+
+  async function openProfile(hex) {
+    let p;
+    try { p = await getJSON(`api/plane?hex=${encodeURIComponent(hex)}`); } catch (err) { toast('You haven’t spotted this plane over your zone yet.'); return; }
+    openOverlay(`<div class="profile">
+      ${p.photo_url ? `<img class="big-photo" src="${esc(p.photo_url)}" alt="">` : ''}
+      <div class="title-row" style="margin-top:10px">${logo(p.callsign, true)}<div><h2>${esc(p.registration || p.hex.toUpperCase())}</h2>
+        <div class="muted">${esc([p.aircraft, p.airline || p.owner].filter(Boolean).join(' · '))}${p.country ? ` · ${p.country.flag} ${esc(p.country.name)}` : ''}</div></div></div>
+      <div class="stats">${stat('Seen', `${p.times} time${p.times === 1 ? '' : 's'}`)}${stat('First', new Date(p.first_seen * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }))}${stat('Usually', `${String(p.usual_hour).padStart(2, '0')}:00`)}</div>
+      ${p.routes.length ? `<h3>Routes</h3>${p.routes.map(([r, n]) => `<div class="crow"><span class="cname">${esc(r)}</span><span class="cnum">${n}</span></div>`).join('')}` : ''}
+      <h3>Every visit</h3>${p.visits.map((v) => `<button class="crow flight" data-open-flight="${v.id}"><span class="cname"><strong>${esc(shortWhen(v.when))}</strong>
+        <span class="muted">${esc([v.callsign, v.route].filter(Boolean).join(' · '))}${v.offline ? ' · 📴' : ''}</span></span><span class="cnum">${esc(v.alt)}</span></button>`).join('')}
+    </div>`, true);
+  }
+
+  // ---------- kiosk mode: a big, hands-off display for an old tablet or a TV ----------
+  const kiosk = location.pathname.endsWith('/kiosk') || new URLSearchParams(location.search).has('kiosk');
+
+  function renderKiosk(now) {
+    if (!kiosk || !state.config) return;
+    $('#kiosk-clock').textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const next = predictions(now, 900).slice(0, 4);
+    const el = $('#kiosk-next');
+    const sat = satTarget();
+    let html = sat ? `<div class="kn sat"><span class="who">🛰️ ${esc(sat.name)}</span><span class="t">look ${compass(sat.az)}, ${Math.round(sat.el)}° up</span></div>` : '';
+    html += next.length ? next.map(({ p, eta, az }) => {
+      const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+      return `<div class="kn">${logo(p.callsign, true)}<span class="who"><strong>${esc(label(p))}</strong>
+        <span class="r">${esc([routeShort(info), info.airline].filter(Boolean).join(' · '))}</span></span>
+        <span class="t${eta === 0 ? ' now' : ''}">${eta === 0 ? 'overhead' : countdown(eta)}<small>${compass(az)}</small></span></div>`;
+    }).join('') : '<div class="kn quiet">No planes due in the next 15 minutes</div>';
+    if (state.flow && state.flow.text) html += `<div class="kflow">🛬 ${esc(state.flow.text)}</div>`;
+    if (html !== el.dataset.html) { el.innerHTML = html; el.dataset.html = html; }
+  }
+
+  function startKiosk() {
+    document.body.classList.add('kiosk');
+    $('#kiosk-clock').hidden = false;
+    $('#kiosk-next').hidden = false;
+    // Keep the screen on, where the browser allows it.
+    const lock = () => navigator.wakeLock && navigator.wakeLock.request('screen').catch(() => {});
+    lock();
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) lock(); });
+    setInterval(() => { if (!state.selected) goHome(); }, 5 * 60000);
+    setTimeout(() => { if (map) map.resize(); goHome(); }, 600);
+  }
+
+  // ---------- replay videos ----------
+  let recorder = null;
+  function recordReplay() {
+    if (recorder) { recorder.stop(); return; }
+    const src = map.getCanvas();
+    const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+    const type = window.MediaRecorder && types.find((t) => MediaRecorder.isTypeSupported(t));
+    if (!type) { toast('This browser can’t record video. Try Chrome or Safari.'); return; }
+    // Draw each frame of the map onto a canvas of our own, with the time and a title on it.
+    const out = document.createElement('canvas');
+    out.width = Math.round(src.width / 2) * 2; out.height = Math.round(src.height / 2) * 2;
+    const g = out.getContext('2d');
+    const scale = out.width / src.clientWidth;
+    const draw = () => {
+      g.drawImage(src, 0, 0, out.width, out.height);
+      const r = state.replay;
+      g.fillStyle = 'rgba(10,14,20,.78)';
+      roundRect(g, 16 * scale, 16 * scale, 240 * scale, 64 * scale, 12 * scale); g.fill();
+      g.fillStyle = '#fff'; g.font = `800 ${30 * scale}px ${CARD_FONT}`; g.fillText(clockOf(r.t), 30 * scale, 58 * scale);
+      g.fillStyle = '#ffb020'; g.font = `700 ${14 * scale}px ${CARD_FONT}`;
+      g.fillText(new Date(`${r.day}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }), 140 * scale, 42 * scale);
+      g.fillText('planespotter', 140 * scale, 64 * scale);
+    };
+    map.on('render', draw);
+    const chunks = [];
+    recorder = new MediaRecorder(out.captureStream(30), { mimeType: type, videoBitsPerSecond: 6e6 });
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => {
+      map.off('render', draw);
+      recorder = null;
+      $('#replay-record').textContent = '🎬 Save video';
+      state.replay.playing = false;
+      updateReplayBar();
+      const blob = new Blob(chunks, { type: type.split(';')[0] });
+      const url = URL.createObjectURL(blob);
+      const name = `planespotter-replay-${state.replay.day}.${type.includes('mp4') ? 'mp4' : 'webm'}`;
+      openOverlay(`<video class="share-card" src="${url}" controls playsinline autoplay muted loop></video>
+        <div class="overlay-row"><div class="muted">${(blob.size / 1e6).toFixed(1)} MB</div>
+        <div class="overlay-actions"><a class="btn" href="${url}" download="${name}">Download</a></div></div>`, true);
+    };
+    recorder.start(1000);
+    $('#replay-record').textContent = '⏹ Stop';
+    // Record from the first plane of the day to the end, at the chosen speed.
+    const r = state.replay;
+    const firsts = r.flights.map((f) => f.ts[0]);
+    r.t = firsts.length ? Math.max(0, Math.min(...firsts) - 300) : 0;
+    r.playing = true;
+    const lastT = r.flights.length ? Math.max(...r.flights.map((f) => f.ts[f.ts.length - 1])) + 300 : 86400;
+    const check = setInterval(() => {
+      map.triggerRepaint();
+      if (!recorder) { clearInterval(check); return; }
+      if (state.replay.t >= Math.min(86400, lastT) || !state.replay.on) { clearInterval(check); recorder.stop(); }
+    }, 250);
   }
 
   // ---------- day replay ----------
@@ -1593,8 +1936,8 @@
   function openReplay() {
     const r = state.replay;
     r.on = true;
-    const select = $('#replay-day');
-    select.innerHTML = Array.from({ length: 7 }, (_, i) => {
+    const daySelect = $('#replay-day');
+    daySelect.innerHTML = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - i);
       return `<option value="${isoDay(d)}">${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</option>`;
     }).join('');
@@ -1602,7 +1945,7 @@
     $('#map-wrap').classList.add('replaying');
     $('#btn-replay').setAttribute('aria-pressed', 'true');
     if (state.selected) select(null);
-    loadReplay(select.value);
+    loadReplay(daySelect.value);
   }
 
   function closeReplay() {
@@ -1930,6 +2273,7 @@
   let lastLookUp = 0;
   let lastUpNextAt = 0;
   let lastMeterAt = 0;
+  let lastKioskAt = 0;
   function animate(ts) {
     if (!document.hidden && ts - lastFrame > 50) {
       const r = state.replay;
@@ -1942,6 +2286,7 @@
       if (ts - lastLookUp > 500 && state.config) { renderLookUp(performance.now()); lastLookUp = ts; }
       if (ts - lastUpNextAt > 1000 && state.config) { renderUpNext(performance.now()); lastUpNextAt = ts; }
       if (meter.on && state.tab === 'noise' && ts - lastMeterAt > 250) { renderMeter(); lastMeterAt = ts; }
+      if (kiosk && ts - lastKioskAt > 1000) { renderKiosk(performance.now()); lastKioskAt = ts; }
       lastFrame = ts;
     }
     requestAnimationFrame(animate);
@@ -1995,6 +2340,10 @@
     $('#list').addEventListener('click', (e) => {
       const open = e.target.closest('[data-open-flight]');
       if (open) { openFlight(open.dataset.openFlight); return; }
+      const wr = e.target.closest('[data-wrapped]');
+      if (wr) { openWrapped(wr.dataset.wrapped); return; }
+      const prof = e.target.closest('[data-profile]');
+      if (prof) { openProfile(prof.dataset.profile); return; }
       const view = e.target.closest('[data-view-photo]');
       if (view) { viewPhoto(view.dataset.viewPhoto); return; }
       if (e.target.closest('[data-action="meter"]')) { if (meter.on) stopMeter(); else startMeter(); return; }
@@ -2029,6 +2378,10 @@
       if (view) viewPhoto(view.dataset.viewPhoto);
       if (e.target.closest('[data-action="add-photo"]')) pickPhoto();
       if (e.target.closest('[data-action="share"]')) shareSelected();
+      const thing = selectedThing();
+      const t = thing && (thing.plane || thing.flight);
+      if (t && e.target.closest('[data-action="follow"]')) toggleFollow(t.hex, t.callsign);
+      if (t && e.target.closest('[data-action="profile"]')) openProfile(t.hex);
       const saw = e.target.closest('[data-action="saw"]');
       if (saw) {
         const thing = selectedThing();
@@ -2073,12 +2426,17 @@
       if (b) select('live', b.dataset.hex, { scroll: true });
     });
     $('#lookup').addEventListener('click', (e) => {
+      const g = e.target.closest('[data-guess]');
+      if (g) { e.stopPropagation(); startQuiz(g.dataset.guess); return; }
       const b = e.target.closest('.saw');
       if (b) { e.stopPropagation(); toggleSaw(b.dataset.saw, b.dataset.callsign, Date.now() / 1000); }
     });
     $('#photo-input').addEventListener('change', (e) => uploadPhoto(e.target.files[0]));
     $('#overlay').addEventListener('click', (e) => {
       if (e.target === e.currentTarget || e.target.closest('[data-action="close-overlay"]')) { closeOverlay(); return; }
+      const ans = e.target.closest('[data-quiz-answer]');
+      if (ans) { answerQuiz(ans.dataset.quizAnswer); return; }
+      if (e.target.closest('[data-action="share-wrapped"]')) { shareWrapped(); return; }
       const del = e.target.closest('[data-delete-photo]');
       if (del) { deletePhoto(del.dataset.deletePhoto); return; }
       const open = e.target.closest('[data-open-flight]');
@@ -2086,7 +2444,12 @@
     });
     if (state.chime) { $('#btn-chime').setAttribute('aria-pressed', 'true'); $('#btn-chime').textContent = '🔔 Chime on'; }
     $('#btn-replay').addEventListener('click', () => (state.replay.on ? closeReplay() : openReplay()));
-    $('#replay-close').addEventListener('click', closeReplay);
+    $('#replay-close').addEventListener('click', () => { if (recorder) recorder.stop(); closeReplay(); });
+    $('#replay-record').addEventListener('click', recordReplay);
+    $('#place').addEventListener('change', (e) => {
+      const proto = location.protocol === 'https:' ? 'http:' : location.protocol;  // other places' maps are plain http
+      location.href = `${proto}//${location.hostname}:${e.target.value}/`;
+    });
     $('#replay-play').addEventListener('click', () => {
       const r = state.replay;
       if (r.t >= 86400) r.t = 0;
@@ -2167,6 +2530,19 @@
     setInterval(() => { if (!document.hidden) loadFlights(); }, HISTORY_EVERY_MS);
     loadSky();
     setInterval(() => { if (!document.hidden) loadSky(); }, 5 * 60000);
+    loadFlow();
+    setInterval(() => { if (!document.hidden) loadFlow(); }, 5 * 60000);
+    loadToday();
+    setInterval(() => { if (!document.hidden) loadToday(); }, 2 * 60000);
+    loadSpace();
+    setInterval(() => { if (!document.hidden) loadSpace(); }, 60000);
+    if ((state.config.places || []).length) {
+      const port = Number(location.port || (location.protocol === 'https:' ? 443 : 80));
+      const sel = $('#place');
+      sel.innerHTML = state.config.places.map((pl) => `<option value="${pl.port}"${pl.port === port || (pl.name === home.name) ? ' selected' : ''}>${esc(pl.name)}</option>`).join('');
+      sel.hidden = false;
+    }
+    if (kiosk) startKiosk();
     loadYours();
     setInterval(() => { if (!document.hidden && state.tab === 'noise') loadNoise(); }, 120000);
     renderHeatPanel();

@@ -13,8 +13,10 @@
   <aside id="panel">
     <header class="brand">
       <div class="logo">plane<span>spotter</span></div>
-      <div class="home-line"><span class="zone-dot"></span><span id="home-line">Loading…</span></div>
+      <div class="home-line"><span class="zone-dot"></span><span id="home-line">Loading…</span>
+        <select id="place" class="place" aria-label="Which place" hidden></select></div>
       <div class="sky-line" id="sky-line" hidden></div>
+      <div class="sky-line flow-line" id="flow-line" hidden></div>
       <div class="sounds">
         <button id="btn-chime" class="chime" aria-pressed="false" title="Play a chime when a plane is about to fly over">🔕 Chime</button>
         <button id="btn-voice" class="chime" aria-pressed="false" title="Say which plane is coming, from where, and where to look">🔇 Voice</button>
@@ -77,6 +79,8 @@
       <span><i style="background:var(--select)"></i>Selected</span>
     </div>
     <section id="lookup" class="lookup" hidden aria-live="polite"></section>
+    <div id="kiosk-clock" class="kiosk-clock" hidden></div>
+    <section id="kiosk-next" class="kiosk-next" hidden></section>
     <section id="detail" class="detail" hidden></section>
     <section id="replay" class="replay" hidden aria-label="Replay a day">
       <div class="replay-row">
@@ -87,6 +91,7 @@
           <option value="300" selected>5 min / sec</option>
           <option value="900">15 min / sec</option>
         </select>
+        <button id="replay-record" class="chip" title="Save the replay as a video you can share">🎬 Save video</button>
         <span id="replay-clock" class="replay-clock">00:00</span>
         <button id="replay-close" class="close" aria-label="Close replay">×</button>
       </div>

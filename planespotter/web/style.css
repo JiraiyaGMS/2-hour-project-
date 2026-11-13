@@ -434,6 +434,93 @@ button { font: inherit; color: inherit; }
 .noise-range { margin: 12px 0 8px; }
 .downloads { display: flex; gap: 8px; flex-wrap: wrap; }
 
+
+/* ---------- places, runway line ---------- */
+.place {
+  margin-left: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
+  border-radius: 8px; padding: 1px 4px; font: inherit; font-size: 12.5px;
+}
+.place[hidden] { display: none; }
+.flow-line { line-height: 1.35; }
+
+/* ---------- look up buttons, delays ---------- */
+.lookup-buttons { display: flex; flex-direction: column; gap: 6px; flex: none; }
+.badge.ok { color: #2fbf71; background: color-mix(in srgb, #2fbf71 14%, transparent); }
+.badge.late { color: #e5484d; background: color-mix(in srgb, #e5484d 12%, transparent); }
+
+/* ---------- today's regulars, space station ---------- */
+.reg { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 13px; }
+.reg[data-open-flight] { cursor: pointer; }
+.reg[data-open-flight]:hover { background: var(--panel-2); }
+.reg .t { width: 52px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.reg .airline-logo { width: 22px; height: 22px; margin: 0; }
+.reg .who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reg .st { flex: none; font-size: 12px; color: var(--muted); }
+.reg.seen .st { color: #2fbf71; }
+.reg.late .st { color: #e5484d; }
+.reg.sat .st { color: var(--ink); }
+.hint { color: var(--muted); font-size: 12px; margin: 6px 8px; }
+
+/* ---------- bingo, your year, profiles, quiz ---------- */
+.bingo { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.bingo .sq {
+  border: 1px solid var(--line); border-radius: 10px; padding: 7px 5px; text-align: center; min-height: 84px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+}
+.bingo .sq .e { font-size: 20px; filter: grayscale(1); opacity: .45; }
+.bingo .sq .x { font-size: 11px; line-height: 1.25; color: var(--muted); }
+.bingo .sq .by { font-size: 11px; font-weight: 700; color: var(--accent); }
+.bingo .sq.hit { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); cursor: pointer; }
+.bingo .sq.hit .e { filter: none; opacity: 1; }
+.bingo .sq.hit .x { color: var(--ink); }
+.bingo .sq.line { box-shadow: inset 0 0 0 2px var(--accent); }
+.wrapped-links { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 2px; }
+.wrapped h2 { margin: 2px 0 12px; font-size: 26px; }
+.wrapped .k, .quiz .k { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+.wrapped h3, .profile h3 { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 6px; }
+.wrapped .chart { max-width: 460px; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.wt { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+.wt .k { color: var(--muted); }
+.wt .v { font-size: 20px; font-weight: 750; line-height: 1.2; margin-top: 2px; }
+.wt .n { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.profile h2 { margin: 0; font-size: 22px; }
+.quiz h2 { margin: 4px 0 6px; font-size: 20px; }
+.quiz-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.quiz-options .btn { padding: 10px 12px; border-radius: 10px; text-align: center; }
+.quiz-options .btn.right { border-color: #2fbf71; background: color-mix(in srgb, #2fbf71 18%, transparent); }
+.quiz-options .btn.wrong { border-color: #e5484d; background: color-mix(in srgb, #e5484d 15%, transparent); }
+.quiz-verdict { font-size: 16px; font-weight: 700; margin: 14px 0 2px; }
+.replay-row .chip { white-space: nowrap; }
+
+/* ---------- kiosk mode (an old tablet or a TV) ---------- */
+.kiosk-clock, .kiosk-next { display: none; }
+body.kiosk #panel, body.kiosk .map-controls, body.kiosk .legend, body.kiosk .heat-panel, body.kiosk .detail { display: none !important; }
+body.kiosk .kiosk-clock {
+  display: block; position: absolute; z-index: 4; top: 18px; left: 22px; font-size: 54px; font-weight: 800;
+  letter-spacing: -.02em; color: var(--ink); text-shadow: 0 2px 12px color-mix(in srgb, var(--bg) 80%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+body.kiosk .status { top: auto; bottom: 18px; left: 22px; }
+body.kiosk .lookup { top: 22px; width: min(620px, calc(100% - 300px)); padding: 14px 18px; }
+body.kiosk .lookup .head { font-size: 22px; }
+body.kiosk .lookup .sub { font-size: 16px; }
+body.kiosk .lookup .dial { width: 64px; height: 64px; }
+body.kiosk .kiosk-next {
+  display: block; position: absolute; z-index: 4; right: 22px; bottom: 22px; width: min(520px, calc(100% - 44px));
+  background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: var(--shadow); padding: 10px 14px;
+}
+.kn { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 18px; }
+.kn:last-child { border-bottom: 0; }
+.kn .who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn .who .r { color: var(--muted); font-size: 15px; margin-left: 6px; }
+.kn .t { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
+.kn .t small { display: block; font-size: 12px; font-weight: 600; color: var(--muted); }
+.kn .t.now { color: var(--accent); }
+.kn.quiet { color: var(--muted); justify-content: center; }
+.kflow { font-size: 13px; color: var(--muted); padding-top: 8px; }
+
 /* ---------- phones ---------- */
 @media (max-width: 760px) {
   #app { flex-direction: column-reverse; }
@@ -465,6 +552,8 @@ button { font: inherit; color: inherit; }
   .tabs button { padding: 9px 2px 10px; font-size: 13.5px; }
   .count { margin-left: 2px; min-width: 18px; padding: 0 4px; }
   .lookup .saw { padding: 4px 8px; }
+  .lookup-buttons { gap: 4px; }
+  .wgrid { grid-template-columns: 1fr 1fr; }
   .lookup .sky-note { font-size: 12px; margin-top: 2px; }
   .replay-clock { font-size: 16px; }
   .heat-routes, .heat-note { display: none; }

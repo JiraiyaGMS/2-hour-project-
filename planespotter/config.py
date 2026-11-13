@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -70,6 +70,35 @@ def parse_quiet_hours(text: str) -> tuple[time, time] | None:
     return start, end
 
 
+def check_places(text: str) -> str:
+    parse_places(text)  # raises ConfigError if it can't be read
+    return text
+
+
+_PLACE = re.compile(r"^(?P<name>[^@]+?)\s*@\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)"
+                    r"(?:\s+r?(?P<radius>\d+(?:\.\d+)?)\s*(?:mi|miles)?)?\s*$", re.I)
+
+
+def parse_places(text: str) -> list[tuple[str, float, float, float | None]]:
+    """'Work @ 47.61,-122.33 r2; Mum's house @ 51.5,-0.12' -> [(name, lat, lon, radius or None)]."""
+    places = []
+    for part in (text or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        m = _PLACE.match(part)
+        if not m:
+            raise ConfigError(f"PLACES: couldn't read {part!r}. Write it like: Work @ 47.61,-122.33 r2")
+        lat, lon = float(m["lat"]), float(m["lon"])
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise ConfigError(f"PLACES: {m['name']} has coordinates out of range")
+        radius = float(m["radius"]) if m["radius"] else None
+        if radius is not None and not 0 < radius <= 100:
+            raise ConfigError(f"PLACES: {m['name']}'s radius must be between 0 and 100 miles")
+        places.append((m["name"].strip(), lat, lon, radius))
+    return places
+
+
 def weekday(text: str) -> int:
     """'sun', 'Sunday' -> 6."""
     days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -126,6 +155,21 @@ class Config:
     map_https: bool = True       # also serve the map over https (phones need it for AR, mic, sharing)
     map_https_port: int = 8766
     weather: bool = True         # check the clouds at the nearest airport (aviationweather.gov)
+    rush_alerts: bool = True     # a phone notification when lots of planes are about to come over
+    rush_count: int = 5          # ...this many within 15 minutes
+    space_alerts: bool = True    # a phone notification before the space station flies over (visible passes)
+    places: str = ""             # other places to watch too: "Work @ 47.61,-122.33 r2; Mum's @ 51.5,-0.12"
+
+    def place_configs(self) -> list["Config"]:
+        """A settings copy for each of your other places: its own spot, zone, database and map."""
+        out = []
+        for i, (name, lat, lon, radius) in enumerate(parse_places(self.places)):
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or f"place{i + 1}"
+            out.append(replace(
+                self, home_lat=lat, home_lon=lon, home_name=name, radius_miles=radius or self.radius_miles,
+                db_path=Path(self.db_path).with_name(f"planespotter-{slug}.db"), map_port=self.map_port + 2 + i,
+                map_https=False, space_alerts=False, places=""))
+        return out
 
     @property
     def view_radius_miles(self) -> float:
@@ -286,6 +330,10 @@ class Config:
             map_https=flag("MAP_HTTPS", True),
             map_https_port=number("MAP_HTTPS_PORT", str(number("MAP_PORT", "8765", int) + 1), int),
             weather=flag("WEATHER", True),
+            rush_alerts=flag("RUSH_ALERTS", True),
+            rush_count=max(2, number("RUSH_COUNT", "5", int)),
+            space_alerts=flag("SPACE_ALERTS", True),
+            places=check_places(get("PLACES")),
         )
 
 
@@ -296,5 +344,5 @@ KNOWN_KEYS = {
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
     "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
-    "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER",
+    "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES",
 }

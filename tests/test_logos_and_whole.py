@@ -172,7 +172,7 @@ class WholeFlightTests(unittest.TestCase):
 
     def test_heat_includes_flights_still_in_the_air(self):
         store = Store(self.cfg.db_path)
-        data = heat_json(store, self.cfg, time.time(), days=1)
+        data = heat_json(store, self.cfg, time.time(), days=2)  # today and yesterday, so it passes just after midnight too
         store.close()
         cells = {cell_of(lat, lon, ROUTE_DLAT) for lon, lat, _ in data["route_cells"]}
         self.assertIn(cell_of(53.0, -2.0, ROUTE_DLAT), cells)  # where the flying plane has been

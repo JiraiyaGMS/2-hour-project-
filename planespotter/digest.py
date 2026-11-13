@@ -32,6 +32,7 @@ class Recap:
     top_airlines: list[tuple[str, int]] = field(default_factory=list)
     quiet_count: int = 0  # planes that arrived during quiet hours
     star: dict | None = None  # the plane of the day (records.plane_of_the_day)
+    notes: list = field(default_factory=list)  # e.g. the runway outlook, space station passes tonight
 
 
 @dataclass

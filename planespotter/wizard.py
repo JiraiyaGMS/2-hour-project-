@@ -10,7 +10,7 @@ from typing import Callable
 
 from .adsb import get_json
 from .notify import new_topic
-from .config import KNOWN_KEYS, load_dotenv, parse_clock, parse_quiet_hours
+from .config import KNOWN_KEYS, ConfigError, load_dotenv, parse_clock, parse_places, parse_quiet_hours
 
 # Email providers whose outgoing server we can fill in automatically.
 SMTP_SERVERS = {
@@ -146,6 +146,13 @@ class Wizard:
         print("   For example: http://adsb-feeder.local:8080/data/aircraft.json  (Enter to skip)")
         values["RECEIVER_URL"] = self.ask("   Receiver address", cur.get("RECEIVER_URL", ""), check_receiver)
 
+        print("\n8. OTHER PLACES TO WATCH (optional)")
+        print("   Watch somewhere else too, like work or a relative's house: each gets its own alerts,")
+        print("   reports and map. Write each as  Name @ latitude,longitude  (add r2 for a 2-mile zone),")
+        print("   separated by ;   For example:  Work @ 47.6101,-122.3343 r2   (Enter to skip)")
+        print("   Every extra place uses part of adsb.lol's daily allowance, so each is checked less often.")
+        values["PLACES"] = self.ask("   Other places", cur.get("PLACES", ""), check_places)
+
         # Keep any advanced settings the person added by hand.
         for key, value in cur.items():
             if key in KNOWN_KEYS and key not in values:
@@ -236,6 +243,14 @@ def check_receiver(text: str) -> str | None:
     return None
 
 
+def check_places(text: str) -> str | None:
+    try:
+        parse_places(text)
+    except ConfigError as exc:
+        return str(exc).replace("PLACES: ", "")
+    return None
+
+
 def check_required(text: str) -> str | None:
     return None if text else "This one is needed."
 
@@ -274,6 +289,9 @@ RECEIVER_URL={RECEIVER_URL}
 # adsb.lol key (blank = 500 requests a day; a free key = 1,000; feeders get 7,200
 # and can set ADSB_DAILY_LIMIT=7200)
 ADSB_API_KEY={ADSB_API_KEY}
+
+# Other places to watch, like  Work @ 47.6101,-122.3343 r2; Mum's @ 51.5,-0.12  (blank = just home)
+PLACES={PLACES}
 """
 
 

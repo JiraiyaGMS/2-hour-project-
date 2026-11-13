@@ -7,13 +7,14 @@ import smtplib
 import sqlite3
 import time
 import urllib.error
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable
 
 from .adsb import Aircraft, LiveFeed, Lookup
 from .config import Config, fmt_clock_range
 from .digest import build_forecast, build_recap
 from .emails import alert_email, digest_email, fmt_alt, fmt_dist, special_email
+from .catchup import gap_to_check, start_catchup
 from .fullpath import OverBudget, save_flight, start_full_path_worker
 from .heat import HeatRecorder
 from .weekly import build_week, weekly_email
@@ -21,9 +22,13 @@ from .logos import airline_code
 from .specials import FIRSTS_AFTER_DAYS, special_reasons
 from .heat import backfill as backfill_heat
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, segment_min_distance_miles
+from .flow import observe as observe_flow
+from .flow import flow_report, reference_airport
 from .mailer import Mailer
+from .predict import crossings
 from .records import plane_of_the_day
 from .sky import sky_note
+from .space import pass_text
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -31,6 +36,8 @@ log = logging.getLogger(__name__)
 FETCH_ERRORS = (urllib.error.URLError, TimeoutError, ValueError, OSError)
 SEND_ERRORS = (smtplib.SMTPException, OSError)
 FASTEST_PLANE_KT = 650
+RUSH_WINDOW = 15 * 60   # "N planes coming over in the next 15 minutes"
+RUSH_NM = 60            # look this far out for them (a jet covers ~60 nm in 15 minutes)
 
 
 class Watcher:
@@ -47,8 +54,13 @@ class Watcher:
         notifier=None,
         sky=None,
         ground_ft: int = 0,
+        space=None,
     ):
         self.cfg = cfg
+        self.share = 1  # how many places share adsb.lol's daily limit (each checks this much less often)
+        self.space = space  # satellite passes, for "the space station flies over in 10 minutes" (None = off)
+        self._space_checked = 0.0
+        self._flow_airport = (None, -1e12)  # (airport, when we worked it out)
         self.sky = sky  # clouds + daylight, for "you'll hear it, not see it" in alerts (None = off)
         self.ground_ft = ground_ft  # how high home is, since planes report height above sea level
         self.budget = budget  # adsb.lol's daily request limit, shared with the map
@@ -67,6 +79,7 @@ class Watcher:
         self.open_paths: dict[str, int] = {}
         self.heat = HeatRecorder(store, cfg)
         self.digest_retry_at = 0.0
+        self.catchup = None  # the offline log's background thread, while it runs
 
     # --- polling ------------------------------------------------------------
 
@@ -74,7 +87,14 @@ class Watcher:
         """Look far enough beyond the zone that a plane is seen on both sides of it,
         even when checks are minutes apart (to stay within adsb.lol's daily limit)."""
         travel = min(FASTEST_PLANE_KT, 500) * self.interval / 3600
-        return min(250.0, miles_to_nm(self.cfg.radius_miles) + travel + 1)
+        radius = miles_to_nm(self.cfg.radius_miles) + travel + 1
+        if self.rush_enabled:
+            radius = max(radius, RUSH_NM)  # to see a rush coming
+        return min(250.0, radius)
+
+    @property
+    def rush_enabled(self) -> bool:
+        return bool(self.cfg.rush_alerts and self.notifier and self.notifier.enabled)
 
     def in_zone(self, ac: Aircraft, now: float) -> tuple[float, float] | None:
         """(closest distance, bearing) if the plane is in the zone or crossed it since last poll."""
@@ -120,16 +140,89 @@ class Watcher:
                 new_passes.append(pass_id)
                 route = (f" ({info['origin'] or '?'}→{info['destination'] or '?'})"
                          if info["origin"] or info["destination"] else "")
-                log.info("overhead: %s %s %s, %s%s", ac.label, fmt_dist(hit[0]),
+                log.info("over %s: %s %s %s, %s%s", cfg.home_name, ac.label, fmt_dist(hit[0]),
                          compass(hit[1]), fmt_alt(ac.alt_ft), route)
         self.new_specials.extend(self.find_specials(planes, now))
+        self.observe_flow(planes, now)
+        self.check_rush(planes, now)
         try:
             self.heat.record(planes, self.last_positions, now, max_gap=max(cfg.poll_seconds, self.interval) * 2.5)
         except sqlite3.Error as exc:  # the heat map is a nice-to-have; never let it stop alerts
             log.warning("couldn't update the heat map: %s", exc)
         self.last_positions = positions
         self.open_paths = {h: pid for h, pid in self.open_paths.items() if h in positions}
+        self.store.set_meta("last_poll", str(now))  # the offline log starts from here if we stop
         return new_passes
+
+    def observe_flow(self, planes, now: float) -> None:
+        """Note which way planes near the airport are landing and taking off (the runway flow)."""
+        airport, when = self._flow_airport
+        if now - when > 3600:
+            airport = reference_airport(self.store, self.cfg)
+            self._flow_airport = (airport, now)
+        try:
+            observe_flow(self.store, airport, planes, now)
+        except sqlite3.Error as exc:
+            log.info("couldn't note the runway flow: %s", exc)
+
+    def check_rush(self, planes, now: float) -> bool:
+        """A phone notification when lots of planes are about to come over (at most one an hour)."""
+        cfg = self.cfg
+        if not self.rush_enabled or cfg.in_quiet_hours(now):
+            return False
+        coming = crossings(cfg, planes, self.ground_ft, horizon=RUSH_WINDOW)
+        if len(coming) < cfg.rush_count:
+            return False
+        if now - float(self.store.get_meta("last_rush") or 0) < 3600:
+            return False
+        self.store.set_meta("last_rush", str(now))
+        lines = [f"{c.ac.label} {'now' if c.eta == 0 else f'in {max(1, round(c.eta / 60))} min'}, "
+                 f"from the {compass(c.az)}, {fmt_alt(c.ac.alt_ft)}" for c in coming[:8]]
+        log.info("rush: %d planes coming over in the next 15 minutes", len(coming))
+        return self.notifier.send(f"🛫 Rush: {len(coming)} planes coming over in the next 15 minutes",
+                                  "\n".join(lines) + "\n(if they keep flying straight)",
+                                  click=self.notifier.link(), tags=("airplane", "stopwatch"))
+
+    def check_space(self, now: float) -> bool:
+        """A phone notification 10 minutes before the space station (or another bright one) flies over."""
+        if not (self.space and self.cfg.space_alerts and self.notifier and self.notifier.enabled):
+            return False
+        if now - self._space_checked < 60:
+            return False
+        self._space_checked = now
+        try:
+            upcoming = self.space.upcoming()
+        except Exception as exc:  # satellites are a fun extra; never let them stop planespotter
+            log.info("couldn't work out satellite passes: %s", exc)
+            return False
+        sent = False
+        for p in upcoming:
+            if not p["visible"] or p["max_el"] < 20:
+                continue
+            lead = p["visible_from"] - now
+            key = f"space:{p['number']}:{int(p['start'])}"
+            if not 0 < lead <= 10 * 60 or self.store.get_meta(key):
+                continue
+            self.store.set_meta(key, "1")
+            if self.cfg.in_quiet_hours(p["visible_from"]):
+                continue
+            at = self.cfg.local(p["visible_from"]).strftime("%I:%M %p").lstrip("0").lower()
+            title = f"🛰️ {p['name']} flies over in {max(1, round(lead / 60))} min"
+            message = (f"Look {p['start_dir']} at {at}. It climbs to {p['max_el']}° up in the {p['max_dir']} and "
+                       f"crosses the sky in about {round(p['minutes'])} minutes: a bright, steady star moving fast, "
+                       "no blinking lights.")
+            sent = self.notifier.send(title, message, click=self.notifier.link(), tags=("satellite",), priority=4) or sent
+        return sent
+
+    def start_offline_log(self, now: float) -> None:
+        """If planespotter wasn't watching for a while (stopped, Mac asleep, no internet), look for
+        the planes that came over meanwhile, in the background."""
+        if self.catchup is not None and self.catchup.is_alive():
+            return
+        gap = gap_to_check(self.store, now)
+        if gap and getattr(self.feed, "uses_receiver", False) is False:
+            self.store.set_meta("last_poll", str(now))  # don't search the same gap twice
+            self.catchup = start_catchup(self.cfg, self.budget, gap, self.notifier)
 
     def note_firsts(self, pass_id: int, ac: Aircraft, row, now: float) -> None:
         """Is this the first time we've seen this airline, or this kind of plane?"""
@@ -251,6 +344,8 @@ class Watcher:
         """Today's date if the digest should go out now, else None."""
         if not self.cfg.digest_enabled or now < self.digest_retry_at:
             return None
+        if self.catchup is not None and self.catchup.is_alive():
+            return None  # wait for the offline log, so the report includes what it finds
         local = self.cfg.local(now)
         if local.time() < self.cfg.digest_time:
             return None
@@ -258,8 +353,9 @@ class Watcher:
         if self.store.get_meta("last_digest") == today.isoformat():
             return None
         started = float(self.store.get_meta("watch_started") or now)
-        if started >= self.cfg.day_start(today):
-            # Nothing was watched yesterday, so there's nothing to report yet.
+        found = self.store.passes_between(self.cfg.at(today - timedelta(days=1), self.cfg.digest_time), now)
+        if started >= self.cfg.day_start(today) and not found:
+            # Nothing was watched (or found by the offline log) yesterday, so there's nothing to report yet.
             self.store.set_meta("last_digest", today.isoformat())
             return None
         return today
@@ -290,9 +386,29 @@ class Watcher:
         self.store.set_meta("last_weekly", today.isoformat())
         return True
 
+    def morning_notes(self, now: float) -> list[str]:
+        """The runway outlook and tonight's space station passes, for the top of the morning email."""
+        notes = []
+        try:
+            weather = self.sky.weather() if self.sky else None
+            text = flow_report(self.store, self.cfg, now, weather).get("text")
+            if text:
+                notes.append(f"🛬 {text}")
+        except Exception as exc:  # extras: never let them stop the report
+            log.info("no runway outlook: %s", exc)
+        if self.space:
+            try:
+                for p in self.space.upcoming(hours=30):
+                    if p["visible"] and p["max_el"] >= 20 and p["start"] < now + 24 * 3600:
+                        notes.append(f"🛰️ {pass_text(p, self.cfg)}")
+            except Exception as exc:
+                log.info("no satellite passes: %s", exc)
+        return notes
+
     def send_digest(self, today: date) -> bool:
         recap = build_recap(self.store, self.cfg, today)
         recap.star = plane_of_the_day(recap.passes, self.store, self.cfg)
+        recap.notes = self.morning_notes(self.clock())
         forecast = build_forecast(self.store, self.cfg, today)
         try:
             self.mailer.send(digest_email(recap, forecast, self.cfg))
@@ -319,7 +435,7 @@ class Watcher:
             else f", emailing {cfg.email_to}",
         )
         if self.budget:
-            every = self.budget.base_interval
+            every = self.budget.base_interval * self.share
             log.info("checking every %s to stay within adsb.lol's limit of %d requests a day%s",
                      f"{every / 60:.1f} min" if every >= 90 else f"{every:.0f} s", self.budget.limit,
                      "" if cfg.adsb_api_key else " (a free adsb.lol key raises it; see the README)")
@@ -328,13 +444,16 @@ class Watcher:
                      fmt_clock_range(cfg.quiet_hours), cfg.digest_time.strftime("%H:%M"))
         failures = 0
         last_check = 0.0
+        self.start_offline_log(self.clock())  # planes that came over while planespotter was off
         while True:
             now = self.clock()
             # Check on the budget's schedule; it speeds up while someone has the live map open.
             receiver = getattr(self.feed, "uses_receiver", False)  # your own receiver: no daily limit
-            interval = self.budget.poll_interval() if self.budget and not receiver else float(cfg.poll_seconds)
+            interval = (self.budget.poll_interval() * self.share if self.budget and not receiver
+                        else float(cfg.poll_seconds))
             if failures:
                 interval = max(interval, min(300, cfg.poll_seconds * 2 ** min(failures, 4)))
+            self.check_space(now)
             if now - last_check < interval:
                 time.sleep(2)
                 today = self.digest_due(now)
@@ -346,6 +465,7 @@ class Watcher:
                 continue
             last_check = now
             self.interval = interval
+            self.start_offline_log(now)  # e.g. the Mac was asleep
             try:
                 new_passes = self.poll(now)
                 failures = 0

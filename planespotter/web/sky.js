@@ -27,7 +27,7 @@
     fov: store.get('fov', 62),     // the camera's field of view across the long side of the screen
     yaw: 180, pitch: 12,     // where you're looking when dragging instead (computers)
   };
-  const state = { config: null, planes: [], info: new Map(), sun: null, selected: null, eyes: [], hits: [] };
+  const state = { config: null, planes: [], info: new Map(), sun: null, selected: null, eyes: [], hits: [], tracks: [] };
 
   async function getJSON(url) {
     const res = await fetch(url, { cache: 'no-store' });
@@ -193,6 +193,23 @@
       }
     }
 
+    // Satellites crossing the sky (the space station looks like a bright, steady star).
+    const nowS = Date.now() / 1000;
+    for (const tr of state.tracks) {
+      const pts = tr.points;
+      const i = pts.findIndex((q) => q[0] >= nowS);
+      if (i < 1) continue;
+      const [t0, az0, el0] = pts[i - 1], [t1, az1, el1] = pts[i];
+      const k = (nowS - t0) / Math.max(1, t1 - t0);
+      let daz = az1 - az0; if (daz > 180) daz -= 360; if (daz < -180) daz += 360;
+      const el = el0 + (el1 - el0) * k;
+      if (el < 0) continue;
+      const s = project(dirVec((az0 + daz * k + 360) % 360, el), cam, focal);
+      if (!s) continue;
+      g.fillStyle = '#ffffff'; g.beginPath(); g.arc(s[0], s[1], 6, 0, 7); g.fill();
+      pill(s[0], s[1], [`🛰️ ${tr.name}`, tr.visible ? 'bright, steady, moving fast' : 'in daylight: hard to see'], '#ffffff', false);
+    }
+
     // The planes, farthest first so near ones end up on top.
     const now = performance.now();
     const items = skyPlanes(now).filter((d) => d.el > -2).sort((x, y) => y.miles - x.miles);
@@ -271,6 +288,7 @@
 
   async function loadSky() {
     try { state.sun = (await getJSON('api/sky')).sun; } catch { /* no sun marker */ }
+    try { state.tracks = (await getJSON('api/space')).tracks || []; } catch { /* no satellites */ }
   }
 
   // ---------- tapping a plane ----------
@@ -393,7 +411,7 @@
     if (new URLSearchParams(location.search).has('auto')) begin();
     poll();
     loadSky();
-    setInterval(loadSky, 5 * 60000);
+    setInterval(loadSky, 60000);
     requestAnimationFrame(draw);
   }
 
