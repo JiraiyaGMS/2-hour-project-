@@ -2323,8 +2323,9 @@
       const phase = i && { taxi: 'Left the gate', air: `In the air (says ${esc(i.source)}) · the free receivers can’t see it`,
         landed: 'Landed', cancelled: 'Cancelled', diverted: 'Diverted' }[i.phase];
       // Seen flying earlier and not now: it has landed (or it's out of the receivers' range), not "hasn't left".
-      lines.push(phase || (t.flew ? (g ? 'Landed' : 'Not showing right now: it has landed, or it’s out of range of the receivers')
-        : 'Not in the air yet'));
+      lines.push(phase || (d.paused && !g ? 'Can’t check where it is right now'
+        : t.flew ? (g ? 'Landed' : 'Not showing right now: it has landed, or it’s out of range of the receivers')
+          : 'Not in the air yet'));
       if (i && i.note) lines.push(`⚠︎ ${esc(i.note)}`);
       if (g) lines.push(esc(`On the ground ${g.airport ? `at ${g.airport.city} (${g.airport.code})` : ''}${g.gs > 5 ? ', taxiing' : ''}`));
       else if (d.waits_at) lines.push(esc(`At ${d.waits_at.city} (${d.waits_at.code})`));

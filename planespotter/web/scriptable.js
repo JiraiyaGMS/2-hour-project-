@@ -2033,21 +2033,24 @@ async function macBase(cache) {
   if (!bases.length) return "";
   // It has to be your planespotter (the same home), not something else at that address on another network.
   const mine = (c) => c && c.home && Math.abs(c.home.lat - home.lat) < 0.001 && Math.abs(c.home.lon - home.lon) < 0.001;
+  // It answers within a tenth of a second when it's there. If it wasn't there a few minutes ago, don't wait
+  // long for it this time either (out and about on mobile data, each look would otherwise cost two seconds).
+  const quick = cache.macMiss && now - cache.macMiss < 600;
   const first = new Promise((resolve) => {
     let left = bases.length;
     for (const b of bases) {
-      getJSON(b + "/api/config", 1.5).then((c) => { if (mine(c)) resolve(b); else if (--left === 0) resolve(""); });
+      getJSON(b + "/api/config", quick ? 0.6 : 1.5).then((c) => { if (mine(c)) resolve(b); else if (--left === 0) resolve(""); });
     }
   });
-  const found = (await withTimeout(first, 1.8)) || "";
-  if (found) cache.mac = { base: found, at: now };
+  const found = (await withTimeout(first, quick ? 0.7 : 1.8)) || "";
+  if (found) { cache.mac = { base: found, at: now }; cache.macMiss = 0; } else cache.macMiss = now;
   return found;
 }
 
 async function fullApp(cache) {
   // The Mac's full app, if it's there (see macBase); "" for the map here.
   const base = await macBase(cache);
-  if (base) saveCache(cache);
+  saveCache(cache);  // (which address worked, or that none did)
   return base;
 }
 
