@@ -147,9 +147,12 @@ def trip_span(r: dict) -> tuple[float | None, float | None]:
     return start, end
 
 
-def pick(trips: list[dict], now: float) -> dict | None:
-    """The trip that fits now: under way, about to leave, or just arrived (the phone's rule). None when none
-    is anywhere near now: no answer is better than another day's."""
+def pick(trips: list[dict], now: float, ctx: dict | None = None) -> dict | None:
+    """The trip that fits now: under way, about to leave, or just arrived (the phone's rule). Where the
+    receivers see the plane (ctx: {"air": True} flying, {"at": [codes]} on the ground there) settles which
+    leg. None when none is anywhere near now: no answer is better than another day's."""
+    ctx = ctx or {}
+    at = set(ctx.get("at") or [])
     if any(not r["codeshare"] for r in trips):
         trips = [r for r in trips if not r["codeshare"]]  # the airline that flies it
     ranked = []
@@ -160,7 +163,9 @@ def pick(trips: list[dict], now: float) -> dict | None:
         away = ((start - 3 * 3600 - now) if now < start - 3 * 3600 else (now - end - 3600) if now > end + 3600 else 0) / 3600
         gone = bool(r["dep"]["actual"] or r["takeoff"]["actual"]) or r["phase"] in ("air", "landed", "diverted")
         done = r["phase"] in ("landed", "diverted", "cancelled") or bool(r["arr"]["actual"] or r["landing"]["actual"])
-        ranked.append(((away, 0 if gone and not done else 1 if not gone else 2, abs(start - now)), r))
+        fits = (0 if gone and not done else 1) if ctx.get("air") else \
+            (0 if (not gone and r["dep"]["code"] in at) or (done and r["arr"]["code"] in at) else 1) if at else 0
+        ranked.append(((away, fits, 0 if gone and not done else 1 if not gone else 2, abs(start - now)), r))
     if ranked:
         return min(ranked, key=lambda x: x[0])[1]
     days = {datetime.fromtimestamp(now).date().isoformat(), datetime.fromtimestamp(now - 86400).date().isoformat()}
@@ -169,15 +174,91 @@ def pick(trips: list[dict], now: float) -> dict | None:
     return untimed[0] if untimed else None
 
 
+def underway(info: dict | None, now: float) -> bool:
+    """Is this listed trip the one flying now (not an earlier or later leg of the same flight number)?"""
+    if not info or "dep" not in info:
+        return False
+    start = trip_span(info)[0]
+    return info["phase"] in ("air", "taxi") or bool(start and abs(start - now) < 3600 and info["phase"] == "scheduled")
+
+
+def takeoff_at(info: dict) -> float | None:
+    """When it should take off: the runway time if known, else about 15 minutes after leaving the gate."""
+    k, d = info.get("takeoff") or {}, info["dep"]
+    leave = d.get("estimated") or d.get("scheduled")
+    return k.get("estimated") or k.get("scheduled") or (leave + 15 * 60 if leave else None)
+
+
+def stale(at: float, info: dict | None, now: float, keep: bool = False) -> bool:
+    """Is an answer from ``at`` probably out of date? Gates are given out (and changed) in the last few hours
+    before a flight leaves, and arrival gates near the end, so ask again more often then (the phone's rule).
+    ``keep``: a page refreshing by itself, which otherwise keeps what it has."""
+    age = now - at
+    if not info:
+        return age > 30 * 60
+    if info["phase"] in ("cancelled", "diverted"):
+        return age > 2 * 3600
+    if info["phase"] == "landed":
+        landed = info["arr"]["actual"] or (info.get("landing") or {}).get("actual") or 0
+        return age > (30 * 60 if not info["arr"]["gate"] and now - landed < 3600 else 2 * 3600)
+    if info["phase"] == "air":
+        return age > (45 if info["arr"]["gate"] else 30) * 60
+    off = takeoff_at(info)
+    if off and now > off - 20 * 60:
+        return age > 15 * 60
+    if off and off - now < 3 * 3600:
+        return age > (40 if info["dep"]["gate"] else 20) * 60
+    return age > (6 * 3600 if keep else 30 * 60)
+
+
+def place_name(code: str) -> str:
+    from .airports import airports
+    a = airports().get(code)
+    return (a.city or a.name) if a else code
+
+
+def same_airport(a: str, b: str) -> bool:
+    """Two codes for the same airport, or two airports within 25 miles (the same city's)."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    from .airports import airports
+    from .geo import distance_miles
+    x, y = airports().get(a), airports().get(b)
+    return bool(x and y and (x == y or distance_miles(x.lat, x.lon, y.lat, y.lon) <= 25))
+
+
+def diverted_note(info: dict | None, ctx: dict | None = None) -> str:
+    """Is the plane somewhere its schedule doesn't take it (a diversion, or the service listing another trip)?
+    Then the gates it lists aren't where the plane is. "" if it all fits (the phone's rule)."""
+    if not info or "dep" not in info:
+        return ""
+    ctx = ctx or {}
+    frm, to = info["dep"]["code"], info["arr"]["code"]
+    if info["phase"] == "diverted":
+        return "It was diverted" + (f" (it was going to {place_name(to)})" if to else "") + "."
+    here = (ctx.get("at") or [""])[0]
+    if here and frm and to and not same_airport(here, frm) and not same_airport(here, to):
+        return (f"Its schedule says {place_name(frm)} to {place_name(to)}, so it looks like it was diverted to "
+                f"{place_name(here)}.")
+    if ctx.get("air") and to and ctx.get("alt") is not None and ctx["alt"] < 12000 and (ctx.get("vr") or 0) < -500:
+        from .airports import airports
+        from .geo import distance_miles
+        dest, near = airports().get(to), airports().nearest(ctx["lat"], ctx["lon"], max_km=64)
+        if dest and near and distance_miles(ctx["lat"], ctx["lon"], dest.lat, dest.lon) > 80 and not same_airport(near.code, to):
+            return f"It's coming down near {near.city or near.name}, not {place_name(to)}: it may be diverting."
+    return ""
+
+
 def listed_as(callsign: str) -> str:
     """The flight number schedules list it under: Horizon flies Alaska's 2000s as QXE, same number."""
     return "ASA" + callsign[3:] if re.fullmatch(r"QXE\d+", callsign) else callsign
 
 
-def lookup(api: str, key: str, callsign: str, now: float | None = None, fetch=None) -> dict:
-    """{"dep": ..., "arr": ..., "status": ...}, or {"error": "key" | "limit" | "busy" | "other", "detail": ...},
-    or {"none": True} when the service doesn't know the flight."""
-    now = now or time.time()
+def fetch_trips(api: str, key: str, callsign: str, now: float, fetch=None) -> dict:
+    """{"trips": [...]} every trip the service lists for the flight number, or {"error": "key" | "limit" |
+    "other", "detail": ...}."""
     fetch = fetch or _fetch
     cs = callsign.strip().upper()
     if api == "aeroapi":
@@ -200,8 +281,98 @@ def lookup(api: str, key: str, callsign: str, now: float | None = None, fetch=No
         return {"error": "limit", "detail": json.dumps(err or body)[:200]}
     if status >= 400 or err:
         return {"error": "other", "detail": json.dumps(err or body)[:200]}
-    trips = trips_aeroapi(body) if api == "aeroapi" else trips_aviationstack(body, now)
-    return pick(trips, now) or {"none": True}
+    return {"trips": trips_aeroapi(body) if api == "aeroapi" else trips_aviationstack(body, now)}
+
+
+def lookup(api: str, key: str, callsign: str, now: float | None = None, fetch=None) -> dict:
+    """{"dep": ..., "arr": ..., "status": ...}, or {"error": "key" | "limit" | "other", "detail": ...},
+    or {"none": True} when the service lists no trip for it around now."""
+    now = now or time.time()
+    got = fetch_trips(api, key, callsign, now, fetch)
+    if "error" in got:
+        return got
+    return pick(got["trips"], now) or {"none": True}
+
+
+def shares(cfg) -> tuple[int, int]:
+    """(phone, Mac): the monthly allowance split between them, so together they stay inside it (going over
+    AeroAPI's $5 would cost money). The phone gets more: it's what you have with you."""
+    total = cfg.gates_monthly or APIS.get(cfg.gates_api, {"monthly": 0})["monthly"]
+    phone = round(total * 0.6)
+    return phone, total - phone
+
+
+class GateBook:
+    """Gate lookups for the Mac's map, the same as the phone's: kept in the database (so asking again is free),
+    looked up again when they're likely to have changed, and within the Mac's share of the allowance."""
+
+    def __init__(self, cfg, clock=time.time, fetch=None):
+        import sqlite3
+        import threading
+
+        self.api, self.key, self.clock, self.fetch = cfg.gates_api, cfg.gates_key, clock, fetch
+        self.monthly = shares(cfg)[1]
+        self.name = APIS.get(self.api, {"name": ""})["name"].replace(" AeroAPI", "")
+        self.lock = threading.Lock()
+        self.db = sqlite3.connect(str(cfg.db_path), timeout=15, check_same_thread=False)
+        self.db.execute("CREATE TABLE IF NOT EXISTS gate_trips (callsign TEXT PRIMARY KEY, at REAL NOT NULL, trips TEXT NOT NULL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS gate_usage (month TEXT PRIMARY KEY, n INTEGER NOT NULL)")
+        self.db.commit()
+
+    @property
+    def on(self) -> bool:
+        return self.api in APIS and bool(self.key)
+
+    def _month(self, now: float) -> str:
+        return datetime.fromtimestamp(now).strftime("%Y-%m")
+
+    def used(self) -> int:
+        with self.lock:
+            row = self.db.execute("SELECT n FROM gate_usage WHERE month = ?", (self._month(self.clock()),)).fetchone()
+        return int(row[0]) if row else 0
+
+    def _answer(self, at: float, trips: list, ctx: dict | None, now: float) -> dict:
+        info = pick(trips, now, ctx)
+        if not info:
+            return {"none": True, "asOf": at, "source": self.name}
+        return {**info, "asOf": at, "source": self.name, "note": diverted_note(info, ctx),
+                "other": bool(ctx and ctx.get("air") and not underway(info, now))}
+
+    def lookup(self, callsign: str, ctx: dict | None = None, force: bool = False, keep: bool = False) -> dict:
+        """Like the phone's: ``force`` asks again now (↻ Times); ``keep`` is a page refreshing by itself."""
+        if not self.on:
+            return {"off": True}
+        cs = "".join(c for c in callsign.upper() if c.isalnum())[:10]
+        if not cs:
+            return {"none": True}
+        now = self.clock()
+        with self.lock:
+            row = self.db.execute("SELECT at, trips FROM gate_trips WHERE callsign = ?", (cs,)).fetchone()
+        used = self.used()
+        tight = used >= self.monthly * 0.75  # the last quarter is kept for when you ask
+        if row and not force:
+            trips = json.loads(row[1])
+            if not stale(row[0], pick(trips, now, ctx), now, keep) or (tight and keep):
+                return self._answer(row[0], trips, ctx, now)
+        if used >= self.monthly:
+            return {"error": "limit"}
+        with self.lock:
+            self.db.execute("INSERT OR IGNORE INTO gate_usage (month, n) VALUES (?, 0)", (self._month(now),))
+            self.db.execute("UPDATE gate_usage SET n = n + 1 WHERE month = ?", (self._month(now),))
+            self.db.commit()
+        try:
+            got = fetch_trips(self.api, self.key, cs, now, self.fetch)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            return {"error": "other", "detail": str(exc)[:200]}
+        if "error" in got:
+            return {"error": got["error"]}
+        trips = [r for r in got["trips"] if not trip_span(r)[0] or abs(trip_span(r)[0] - now) < 2 * 86400][:12]
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO gate_trips (callsign, at, trips) VALUES (?, ?, ?)",
+                            (cs, now, json.dumps(trips)))
+            self.db.execute("DELETE FROM gate_trips WHERE at < ?", (now - 2 * 86400,))
+            self.db.commit()
+        return self._answer(now, trips, ctx, now)
 
 
 def _fetch(url: str, headers: dict) -> tuple[int, object]:

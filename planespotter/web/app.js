@@ -90,6 +90,11 @@
     quiz: null,                 // the question you're answering
     myFlights: [],              // flights you're following
     myTrack: null,              // the one shown on the map
+    tracking: saved.get('tracking', null),  // ✈︎ Track a flight: {cs, hex, label}
+    trackData: null,            // where it is (api/track)
+    trackTrail: [],             // its path so far
+    trackSearch: null,          // the last search
+    gates: new Map(),           // callsign -> 🚪 Gate answer (or 'asking')
     transits: [],               // planes about to cross the Moon
     friends: null,              // friends' leaderboard
   };
@@ -175,6 +180,7 @@
         state.quietNow = !!data.quiet_now;
         state.transits = data.transits || [];
         updateTrails();
+        if (state.pointOnLoad) { state.pointOnLoad = false; setTimeout(openPoint, 0); }
         queueInfo(state.live);
         const sel = state.selected;
         if (sel && sel.kind === 'live') {
@@ -458,7 +464,7 @@
         .map((w) => ({ w, f: flightById(w.id) }))
         .filter(({ f }) => f && matches(f));
       const extra = state.query ? '' : extraLiveSections();
-      const mine = state.query ? '' : myFlightsHtml();
+      const mine = state.query ? '' : trackCardHtml() + myFlightsHtml();
       if (!items.length && !away.length) {
         el.innerHTML = mine + empty(state.query ? 'No planes in the air match your search.'
           : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.') + extra;
@@ -710,6 +716,7 @@
     return `<div class="actions">
       ${recent ? `<button class="act${seen ? ' done' : ''}" data-action="saw" data-at="${at}">${seen ? '✓ You saw it' : '👀 I saw it'}</button>` : ''}
       ${flying ? `<button class="act${isFollowing(hex) ? ' done' : ''}" data-action="follow" title="A notification on your phone when it lands">${isFollowing(hex) ? '🔔 Following' : '🔔 Follow'}</button>` : ''}
+      ${thing.plane && thing.plane.callsign && gatesOn() ? '<button class="act" data-action="gate">🚪 Gate</button>' : ''}
       <button class="act" data-action="add-photo">📷 Add photo</button>
       <button class="act" data-action="share">↗ Share</button>
       ${known ? '<button class="act" data-action="profile">✈ This plane</button>' : ''}</div>`;
@@ -738,6 +745,7 @@
         ${thing.lost ? '<div class="note">Out of range now, showing its last position.</div>'
           : p.in_zone ? '<div class="note"><span class="badge">Overhead</span> inside your zone right now</div>' : ''}
         ${wholeNote()}
+        ${p.callsign ? gateLines(p.callsign) : ''}
         ${actionsHtml(thing)}
         <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(p.hex)}" target="_blank" rel="noopener">Follow it on adsb.lol ↗</a></div>
       </div>`;
@@ -2101,6 +2109,272 @@
     return out;
   }
 
+  // ---------- ✈︎ Track a flight, 🚪 Gate and 🔭 Point: the phone's features, here too ----------
+  function hms(s) {
+    s = Math.max(0, Math.round(s));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h ? `${h}:${String(m).padStart(2, '0')}` : m) + ':' + String(x).padStart(2, '0');
+  }
+  const clockAt = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const gatesOn = () => !!(state.config && state.config.gates && state.config.gates.on);
+
+  function openTrackSearch() {
+    const s = state.trackSearch;
+    openOverlay(`<div class="quiz track-search"><div class="k">✈︎ Track a flight</div><h2>Which flight?</h2>
+      <p class="muted">A flight number (<strong>AS 1349</strong>), an airline (<strong>Alaska</strong>), an airport
+      (<strong>PDX</strong>, <strong>Portland</strong>), both (<strong>Alaska PDX</strong>), or a registration
+      (<strong>N12345</strong>). Anywhere in the world.</p>
+      <div class="travel-form"><input id="track-q" placeholder="AS 1349" value="${esc(s ? s.query : '')}" autocomplete="off"
+        autocapitalize="characters" enterkeyhint="search"><button class="btn" data-action="track-go">Search</button></div>
+      <div id="track-results">${s ? trackResultsHtml() : ''}</div></div>`);
+    setTimeout(() => $('#track-q') && $('#track-q').focus(), 50);
+  }
+
+  async function runTrackSearch() {
+    const q = $('#track-q').value.trim();
+    if (!q) return;
+    $('#track-results').innerHTML = '<p class="muted">Looking…</p>';
+    try {
+      state.trackSearch = { ...(await getJSON(`api/search?q=${encodeURIComponent(q)}`)), shown: 10 };
+    } catch (err) {
+      $('#track-results').innerHTML = `<p class="muted">${esc(err.message)}</p>`;
+      return;
+    }
+    if ($('#track-results')) $('#track-results').innerHTML = trackResultsHtml();
+  }
+
+  function trackResultsHtml() {
+    const s = state.trackSearch;
+    if (!s) return '';
+    const waiting = (s.not_flying || []).map((cs) => `<div class="mf"><span class="who"><strong>${esc(cs)}</strong>
+        <span class="muted">Not in the air right now${s.gates_on ? ': see where it waits, its gate and take-off time' : ''}</span></span>
+        <button class="btn ghost" data-track-waiting="${esc(cs)}">Track it</button></div>`).join('');
+    const rows = s.results.slice(0, s.shown).map((r, i) => `<div class="mf result">${logo(r.callsign)}<span class="who">
+        <strong>${esc(r.label)}</strong> <span class="muted">${esc(r.airline || '')}</span>
+        <span class="muted small">${esc([r.route, fmtAlt(r.alt_ft), `${fmtDist(r.miles)} from home`].filter(Boolean).join(' · '))}</span>
+        <span class="muted small">${esc(r.why)}</span></span>
+        <button class="btn" data-track-result="${i}">Track</button></div>`).join('');
+    const more = s.results.length > s.shown
+      ? `<button class="chip more" data-action="track-more">Load more (${s.results.length - s.shown} more)</button>` : '';
+    const none = !s.results.length && !waiting
+      ? `<p class="muted">${s.limited ? 'Searches are paused for today (adsb.lol’s daily allowance).' : 'Nothing in the air matches.'}</p>` : '';
+    return `<p class="muted">${esc(s.understood)}${s.results.length ? ` · ${s.results.length} found` : ''}</p>${waiting}${rows}${more}${none}`;
+  }
+
+  let trackTimer = null;
+  function startTracking(t) {
+    state.tracking = { cs: t.cs || '', hex: t.hex || '', label: t.label || t.cs };
+    state.trackData = null;
+    state.trackTrail = [];
+    saved.set('tracking', state.tracking);
+    closeOverlay();
+    if (state.tab !== 'live') setTab('live');
+    pollTrack(true);
+  }
+
+  function stopTracking() {
+    state.tracking = null;
+    state.trackData = null;
+    state.trackTrail = [];
+    saved.set('tracking', null);
+    clearTimeout(trackTimer);
+    renderList();
+  }
+
+  async function pollTrack(first = false) {
+    clearTimeout(trackTimer);
+    const t = state.tracking;
+    if (!t) return;
+    try {
+      const d = await getJSON(`api/track?cs=${encodeURIComponent(t.cs)}&hex=${encodeURIComponent(t.hex || '')}`);
+      if (state.tracking !== t) return;  // stopped (or another flight) meanwhile
+      d.fixAt = performance.now() - ((d.plane && d.plane.seen_pos) || 0) * 1000;
+      state.trackData = d;
+      if (d.plane) {
+        if (t.hex !== d.plane.hex || first) {
+          t.hex = d.plane.hex;
+          saved.set('tracking', t);
+          loadTrackTrail();
+        }
+        const last = state.trackTrail[state.trackTrail.length - 1];
+        if (!last || last[0] !== d.plane.lon || last[1] !== d.plane.lat) {
+          state.trackTrail.push([d.plane.lon, d.plane.lat, (d.plane.alt_ft || 0) * FT]);
+        }
+        if (first) fitTo([[d.plane.lon, d.plane.lat], [state.config.home.lon, state.config.home.lat]]);
+      } else if (first && (d.ground || d.waits_at)) {
+        const w = d.ground || d.waits_at;
+        map.easeTo({ center: [w.lon, w.lat], zoom: d.ground ? 12 : 10, duration: 1300 });
+      }
+    } catch (err) {
+      toast(`Couldn’t check the flight: ${err.message}`);
+    }
+    if (state.tab === 'live') renderList();
+    trackTimer = setTimeout(pollTrack, document.hidden ? 60000 : state.trackData && state.trackData.plane ? 10000 : 30000);
+  }
+
+  async function loadTrackTrail() {
+    const t = state.tracking;
+    if (!t || !t.hex) return;
+    try {
+      const tr = await getJSON(`api/trace?hex=${encodeURIComponent(t.hex)}`);
+      if (state.tracking !== t || !(tr.path || []).length) return;
+      state.trackTrail = tr.path.map((p) => [p[1], p[0], (p[2] || 0) * FT]);
+      render();
+    } catch { /* keep what we have */ }
+  }
+
+  function trackedPlaneNow() {
+    const d = state.trackData;
+    if (!d || !d.plane) return null;
+    const p = d.plane;
+    const [lon, lat] = livePos({ ...p, fixAt: d.fixAt }, performance.now());
+    return { p, lon, lat };
+  }
+
+  function trackLayers(is3d) {
+    if (!state.tracking) return [];
+    const out = [];
+    const trail = state.trackTrail || [];
+    if (trail.length > 1) {
+      out.push(new deck.PathLayer({ id: 'tracked-trail', data: [{ path: is3d ? trail : trail.map((c) => [c[0], c[1], 0]) }],
+        getPath: (d) => d.path, getColor: a(C.select, 210), getWidth: 3, widthUnits: 'pixels', capRounded: true, jointRounded: true }));
+    }
+    const now = trackedPlaneNow();
+    const g = state.trackData && (state.trackData.ground || state.trackData.waits_at);  // on the ground, or its airport
+    const at = now ? [now.lon, now.lat, is3d ? (now.p.alt_ft || 0) * FT : 0] : g ? [g.lon, g.lat, 0] : null;
+    if (at) {
+      out.push(new deck.ScatterplotLayer({ id: 'tracked-now', data: [at], getPosition: (d) => d, getRadius: 8, radiusUnits: 'pixels',
+        getFillColor: a(C.select, 255), stroked: true, getLineColor: a(C.panel, 255), lineWidthUnits: 'pixels', getLineWidth: 2 }));
+      out.push(new deck.TextLayer({ id: 'tracked-label', data: [at], getPosition: (d) => d, getText: () => `✈︎ ${state.tracking.label}`,
+        getPixelOffset: [0, -20], getSize: 13, getColor: a(C.ink, 255), fontWeight: 700, background: true,
+        getBackgroundColor: a(C.select, 120), backgroundPadding: [6, 3],
+        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }));
+    }
+    return out;
+  }
+
+  function gateLines(cs) {
+    // The 🚪 Gate answer for a flight, the same wording as on the phone.
+    const g = state.gates.get(cs);
+    if (!g) return '';
+    if (g === 'asking') return '<div class="note">Looking up the gate…</div>';
+    if (g.off) return '';
+    if (g.error) {
+      return `<div class="note">${g.error === 'limit' ? 'Gate lookups for this month are used up'
+        : g.error === 'key' ? 'The gate service didn’t accept your key' : 'Couldn’t look up the gate'}</div>`;
+    }
+    if (g.none) return '<div class="note">No known gate: the service doesn’t list this trip</div>';
+    const from = `<div class="note small">From ${esc(g.source || 'the gate service')}${g.asOf ? `, ${Math.max(0, Math.round((Date.now() / 1000 - g.asOf) / 60))} min ago` : ''}</div>`;
+    if (g.note) return `<div class="note">⚠︎ ${esc(g.note)} The gates listed are for its scheduled airports.</div>${from}`;
+    const side = (s, verb) => (s && s.gate ? `🚪 ${esc(s.code ? `${s.code}: ` : '')}${verb} gate ${esc(s.gate)}${s.terminal ? ` (terminal ${esc(s.terminal)})` : ''}` : '');
+    const bits = [side(g.dep, 'leaves from'), side(g.arr, 'arrives at')].filter(Boolean);
+    if (g.arr && g.arr.baggage) bits.push(`🧳 Bags: carousel ${esc(g.arr.baggage)}`);
+    const other = g.other ? `<div class="note">⚠︎ ${esc(g.source || 'The service')} doesn’t show it flying: this may be another of its trips${g.dep.code && g.arr.code ? ` (${esc(g.dep.code)} → ${esc(g.arr.code)})` : ''}</div>` : '';
+    return other + (bits.length ? bits.map((b) => `<div class="note gate">${b}</div>`).join('') : '<div class="note">No gate listed yet</div>') + from;
+  }
+
+  async function askGate(cs, plane, force = false) {
+    if (!cs) return;
+    state.gates.set(cs, 'asking');
+    lastDetailHtml = '';
+    renderDetail();
+    if (state.tab === 'live') renderList();
+    const where = plane ? `&hex=${encodeURIComponent(plane.hex)}&air=1&lat=${plane.lat}&lon=${plane.lon}&alt=${plane.alt_ft ?? ''}&vr=${plane.vr ?? ''}` : '';
+    let info;
+    try { info = await getJSON(`api/gate?cs=${encodeURIComponent(cs)}${where}${force ? '&force=1' : ''}`); }
+    catch (err) { info = { error: 'other' }; }
+    state.gates.set(cs, info);
+    lastDetailHtml = '';
+    renderDetail();
+    if (state.tab === 'live') renderList();
+  }
+
+  function trackCardHtml() {
+    const t = state.tracking;
+    if (!t) return '';
+    const d = state.trackData;
+    const now = Date.now() / 1000;
+    const head = `<div class="upnext-head">✈︎ Tracking <span>${esc(t.label)}</span>
+      <button class="linkbtn danger" data-action="track-stop">Stop</button></div>`;
+    if (!d) return `<div class="myflights tracked">${head}<p class="muted">Looking for it…</p></div>`;
+    const lines = [];
+    const buttons = [];
+    if (d.plane) {
+      const p = d.plane, r = d.route || {};
+      lines.push(`<strong>${esc(label(p))}</strong> <span class="muted">${esc(r.airline || '')}</span>`);
+      if (hasRoute(r)) lines.push(esc(routeLong(r)));
+      lines.push(esc([fmtAlt(p.alt_ft), fmtSpeed(p.speed_kt), `${fmtDist(p.distance_miles)} ${compass(p.bearing)} of home`].join(' · ')));
+      lines.push(gateLines(t.cs));
+      buttons.push('<button class="act" data-action="track-show">📍 Show</button>');
+      if (gatesOn()) buttons.push('<button class="act" data-action="track-gate">🚪 Gate</button>');
+      buttons.push(`<button class="act${isFollowing(p.hex) ? ' done' : ''}" data-action="track-follow">${isFollowing(p.hex) ? '🔔 Following' : '🔔 Tell me when it lands'}</button>`);
+    } else {
+      const i = d.info && d.info.dep ? d.info : null;
+      const g = d.ground;
+      const phase = i && { taxi: 'Left the gate', air: `In the air (says ${esc(i.source)}) · the free receivers can’t see it`,
+        landed: 'Landed', cancelled: 'Cancelled', diverted: 'Diverted' }[i.phase];
+      lines.push(phase || 'Not in the air yet');
+      if (i && i.note) lines.push(`⚠︎ ${esc(i.note)}`);
+      if (g) lines.push(esc(`On the ground ${g.airport ? `at ${g.airport.city} (${g.airport.code})` : ''}${g.gs > 5 ? ', taxiing' : ''}`));
+      else if (d.waits_at) lines.push(esc(`At ${d.waits_at.city} (${d.waits_at.code})`));
+      else if (i && !i.note && !['air', 'landed'].includes(i.phase) && i.dep.code) lines.push(esc(`At ${i.dep.code}`));
+      if (i && i.phase === 'air') {
+        if (i.dep.code) lines.push(esc(`Took off from ${i.dep.code}`));
+        const due = (i.landing && (i.landing.estimated || i.landing.scheduled)) || i.arr.estimated || i.arr.scheduled;
+        if (i.arr.code) lines.push(`Due in ${esc(i.arr.code)}${due ? ` at about ${esc(clockAt(due))}${due > now ? ` · <span data-countdown="${due}">${hms(due - now)}</span>` : ''}` : ''}`);
+        if (i.arr.gate) lines.push(`🚪 Arrives at gate ${esc(i.arr.gate)}`);
+      } else if (i && i.phase === 'landed') {
+        lines.push(`In ${esc(i.arr.code || '?')}${i.arr.gate ? ` · 🚪 gate ${esc(i.arr.gate)}` : ''}`);
+      } else if (i) {
+        if (i.dep.gate && !i.note) lines.push(`🚪 Gate ${esc(i.dep.gate)}${i.dep.terminal ? `, terminal ${esc(i.dep.terminal)}` : ''}`);
+        else if (!i.note) lines.push(i.takeoff_at && i.takeoff_at - now > 2 * 3600 ? 'No gate listed yet (usually an hour or two before)' : 'No gate listed');
+        if (i.takeoff_at && i.phase !== 'cancelled') {
+          lines.push(i.takeoff_at > now + 30
+            ? `<strong>Takes off in <span data-countdown="${i.takeoff_at}">${hms(i.takeoff_at - now)}</span></strong> (about ${esc(clockAt(i.takeoff_at))})`
+            : 'Should be taking off about now');
+        }
+        if (typeof i.dep.delay === 'number') lines.push(i.dep.delay >= 5 ? `⏱ Delayed ${i.dep.delay} min` : i.dep.delay <= -5 ? `⏱ ${-i.dep.delay} min early` : '⏱ On time');
+      }
+      if (i && i.asOf) lines.push(`<span class="small">Times from ${esc(i.source || '')}, updated ${Math.max(0, Math.round((now - i.asOf) / 60))} min ago</span>`);
+      if (!d.gates_on) lines.push('<span class="small">Where it leaves from, its gate, take-off time and delays: set up gate numbers (see the README)</span>');
+      else if (d.info && d.info.error === 'limit') lines.push('Gate lookups for this month are used up');
+      else if (d.info && d.info.none) lines.push('The gate service doesn’t list a trip for it around now');
+      if (g || d.waits_at) buttons.push('<button class="act" data-action="track-show">📍 Show</button>');
+      if (d.gates_on) buttons.push('<button class="act" data-action="track-times">↻ Times</button>');
+      const mine = (state.myFlights || []).some((f) => f.callsign === t.cs);
+      buttons.push(`<button class="act${mine ? ' done' : ''}" data-action="track-notify">${mine ? '🔔 You’ll hear when it flies' : '🔔 Tell me when it flies'}</button>`);
+    }
+    return `<div class="myflights tracked">${head}${lines.filter(Boolean).map((l) => `<div class="tline">${l}</div>`).join('')}
+      <div class="actions">${buttons.join('')}</div></div>`;
+  }
+
+  function pointLink(wide) {
+    // 🔭 Point opens in Safari (which gives web pages the compass), with the planes around home in the link
+    // (``wide``: every plane within 45 miles, wider than the map shows; already moved on to now).
+    const c = state.config, t = performance.now();
+    const r4 = (x) => Math.round(x * 1e4) / 1e4;
+    const planes = (wide || state.live).filter((p) => p.alt_ft != null).slice(0, 90).map((p) => {
+      const [lon, lat] = wide ? [p.lon, p.lat] : livePos(p, t);
+      return [p.hex, label(p), p.callsign || '', r4(lat), r4(lon), p.alt_ft, p.speed_kt == null ? null : Math.round(p.speed_kt),
+        p.heading == null ? null : Math.round(p.heading), p.type || ''];
+    });
+    const due = predictions(t, 900).slice(0, 6).map((x) => [x.p.hex, Math.round(Date.now() / 1000 + x.eta)]);
+    const d = { v: 1, at: Math.round(Date.now() / 1000), me: [r4(c.home.lat), r4(c.home.lon)], g: Math.round(c.home_elevation_ft || 0),
+      r: c.radius_miles, home: c.home.name, p: planes, n: due, back: `${location.origin}${location.pathname}#point` };
+    return `${c.point_url}#${encodeURIComponent(JSON.stringify(d))}`;
+  }
+
+  async function openPoint() {
+    let wide = null;
+    try { wide = (await getJSON('api/point')).planes; } catch { /* the map's planes will do */ }
+    location.href = pointLink(wide);
+  }
+
+  setInterval(() => {  // countdowns tick by themselves
+    const now = Date.now() / 1000;
+    for (const el of document.querySelectorAll('[data-countdown]')) el.textContent = hms(Number(el.dataset.countdown) - now);
+  }, 1000);
+
   // ---------- planes crossing the Moon ----------
   function transitTarget() {
     const now = Date.now() / 1000;
@@ -2520,6 +2794,7 @@
         fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
       }),
       ...myTrackLayers(is3d),
+      ...trackLayers(is3d),
       ...logoLayers(labelled.map((d) => ({ code: airlineCode(d.p.callsign), pos: [d.lon, d.lat, d.z] }))
         .concat(farAway.map((d) => {
           const f = flightById(d.w.id);
@@ -2603,6 +2878,34 @@
       const open = e.target.closest('[data-open-flight]');
       if (open) { openFlight(open.dataset.openFlight); return; }
       if (e.target.closest('[data-action="add-flight"]')) { openAddFlight(); return; }
+      if (e.target.closest('[data-action="track-stop"]')) { stopTracking(); return; }
+      if (e.target.closest('[data-action="track-show"]')) {
+        const now = trackedPlaneNow(), g = state.trackData && (state.trackData.ground || state.trackData.waits_at);
+        if (now) fitTo([[now.lon, now.lat]].concat((state.trackTrail || []).map((c) => [c[0], c[1]])));
+        else if (g) map.easeTo({ center: [g.lon, g.lat], zoom: 12, duration: 1300 });
+        return;
+      }
+      if (e.target.closest('[data-action="track-gate"]')) {
+        const d = state.trackData;
+        if (d && d.plane) askGate(state.tracking.cs, d.plane, false);
+        return;
+      }
+      if (e.target.closest('[data-action="track-times"]')) {
+        if (state.trackData && state.trackData.info) state.trackData.info = { ...state.trackData.info, asOf: null };
+        getJSON(`api/gate?cs=${encodeURIComponent(state.tracking.cs)}&force=1`).then(() => pollTrack()).catch((err) => toast(err.message));
+        return;
+      }
+      if (e.target.closest('[data-action="track-follow"]')) {
+        const p = state.trackData && state.trackData.plane;
+        if (p) toggleFollow(p.hex, p.callsign);
+        return;
+      }
+      if (e.target.closest('[data-action="track-notify"]')) {
+        postJSON('api/myflights', { flight: state.tracking.cs, day: 'today' })
+          .then((r) => { state.myFlights = r.flights; toast(`🔔 You’ll get a notification when ${state.tracking.label} takes off`); renderList(); })
+          .catch((err) => toast(err.message));
+        return;
+      }
       const sf = e.target.closest('[data-show-flight]');
       if (sf) { showMyFlight(sf.dataset.showFlight); return; }
       const rf = e.target.closest('[data-remove-flight]');
@@ -2652,6 +2955,7 @@
       const t = thing && (thing.plane || thing.flight);
       if (t && e.target.closest('[data-action="follow"]')) toggleFollow(t.hex, t.callsign);
       if (t && e.target.closest('[data-action="profile"]')) openProfile(t.hex);
+      if (thing && thing.plane && e.target.closest('[data-action="gate"]')) askGate(thing.plane.callsign, thing.plane);
       const saw = e.target.closest('[data-action="saw"]');
       if (saw) {
         const thing = selectedThing();
@@ -2703,10 +3007,13 @@
     });
     $('#photo-input').addEventListener('change', (e) => uploadPhoto(e.target.files[0]));
     $('#btn-travel').addEventListener('click', openTravel);
+    $('#btn-track').addEventListener('click', openTrackSearch);
+    $('#btn-point').addEventListener('click', openPoint);
     $('#travel-line').addEventListener('click', (e) => { if (e.target.closest('[data-action="travel-stop"]')) stopTravel(); });
     $('#photos-input').addEventListener('change', (e) => { if (e.target.files.length) addPhotoBatch(Array.from(e.target.files)); e.target.value = ''; });
     $('#overlay').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && e.target.id === 'flight-number') addFlight();
+      if (e.key === 'Enter' && e.target.id === 'track-q') runTrackSearch();
     });
     $('#overlay').addEventListener('click', (e) => {
       if (e.target === e.currentTarget || e.target.closest('[data-action="close-overlay"]')) { closeOverlay(); return; }
@@ -2718,6 +3025,20 @@
         return;
       }
       if (e.target.closest('[data-action="flight-go"]')) { addFlight(); return; }
+      if (e.target.closest('[data-action="track-go"]')) { runTrackSearch(); return; }
+      if (e.target.closest('[data-action="track-more"]')) {
+        state.trackSearch.shown += 10;
+        $('#track-results').innerHTML = trackResultsHtml();
+        return;
+      }
+      const tr = e.target.closest('[data-track-result]');
+      if (tr) {
+        const r = state.trackSearch.results[Number(tr.dataset.trackResult)];
+        startTracking({ cs: r.callsign, hex: r.hex, label: r.callsign || r.label });
+        return;
+      }
+      const tw = e.target.closest('[data-track-waiting]');
+      if (tw) { startTracking({ cs: tw.dataset.trackWaiting, hex: '', label: tw.dataset.trackWaiting }); return; }
       const ans = e.target.closest('[data-quiz-answer]');
       if (ans) { answerQuiz(ans.dataset.quizAnswer); return; }
       if (e.target.closest('[data-action="share-wrapped"]')) { shareWrapped(); return; }
@@ -2827,6 +3148,13 @@
     setInterval(() => { if (!document.hidden) loadOutlook(); }, 10 * 60000);
     loadMyFlights();
     setInterval(() => { if (!document.hidden) loadMyFlights(); }, 2 * 60000);
+    // 🔭 Point needs a compass: phones and tablets. Its ↻ Fresh planes comes back here (#point) for new ones.
+    $('#btn-point').hidden = !(window.matchMedia('(pointer: coarse)').matches && state.config.point_url);
+    if (location.hash === '#point') {
+      history.replaceState(null, '', location.pathname + location.search);
+      state.pointOnLoad = true;
+    }
+    if (state.tracking) pollTrack(true);
     loadFriends();
     setInterval(() => { if (!document.hidden && state.tab === 'collection') loadFriends(); }, 10 * 60000);
     renderTravel();

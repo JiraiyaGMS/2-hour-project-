@@ -1958,6 +1958,19 @@ async function page(wv, code) {
   }
 }
 
+async function fullApp(cache) {
+  // The Mac's full app, if it answers: at its address, or by its name (if the Wi-Fi gave it a new address).
+  // "" away from home or with the Mac asleep (then it's the map here). Not even tried when the phone was far
+  // from home a moment ago, so the map doesn't wait.
+  const last = cache.where, home = SETTINGS.home;
+  if (last && now - last.at < 30 * 60 && miles(last.lat, last.lon, home.lat, home.lon) > 50) return "";
+  for (const base of [SETTINGS.mac, SETTINGS.macName].filter(Boolean).map((b) => b.replace(/\/$/, ""))) {
+    const c = await getJSON(base + "/api/config", 2);
+    if (c && c.home) return base;
+  }
+  return "";
+}
+
 async function showMap() {
   // A live map of the planes around you. Planes move between updates; it asks adsb.lol every 15 s
   // for the first 10 minutes, then every minute (and pauses for the day at DAILY_LIMIT). It also
@@ -2113,7 +2126,12 @@ if (config.runsInApp) {
   // Tapped the widget, or ran it in Scriptable: the live map. ("point" from a shortcut: straight to pointing.)
   const asked = JSON.stringify((typeof args !== "undefined" && (args.queryParameters || args.plainTexts)) || "");
   if (/point/i.test(asked)) await pointNow();  // "Point Planespotter", or ↻ on the Point page
-  else await showMap();
+  else {
+    // On your home Wi-Fi: the Mac's full app (Spotted, Collection, Noise, replay, and everything here too).
+    const full = /phone ?map/i.test(asked) ? "" : await fullApp(loadCache());
+    if (full) Safari.open(full + "/");
+    else await showMap();
+  }
 } else if (forSiri && siriAsked()) {
   // "Hey Siri, where's my plane?", or "Hey Siri, find a flight" ... "Alaska 1349"
   const cache = loadCache();

@@ -24,6 +24,9 @@ from .adsb import (Aircraft, FeedWithReceiver, LiveFeed, Lookup, PositionLookup,
 from .airports import airports, route_from_path
 from .airlines import AIRLINES
 from .gates import APIS as GATE_APIS
+from .gates import GateBook, takeoff_at
+from .gates import shares as gate_shares
+from .track import Sky, search, where_now
 from .budget import ApiBudget
 from .collection import build_collection
 from .config import Config
@@ -86,7 +89,7 @@ def plane_json(cfg: Config, ac: Aircraft) -> dict[str, Any]:
         "hex": ac.hex, "callsign": ac.callsign, "registration": ac.registration,
         "type": ac.type_code, "lat": ac.lat, "lon": ac.lon, "alt_ft": ac.alt_ft,
         "speed_kt": ac.speed_kt, "heading": ac.track, "squawk": ac.squawk,
-        "seen_pos": ac.seen_pos, "distance_miles": round(dist, 2),
+        "seen_pos": ac.seen_pos, "distance_miles": round(dist, 2), "vr": ac.vr,
         "bearing": round(bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)),
         "in_zone": in_zone(cfg, dist, ac.alt_ft),
         "special": [{"text": text, "short": short_label(key, text), "emergency": emergency}
@@ -208,6 +211,9 @@ class MapApp:
         self.flights = flight_lookup or FlightLookup(clock=clock, api_base=cfg.adsb_api, api_key=key, budget=budget)
         self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget)
         self.logos = logo_cache or LogoCache(Path(cfg.db_path).parent / "logo-cache")
+        # ✈︎ Track a flight and 🚪 Gate, the same as on the phone.
+        self.search_sky = Sky(cfg.adsb_api, key, budget, clock)
+        self.gatebook = GateBook(cfg, clock) if cfg.gates_api in GATE_APIS and cfg.gates_key else None
         self._local = threading.local()
         self._whole_cache: dict[float, tuple[float, list]] = {}
 
@@ -259,7 +265,90 @@ class MapApp:
             "places": self.places,
             "travel": self.travel.status() if self.travel else None,
             "can_travel": self.travel is not None,
+            "gates": {"on": bool(self.gatebook), "name": self.gatebook.name if self.gatebook else ""},
+            "point_url": POINT_URL,
         }
+
+    # --- ✈︎ Track a flight and 🚪 Gate (the phone's features, on the Mac's map) ---
+
+    def route_for(self, r: dict) -> dict:
+        """The airline and a checked route for a search result (from adsbdb, kept in the database)."""
+        ac = Aircraft(hex=r["hex"], callsign=r["callsign"], registration=r.get("registration", ""),
+                      type_code=r.get("type", ""), lat=r["lat"], lon=r["lon"], alt_ft=r.get("alt_ft"),
+                      speed_kt=r.get("speed_kt"), track=r.get("heading"))
+        info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, self.clock())
+        return {"airline": info.airline, "origin": info.origin, "destination": info.destination}
+
+    def search_json(self, query: dict[str, str]) -> dict[str, Any]:
+        q = query.get("q", "")[:80]
+        if self.budget:
+            self.budget.mark_viewing()
+        out = search(q, self.search_sky, (self.cfg.home_lat, self.cfg.home_lon), self.route_for)
+        return {**out, "gates_on": bool(self.gatebook)}
+
+    def plane_ctx(self, query: dict[str, str]) -> dict:
+        """Where the receivers see a plane (for picking the right trip): from the live planes, or the page."""
+        hex_code = clean_hex(query.get("hex", ""))
+        for p in (self.live.get().get("aircraft") or []):
+            if hex_code and p["hex"] == hex_code:
+                return {"air": True, "lat": p["lat"], "lon": p["lon"], "alt": p["alt_ft"], "vr": p.get("vr")}
+        try:
+            if query.get("air") == "1":
+                alt = query.get("alt")
+                return {"air": True, "lat": float(query["lat"]), "lon": float(query["lon"]),
+                        "alt": float(alt) if alt not in (None, "", "null") else None,
+                        "vr": float(query["vr"]) if query.get("vr") not in (None, "", "null") else None}
+        except (KeyError, ValueError):
+            pass
+        return {}
+
+    def point_json(self) -> dict[str, Any]:
+        """For 🔭 Point: every plane the Mac knows within 45 miles (wider than the map's view), moved on to now."""
+        planes, fetched_at = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
+        now = self.clock()
+        out = []
+        for ac in planes or []:
+            moved = glide(ac, now - fetched_at + (ac.seen_pos or 0))
+            if distance_miles(self.cfg.home_lat, self.cfg.home_lon, moved.lat, moved.lon) <= 45:
+                out.append(plane_json(self.cfg, moved))
+        return {"planes": out, "time": now}
+
+    def gate_json(self, query: dict[str, str]) -> dict[str, Any]:
+        if not self.gatebook:
+            return {"off": True}
+        cs = query.get("cs", "")[:10]
+        return self.gatebook.lookup(cs, self.plane_ctx(query), force=query.get("force") == "1")
+
+    def track_json(self, query: dict[str, str]) -> dict[str, Any]:
+        """Where a flight you're tracking is: flying (live), or waiting (where, gate, take-off time, delay)."""
+        cs = "".join(c for c in query.get("cs", "").upper() if c.isalnum())[:10]
+        hex_code = clean_hex(query.get("hex", ""))
+        now = self.clock()
+        if self.budget:
+            self.budget.mark_viewing()
+        where = where_now(cs, hex_code, self.search_sky, self.positions)
+        out: dict[str, Any] = {"cs": cs, "time": now, "gates_on": bool(self.gatebook)}
+        if "flying" in where:
+            ac = where["flying"]
+            out["plane"] = {**plane_json(self.cfg, ac), "vr": ac.vr}
+            info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, now)
+            out["route"] = {"airline": info.airline, "origin": info.origin, "destination": info.destination,
+                            "origin_city": info.origin_city, "destination_city": info.destination_city}
+            return out
+        ground = where.get("ground")
+        out["ground"] = ground
+        if self.gatebook and cs:
+            ap = ground and ground.get("airport")
+            info = self.gatebook.lookup(cs, {"at": [ap["code"], ap["icao"]]} if ap else {}, keep=True)
+            if "dep" in info:
+                info["takeoff_at"] = takeoff_at(info)
+                # Where it waits, from its schedule (only the gate service says that reliably).
+                dep = airports().get(info["dep"]["code"]) if not ground and not info.get("note") and \
+                    info["phase"] in ("scheduled", "taxi") else None
+                if dep:
+                    out["waits_at"] = {"code": dep.code, "city": dep.city or dep.name, "lat": dep.lat, "lon": dep.lon}
+            out["info"] = info
+        return out
 
     def flights_json(self, days: float) -> dict[str, Any]:
         since = 0.0 if days <= 0 else self.clock() - days * 86400
@@ -667,6 +756,14 @@ def command_url(cfg: Config) -> str:
     return f"{cfg.ntfy_server.rstrip('/')}/{derived_topic(cfg.ntfy_topic, 'cmd')}" if cfg.ntfy_topic else ""
 
 
+def mac_name_url(cfg: Config) -> str:
+    """This Mac by its Bonjour name (Your-Mac.local): still right when the Wi-Fi gives it a new address."""
+    name = socket.gethostname().split(".")[0]
+    if not name or not all(c.isalnum() or c == "-" for c in name):
+        return ""
+    return f"http://{name}.local:{cfg.map_port}"
+
+
 def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
     """The Scriptable script (widget and Siri), with your settings filled in.
 
@@ -678,14 +775,15 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
         "home": {"name": cfg.home_name, "lat": round(cfg.home_lat, 5), "lon": round(cfg.home_lon, 5),
                  "groundFt": home_elevation_ft(cfg)},
         "radius": cfg.radius_miles, "maxAlt": cfg.max_altitude_ft,
-        "mac": map_url, "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
+        "mac": map_url, "macName": mac_name_url(cfg) if map_url else "",
+        "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
         "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
     }
     settings["airportsUrl"] = AIRPORTS_URL
     settings["pointUrl"] = POINT_URL
     if with_keys and cfg.gates_api in GATE_APIS and cfg.gates_key:
         settings["gates"] = {"api": cfg.gates_api, "key": cfg.gates_key, "name": GATE_APIS[cfg.gates_api]["name"],
-                             "monthly": cfg.gates_monthly or GATE_APIS[cfg.gates_api]["monthly"]}
+                             "monthly": gate_shares(cfg)[0]}  # the phone's share: the Mac's map has the rest
     script = (WEB_DIR / "scriptable.js").read_text(encoding="utf-8")
     return (script.replace("__SETTINGS__", json.dumps(settings, ensure_ascii=False))
             .replace("__AIRLINES__", json.dumps(AIRLINES_FOR_PHONE, ensure_ascii=False, separators=(",", ":")))
@@ -843,6 +941,14 @@ def make_handler(app: MapApp):
                     self.send_json(app.trace_json(query.get("hex", "")))
                 elif url.path == "/api/info":
                     self.send_json(app.info_json(query))
+                elif url.path == "/api/search":
+                    self.send_json(app.search_json(query))
+                elif url.path == "/api/track":
+                    self.send_json(app.track_json(query))
+                elif url.path == "/api/point":
+                    self.send_json(app.point_json())
+                elif url.path == "/api/gate":
+                    self.send_json(app.gate_json(query))
                 else:
                     self.send_json({"error": "not found"}, 404)
             except (BrokenPipeError, ConnectionResetError):

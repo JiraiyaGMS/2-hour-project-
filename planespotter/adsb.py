@@ -16,7 +16,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from .geo import distance_miles
+from .geo import bearing_deg, distance_miles
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class Aircraft:
     category: str = ""     # ADS-B emitter category: A1 light ... A5 heavy, A7 helicopter
     db_flags: int = 0      # adsb.lol's aircraft database: 1 = military
     emergency: str = ""    # "general", "lifeguard", "nordo"... when the crew declares one
+    vr: float | None = None  # climbing (+) or descending (-), feet a minute
 
     @property
     def label(self) -> str:
@@ -96,6 +97,7 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
         category=str(raw.get("category") or ""),
         db_flags=int(raw.get("dbFlags") or 0) if str(raw.get("dbFlags") or 0).isdigit() else 0,
         emergency="" if raw.get("emergency") in (None, "none") else str(raw.get("emergency")),
+        vr=num("baro_rate") if num("baro_rate") is not None else num("geom_rate"),
     )
 
 
@@ -330,7 +332,15 @@ def route_is_plausible(aircraft: Aircraft, origin: dict, dest: dict) -> bool:
     direct = distance_miles(olat, olon, dlat, dlon)
     via_plane = (distance_miles(olat, olon, aircraft.lat, aircraft.lon)
                  + distance_miles(aircraft.lat, aircraft.lon, dlat, dlon))
-    return via_plane <= direct * 1.15 + 60
+    if via_plane > direct * 1.15 + 60:
+        return False
+    # Out in the middle of the trip it should be pointing roughly at where it's going (the phone's check too).
+    if (aircraft.track is not None and distance_miles(olat, olon, aircraft.lat, aircraft.lon) > 60
+            and distance_miles(aircraft.lat, aircraft.lon, dlat, dlon) > 100):
+        off = abs((bearing_deg(aircraft.lat, aircraft.lon, dlat, dlon) - aircraft.track + 540) % 360 - 180)
+        if off > 75:
+            return False
+    return True
 
 
 class Lookup:

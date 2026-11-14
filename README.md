@@ -227,6 +227,28 @@ browser on your Mac.
   the ones that came during quiet hours.
 - **Search** works on both lists and the map: try a flight number, an
   airline (*delta*), an airport code (*JFK*), a city, or an aircraft (*A380*).
+- **✈︎ Track a flight** (under the search box) finds a flight anywhere in
+  the world, the same as on your phone. Search by:
+  - a flight number (*AS 1349*);
+  - an airline (*Alaska*);
+  - an airport (*PDX*, *Portland*), or both (*Alaska PDX*);
+  - a registration (*N12345*).
+
+  You get the 10 best matches, and **Load more** adds 10 more. Tap **Track**
+  and a card at the top of *In the air* follows it:
+  - **Flying:** where it is, its height, speed and route, with its trail on
+    the map. **🚪 Gate** shows its gates; **🔔 Tell me when it lands** sends
+    a notification.
+  - **Not flying yet:** where it waits (pinned on the map), its gate, a
+    countdown to take-off and any delay. **↻ Times** checks again;
+    **🔔 Tell me when it flies** adds it to *Your flights*.
+- **🚪 Gate** in any plane's details looks up its gates (with gate numbers
+  set up). It also shows which service the answer came from and how old it
+  is, and warns if the plane looks diverted.
+- **🔭 Point ↗** (phones and tablets) opens the beam page in Safari with the
+  planes around home: point your phone at a plane to find out what it is.
+  Its **↻ Fresh planes** comes back here and straight into Point again.
+
 - **Click any flight** (in the list or on the map) to see its route, a
   photo of the actual aircraft, its altitude and speed, and its whole
   flight in pink. It also says whether the plane is still in the air (and
@@ -656,7 +678,23 @@ wasn't allowed*), your phone still has the old script.
 
 ### Live map on your phone
 
-Tap the widget (or open **planespotter** in Scriptable and tap **▶**) for a
+**At home, it's the full app.** On your home Wi-Fi, tapping the widget (or
+running **planespotter** in Scriptable) opens your Mac's full app in Safari.
+That's everything in *The live map* above:
+- *Spotted*, *Collection*, *Noise*, the replay, the heat map and sky view;
+- the phone's own extras: ✈︎ Track a flight with gates and take-off
+  countdowns, 🚪 Gate and 🔭 Point.
+
+It finds the Mac at its Wi-Fi address, or by its name (like
+`Your-Mac.local`) if the address changed. The first time, your iPhone may ask
+to let Scriptable *find devices on your local network*: tap **Allow**. Tip:
+in Safari, **Share → Add to Home Screen** gives the full app its own icon (it
+works on your home Wi-Fi). Away from home, or with the Mac asleep, you get
+the phone's map below instead. To get the phone's map at home anyway, run
+`scriptable:///run/planespotter?phonemap=1` (for example from a shortcut).
+
+**Away from home (or the Mac asleep)**, tap the widget (or open
+**planespotter** in Scriptable and tap **▶**) for a
 full-screen map of the planes around you, wherever you are: your zone around
 the blue dot, every plane with its callsign and height (amber: the next
 ones over you, blue: below 10,000 ft), moving smoothly between updates, and
@@ -845,8 +883,11 @@ again sooner when they're likely to change: every 20 minutes or so in the
 last three hours before take-off while there's no gate yet (that's when
 gates are given out), around take-off, while it's flying, and just after it
 lands. The phone stops just under the free allowance each month (900
-lookups for AeroAPI, 90 for Aviationstack; change it with `GATES_MONTHLY`),
-and once three quarters are used it only looks up when you ask. Your key
+lookups for AeroAPI, 90 for Aviationstack; change it with `GATES_MONTHLY`).
+The allowance is split so the two together stay inside it: 60% for the
+phone and 40% for the Mac's full app (54 and 36 a month for Aviationstack).
+Once three quarters of either share is used, that side only looks up when
+you ask. Your key
 goes only into the copy of the script for your phone, not the one your
 Mac's map serves on your Wi-Fi. `gates off` turns it off.
 
