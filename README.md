@@ -839,13 +839,47 @@ python3 -m planespotter gates aeroapi YOUR_KEY
 again (`python3 -m planespotter phone --copy widget`).
 
 Gates are looked up only when you ask: tap **🚪 Gate** on a plane or on the
-flight you're tracking, or ask *"Hey Siri, where's my plane?"*. Each answer is
-kept on your phone for two hours, so asking again costs nothing, and the
-phone stops just under the free allowance each month (900 lookups for
-AeroAPI, 90 for Aviationstack; change it with `GATES_MONTHLY`). Your key goes
-only into the copy of the script for your phone, not the one your Mac's map
-serves on your Wi-Fi. `gates off` turns it off. Not every airport reports
-gates, so some flights still say *no known gate*.
+flight you're tracking, or ask *"Hey Siri, where's my plane?"*. Answers are
+kept on your phone, so asking again usually costs nothing. They're looked up
+again sooner when they're likely to change: every 20 minutes or so in the
+last three hours before take-off while there's no gate yet (that's when
+gates are given out), around take-off, while it's flying, and just after it
+lands. The phone stops just under the free allowance each month (900
+lookups for AeroAPI, 90 for Aviationstack; change it with `GATES_MONTHLY`),
+and once three quarters are used it only looks up when you ask. Your key
+goes only into the copy of the script for your phone, not the one your
+Mac's map serves on your Wi-Fi. `gates off` turns it off.
+
+**How it avoids wrong answers.**
+
+- **Aviationstack's times are local.** Aviationstack labels its times as UTC,
+  but they're each airport's local clock time. planespotter reads them in the
+  airport's time zone, so countdowns and "leaves at" are right. It checks the
+  times fit what the flight is doing, in case Aviationstack ever changes this.
+- **The right trip.** A flight number often flies several legs a day, and
+  every day. Every trip the service lists is kept, and the one that fits right
+  now is used:
+  - the one in the air, about to leave, or just landed;
+  - where the receivers see the plane, which decides between legs.
+
+  If none of them is near now, you get no answer rather than another day's.
+  Codeshare listings are skipped in favour of the airline that flies it.
+- **Diversions.** If the service says a flight was diverted, or the receivers
+  see it somewhere its schedule doesn't take it, you're told it looks
+  diverted. Examples: on the ground at Portland when it's scheduled Seattle →
+  Anchorage, or coming down near Portland when it's due in Seattle. The listed
+  gates are then not given as if they were where the plane is.
+- **Routes.** A route from the route database (adsbdb) is only used if the
+  plane is between its two airports and, mid-trip, pointing roughly at where
+  it's going. A schedule from the gate service, when there is one, wins.
+- **Horizon.** Alaska's 2000-numbered flights are flown by Horizon, whose
+  planes broadcast QXE plus the same number. Searching, tracking and
+  "where's my plane" look for both.
+- **How old.** The map shows which service each gate came from and how long
+  ago. Siri says so when it's more than about 45 minutes old.
+
+Not every airport reports gates, and arrival gates often come late, so some
+flights still say *no gate listed*.
 
 ### Commands from your phone
 

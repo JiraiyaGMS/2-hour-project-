@@ -129,7 +129,11 @@ function wantRoute(s) {
       var o = fr.origin || {}, d = fr.destination || {};
       var direct = miles(o.latitude, o.longitude, d.latitude, d.longitude);
       var via = miles(o.latitude, o.longitude, s.at[0], s.at[1]) + miles(s.at[0], s.at[1], d.latitude, d.longitude);
-      if (isFinite(direct) && isFinite(via) && via <= direct * 1.15 + 60) {  // only if it fits where it's flying
+      var off = Math.abs(turnOf(bearing(s.at[0], s.at[1], d.latitude, d.longitude), p.track || 0));
+      var midway = p.track !== null && p.track !== undefined && miles(o.latitude, o.longitude, s.at[0], s.at[1]) > 60 &&
+        miles(s.at[0], s.at[1], d.latitude, d.longitude) > 100;
+      // only if it fits where it's flying (and, mid-trip, the way it's pointing): route databases are often out of date
+      if (isFinite(direct) && isFinite(via) && via <= direct * 1.15 + 60 && !(midway && off > 75)) {
         out.route = (o.iata_code || o.icao_code) + " → " + (d.iata_code || d.icao_code);
         out.city = o.municipality || "";
       }

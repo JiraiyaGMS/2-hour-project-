@@ -591,6 +591,68 @@ class GateTests(unittest.TestCase):
         self.assertTrue(asked[0].startswith("https://api.aviationstack.com/v1/flights?access_key=KEY&flight_icao=ASA312"))
         self.assertEqual((info["arr"]["gate"], info["arr"]["baggage"]), ("N12", "12"))
 
+    def _stack(self, *trips):
+        return {"data": [dict(t) for t in trips]}
+
+    def test_aviationstack_times_are_the_airports_clock(self):
+        # Aviationstack labels times "+00:00" but means the airport's own clock: 3:05 pm in Portland, not 3:05 UTC.
+        from planespotter.gates import describe, lookup
+        now = ts(2026, 11, 14, 20)  # noon in Portland
+        body = self._stack({"flight_date": "2026-11-14", "flight_status": "scheduled",
+                            "departure": {"iata": "PDX", "timezone": "America/Los_Angeles", "gate": "C7", "delay": 15,
+                                          "scheduled": "2026-11-14T15:05:00+00:00", "estimated": "2026-11-14T15:20:00+00:00"},
+                            "arrival": {"iata": "LAX", "timezone": "America/Los_Angeles", "scheduled": "2026-11-14T17:25:00+00:00"},
+                            "flight": {"icao": "ASA1349", "codeshared": None}})
+        info = lookup("aviationstack", "K", "ASA1349", now, lambda u, h: (200, body))
+        self.assertEqual((info["dep"]["scheduled"], info["dep"]["estimated"]), (ts(2026, 11, 14, 23, 5), ts(2026, 11, 14, 23, 20)))
+        self.assertEqual(info["arr"]["scheduled"], ts(2026, 11, 15, 1, 25))
+        self.assertIn("leaves from gate C7", describe(info))
+
+    def test_if_aviationstack_ever_sends_real_utc_it_still_reads_right(self):
+        from planespotter.gates import lookup
+        now = ts(2026, 11, 14, 20)
+        body = self._stack({"flight_date": "2026-11-14", "flight_status": "active",  # took off an hour ago (real UTC)
+                            "departure": {"iata": "PDX", "timezone": "America/Los_Angeles", "actual": "2026-11-14T19:00:00+00:00"},
+                            "arrival": {"iata": "LAX", "timezone": "America/Los_Angeles", "estimated": "2026-11-14T21:10:00+00:00"},
+                            "live": {"updated": "2026-11-14T19:58:00+00:00", "latitude": 42.0, "longitude": -122.0, "is_ground": False},
+                            "flight": {"icao": "ASA1349"}})
+        info = lookup("aviationstack", "K", "ASA1349", now, lambda u, h: (200, body))
+        self.assertEqual((info["phase"], info["dep"]["actual"]), ("air", ts(2026, 11, 14, 19)))
+
+    def test_the_leg_that_fits_now(self):
+        from planespotter.gates import lookup
+        now = ts(2026, 11, 14, 21, 30)  # 1:30 pm in Seattle
+        tz = "America/Los_Angeles"
+        def trip(day, status, frm, to, out, inn, gate, **kw):
+            return {"flight_date": day, "flight_status": status, "flight": {"icao": "ASA2034", "codeshared": kw.get("codeshared")},
+                    "departure": {"iata": frm, "timezone": tz, "gate": gate, "scheduled": out, **kw.get("dep", {})},
+                    "arrival": {"iata": to, "timezone": tz, "scheduled": inn, **kw.get("arr", {})}}
+        yesterday = trip("2026-11-13", "landed", "SEA", "GEG", "2026-11-13T14:30:00+00:00", "2026-11-13T15:40:00+00:00", "A1",
+                         arr={"actual": "2026-11-13T15:35:00+00:00"})
+        leg1 = trip("2026-11-14", "landed", "PDX", "SEA", "2026-11-14T12:00:00+00:00", "2026-11-14T13:00:00+00:00", "C9",
+                    arr={"actual": "2026-11-14T12:55:00+00:00"})
+        leg2 = trip("2026-11-14", "scheduled", "SEA", "GEG", "2026-11-14T14:30:00+00:00", "2026-11-14T15:40:00+00:00", "A2")
+        codeshare = trip("2026-11-14", "scheduled", "SEA", "GEG", "2026-11-14T14:30:00+00:00", "2026-11-14T15:40:00+00:00", "Z9",
+                         codeshared={"flight_icao": "asa2034"})
+        info = lookup("aviationstack", "K", "QXE2034", now, lambda u, h: (200, self._stack(codeshare, yesterday, leg1, leg2)))
+        self.assertEqual((info["dep"]["code"], info["dep"]["gate"]), ("SEA", "A2"))  # about to leave, not just landed
+        only_yesterday = lookup("aviationstack", "K", "ASA2034", now, lambda u, h: (200, self._stack(yesterday)))
+        self.assertTrue(only_yesterday.get("none"))  # another day's trip is no answer
+        asked = []
+        lookup("aviationstack", "K", "QXE2034", now, lambda u, h: (asked.append(u), (200, {"data": []}))[1])
+        self.assertIn("flight_icao=ASA2034", asked[0])  # Horizon's QXE flights are listed under Alaska's number
+
+    def test_diverted(self):
+        from planespotter.gates import describe, lookup
+        now = ts(2026, 11, 14, 20)
+        body = self._stack({"flight_date": "2026-11-14", "flight_status": "diverted", "flight": {"icao": "ASA99"},
+                            "departure": {"iata": "ANC", "timezone": "America/Anchorage", "actual": "2026-11-14T07:00:00+00:00"},
+                            "arrival": {"iata": "SEA", "timezone": "America/Los_Angeles", "gate": "N3",
+                                        "scheduled": "2026-11-14T11:40:00+00:00"}})
+        info = lookup("aviationstack", "K", "ASA99", now, lambda u, h: (200, body))
+        self.assertEqual(info["phase"], "diverted")
+        self.assertIn("DIVERTED", describe(info))
+
     def test_problems(self):
         from planespotter.gates import lookup
         self.assertEqual(lookup("aeroapi", "BAD", "ASA312", self.now, lambda u, h: (401, {"title": "Unauthorized"}))["error"], "key")
