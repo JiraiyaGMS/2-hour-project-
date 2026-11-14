@@ -2167,9 +2167,10 @@
     state.trackData = null;
     state.trackTrail = [];
     saved.set('tracking', state.tracking);
+    state.trackError = '';
     closeOverlay();
     if (state.tab !== 'live') setTab('live');
-    pollTrack(true);
+    pollTrack(true, true);
   }
 
   function stopTracking() {
@@ -2181,7 +2182,9 @@
     renderList();
   }
 
-  async function pollTrack(first = false) {
+  // first: just started (or the page just opened): get its trail. show: you just picked it, so go to it on the
+  // map (not when the page reopens: that would fly the map away from home every time).
+  async function pollTrack(first = false, show = false) {
     clearTimeout(trackTimer);
     const t = state.tracking;
     if (!t) return;
@@ -2190,23 +2193,27 @@
       if (state.tracking !== t) return;  // stopped (or another flight) meanwhile
       d.fixAt = performance.now() - ((d.plane && d.plane.seen_pos) || 0) * 1000;
       state.trackData = d;
+      state.trackError = '';
       if (d.plane) {
-        if (t.hex !== d.plane.hex || first) {
+        if (t.hex !== d.plane.hex || first || !t.flew) {
           t.hex = d.plane.hex;
+          t.flew = true;  // seen flying: after this, "not flying" means landed, not "hasn't left yet"
           saved.set('tracking', t);
           loadTrackTrail();
         }
+        // Only real position reports go on the trail (between them the plane is moved along its heading).
         const last = state.trackTrail[state.trackTrail.length - 1];
-        if (!last || last[0] !== d.plane.lon || last[1] !== d.plane.lat) {
+        if ((d.plane.age_s || 0) <= 15 && (!last || last[0] !== d.plane.lon || last[1] !== d.plane.lat)) {
           state.trackTrail.push([d.plane.lon, d.plane.lat, (d.plane.alt_ft || 0) * FT]);
         }
-        if (first) fitTo([[d.plane.lon, d.plane.lat], [state.config.home.lon, state.config.home.lat]]);
-      } else if (first && (d.ground || d.waits_at)) {
+        if (show) fitTo([[d.plane.lon, d.plane.lat], [state.config.home.lon, state.config.home.lat]]);
+      } else if (show && (d.ground || d.waits_at)) {
         const w = d.ground || d.waits_at;
         map.easeTo({ center: [w.lon, w.lat], zoom: d.ground ? 12 : 10, duration: 1300 });
       }
     } catch (err) {
-      toast(`Couldn’t check the flight: ${err.message}`);
+      // The Mac didn't answer (asleep, or the phone left the Wi-Fi): say so on the card, quietly, and keep trying.
+      state.trackError = err instanceof TypeError ? 'Can’t reach planespotter on your Mac right now: trying again…' : err.message;
     }
     if (state.tab === 'live') renderList();
     trackTimer = setTimeout(pollTrack, document.hidden ? 60000 : state.trackData && state.trackData.plane ? 10000 : 30000);
@@ -2296,9 +2303,11 @@
     const now = Date.now() / 1000;
     const head = `<div class="upnext-head">✈︎ Tracking <span>${esc(t.label)}</span>
       <button class="linkbtn danger" data-action="track-stop">Stop</button></div>`;
-    if (!d) return `<div class="myflights tracked">${head}<p class="muted">Looking for it…</p></div>`;
+    if (!d) return `<div class="myflights tracked">${head}<p class="muted">${esc(state.trackError || 'Looking for it…')}</p></div>`;
     const lines = [];
     const buttons = [];
+    if (state.trackError) lines.push(`<span class="small">${esc(state.trackError)}</span>`);
+    if (d.paused) lines.push('<span class="small">⏸ Paused for now: your Mac has asked adsb.lol as often as it should (your plane alerts come first). It carries on by itself later.</span>');
     if (d.plane) {
       const p = d.plane, r = d.route || {};
       lines.push(`<strong>${esc(label(p))}</strong> <span class="muted">${esc(r.airline || '')}</span>`);
@@ -2313,7 +2322,9 @@
       const g = d.ground;
       const phase = i && { taxi: 'Left the gate', air: `In the air (says ${esc(i.source)}) · the free receivers can’t see it`,
         landed: 'Landed', cancelled: 'Cancelled', diverted: 'Diverted' }[i.phase];
-      lines.push(phase || 'Not in the air yet');
+      // Seen flying earlier and not now: it has landed (or it's out of the receivers' range), not "hasn't left".
+      lines.push(phase || (t.flew ? (g ? 'Landed' : 'Not showing right now: it has landed, or it’s out of range of the receivers')
+        : 'Not in the air yet'));
       if (i && i.note) lines.push(`⚠︎ ${esc(i.note)}`);
       if (g) lines.push(esc(`On the ground ${g.airport ? `at ${g.airport.city} (${g.airport.code})` : ''}${g.gs > 5 ? ', taxiing' : ''}`));
       else if (d.waits_at) lines.push(esc(`At ${d.waits_at.city} (${d.waits_at.code})`));
@@ -2338,11 +2349,13 @@
       if (i && i.asOf) lines.push(`<span class="small">Times from ${esc(i.source || '')}, updated ${Math.max(0, Math.round((now - i.asOf) / 60))} min ago</span>`);
       if (!d.gates_on) lines.push('<span class="small">Where it leaves from, its gate, take-off time and delays: set up gate numbers (see the README)</span>');
       else if (d.info && d.info.error === 'limit') lines.push('Gate lookups for this month are used up');
+      else if (d.info && d.info.error === 'key') lines.push('The gate service didn’t accept your key: check it with  python3 -m planespotter gates test UAL1');
+      else if (d.info && d.info.error) lines.push('Couldn’t reach the gate service just now');
       else if (d.info && d.info.none) lines.push('The gate service doesn’t list a trip for it around now');
       if (g || d.waits_at) buttons.push('<button class="act" data-action="track-show">📍 Show</button>');
       if (d.gates_on) buttons.push('<button class="act" data-action="track-times">↻ Times</button>');
       const mine = (state.myFlights || []).some((f) => f.callsign === t.cs);
-      buttons.push(`<button class="act${mine ? ' done' : ''}" data-action="track-notify">${mine ? '🔔 You’ll hear when it flies' : '🔔 Tell me when it flies'}</button>`);
+      if (!t.flew) buttons.push(`<button class="act${mine ? ' done' : ''}" data-action="track-notify">${mine ? '🔔 You’ll hear when it flies' : '🔔 Tell me when it flies'}</button>`);
     }
     return `<div class="myflights tracked">${head}${lines.filter(Boolean).map((l) => `<div class="tline">${l}</div>`).join('')}
       <div class="actions">${buttons.join('')}</div></div>`;
@@ -3097,6 +3110,12 @@
   }
 
   async function start() {
+    if (typeof maplibregl === 'undefined' || typeof deck === 'undefined') {
+      // The map's own parts come from unpkg.com: there's no internet, or this network blocks it.
+      $('#status-text').textContent = 'The map couldn’t load';
+      $('#home-line').textContent = 'The map couldn’t load: no internet, or this network blocks unpkg.com. Reload to try again.';
+      return;
+    }
     wireUp();
     try {
       state.config = await getJSON('api/config');
@@ -3154,7 +3173,7 @@
       history.replaceState(null, '', location.pathname + location.search);
       state.pointOnLoad = true;
     }
-    if (state.tracking) pollTrack(true);
+    if (state.tracking) pollTrack(true, false);
     loadFriends();
     setInterval(() => { if (!document.hidden && state.tab === 'collection') loadFriends(); }, 10 * 60000);
     renderTravel();

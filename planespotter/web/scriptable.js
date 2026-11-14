@@ -55,23 +55,57 @@ function withTimeout(promise, seconds) {
   });
 }
 
-async function getJSON(url, seconds, headers) {
+async function fetchJSON(url, seconds, headers) {
+  // { body, status, why, retry }. why it failed: "" (it didn't), "offline" (no answer at all), "signin" (a web
+  // page came back instead: the Wi-Fi wants you to sign in first, or it filters this), "busy" (429: this
+  // internet connection has asked too often, which happens on shared Wi-Fi), "blocked" (403/451), "down" (the
+  // service has a problem), or "other".
+  const out = { body: null, status: 0, why: "offline", retry: 0 };
   try {
     const req = new Request(url);
     req.timeoutInterval = seconds;
     if (headers) req.headers = headers;
     const text = await withTimeout(req.loadString(), seconds + 1);
-    if (text === null) return null;
-    if (req.response && req.response.statusCode >= 500) return null;
+    if (text === null) return out;
+    out.status = (req.response && req.response.statusCode) || 0;
+    out.why = "other";
+    if (out.status === 511 || (out.status < 400 && /^\s*<(!doctype|html|head|body|meta)/i.test(text))) { out.why = "signin"; return out; }
+    if (out.status === 429) {
+      out.why = "busy";
+      out.retry = Number(((req.response && req.response.headers) || {})["Retry-After"]) || 0;
+      return out;
+    }
+    if (out.status === 403 || out.status === 451) { out.why = "blocked"; return out; }
+    if (out.status >= 500) { out.why = "down"; return out; }
     try {
-      return JSON.parse(text);
+      out.body = JSON.parse(text);
     } catch (e) {  // ntfy can send several messages, one per line: the latest is last
       const lines = text.trim().split("\n");
-      return JSON.parse(lines[lines.length - 1]);
+      out.body = JSON.parse(lines[lines.length - 1]);
     }
+    out.why = "";
+    return out;
   } catch (e) {
-    return null;
+    return out;
   }
+}
+
+async function getJSON(url, seconds, headers) {
+  return (await fetchJSON(url, seconds, headers)).body;
+}
+
+let netWhy = "";  // why the planes couldn't be fetched just now (see fetchJSON), "" when they could
+
+function netProblem() {
+  // [a few words, a sentence]: what's wrong, and what to do about it.
+  return {
+    signin: ["Wi-Fi needs a sign-in", "This Wi-Fi is answering instead of the plane service: it probably wants you to sign in first. " +
+             "Open Safari and accept its page. Mobile data will work too."],
+    busy: ["Busy on this network", "The plane service says this internet connection has asked too often, which happens on " +
+           "shared Wi-Fi. I'll try again in a few minutes. Mobile data usually works."],
+    blocked: ["Blocked on this network", "This network blocks the plane service. Try mobile data."],
+    down: ["adsb.lol isn't answering", "The plane service is having trouble right now. I'll try again soon."],
+  }[netWhy] || ["No internet?", "Check your phone has internet, then try again."];
 }
 
 function clock(at) {
@@ -115,8 +149,13 @@ function parsePlane(raw, ageS) {
   if (String(raw.category || "").startsWith("C")) return null;  // airport vehicles and obstacles: not aircraft
   const alt = typeof raw.alt_baro === "number" ? raw.alt_baro : (typeof raw.alt_geom === "number" ? raw.alt_geom : null);
   const track = typeof raw.track === "number" ? raw.track : (typeof raw.true_heading === "number" ? raw.true_heading : null);
-  const p = { hex: String(raw.hex || "").toLowerCase(), callsign: String(raw.flight || "").trim(),
-              reg: String(raw.r || "").trim(), type: String(raw.t || "").trim(), lat: raw.lat, lon: raw.lon,
+  // Only letters, digits and dashes: these come from what aircraft broadcast (anyone can transmit anything),
+  // and end up in the map page.
+  const plain = (v, max) => String(v || "").trim().replace(/[^A-Za-z0-9-]/g, "").slice(0, max);
+  // (adsb.lol puts "~" in front of addresses that aren't real aircraft ones: radar-only targets. Kept.)
+  const tilde = String(raw.hex || "").trim().startsWith("~") ? "~" : "";
+  const p = { hex: tilde + plain(raw.hex, 8).toLowerCase(), callsign: plain(raw.flight, 8).toUpperCase(),
+              reg: plain(raw.r, 10).toUpperCase(), type: plain(raw.t, 6).toUpperCase(), lat: raw.lat, lon: raw.lon,
               alt: alt === null ? null : Math.trunc(alt), gs: typeof raw.gs === "number" ? raw.gs : null, track,
               vr: typeof raw.baro_rate === "number" ? raw.baro_rate : (typeof raw.geom_rate === "number" ? raw.geom_rate : null) };
   p.label = p.callsign || p.reg || p.hex.toUpperCase();
@@ -251,14 +290,22 @@ function today() {
 }
 
 async function adsbGet(path, cache, seconds) {
-  // Planes from adsb.lol (moved on to now). null if it didn't answer; {limited} once we've asked as often
-  // as we should today (the widget, Siri, the map and searches all share DAILY_LIMIT).
+  // Planes from adsb.lol (moved on to now). null if it didn't answer (netWhy says why); {limited} once we've
+  // asked as often as we should today (the widget, Siri, the map and searches all share DAILY_LIMIT).
   const day = today();
   if (!cache.usage || cache.usage.day !== day) cache.usage = { day, n: 0 };
   if (cache.usage.n >= DAILY_LIMIT) return { limited: true };
-  cache.usage.n += 1;
-  const body = await getJSON(SETTINGS.adsb + path, seconds || (forSiri ? 5 : 10));
-  if (!body || !Array.isArray(body.ac)) return null;
+  if (cache.adsbWait && now < cache.adsbWait.until) { netWhy = cache.adsbWait.why; return null; }  // it asked us to wait
+  const res = await fetchJSON(SETTINGS.adsb + path, seconds || (forSiri ? 5 : 10));
+  if (res.status && res.why !== "signin") cache.usage.n += 1;  // only what reached adsb.lol counts
+  const body = res.body;
+  if (!body || !Array.isArray(body.ac)) {
+    netWhy = res.why || "other";
+    if (res.why === "busy") cache.adsbWait = { until: now + Math.min(1800, Math.max(180, res.retry)), why: "busy" };
+    return null;
+  }
+  netWhy = "";
+  cache.adsbWait = null;
   const age = Math.min(300, Math.max(0, body.now ? now - body.now / 1000 : 0));
   return { planes: body.ac.map((raw) => parsePlane(raw, age)).filter(Boolean), at: now };
 }
@@ -348,16 +395,19 @@ async function gather() {
   const telling = tellMyMac(where, cache);
   const naming = atHome ? Promise.resolve(home.name) : placeName(spot, cache);
   let data = null;
-  if (atHome && SETTINGS.mac) {
-    data = await getJSON(SETTINGS.mac + "/api/next", 2);  // on your home Wi-Fi: ask the Mac directly
-    if (data) data.source = "mac";
-  }
-  if (!data) {
-    const [live, status] = await Promise.all([
+  {
+    // On your home Wi-Fi the Mac answers directly; everywhere, adsb.lol does; and the Mac's posted status fills
+    // in what only it knows. All asked at once, so a Mac that isn't there costs no time.
+    const [mac, live, status] = await Promise.all([
+      atHome ? macBase(cache).then((base) => (base ? getJSON(base + "/api/next", 2) : null)) : Promise.resolve(null),
       livePlanes(spot, cache),
       atHome && SETTINGS.relay ? getJSON(SETTINGS.relay, forSiri ? 4 : 8) : Promise.resolve(null)]);
+    if (status && typeof status.mac === "string") cache.macPosted = status.mac;  // where the Mac is on the Wi-Fi now
     const macKnows = status && now - (status.updated || 0) < 3 * 3600 ? status : null;
-    if (live) {
+    if (mac && Array.isArray(mac.next)) {
+      data = { ...mac, source: "mac" };
+      if (live) for (const k of ["nearby", "hovering", "nearest"]) if (data[k] === undefined) data[k] = live[k];
+    } else if (live) {
       data = { updated: live.updated, next: live.next, nearby: live.nearby, hovering: live.hovering,
                nearest: live.nearest, source: "live" };
       if (macKnows) {
@@ -415,7 +465,7 @@ function ago(seconds) {
 }
 
 function siriSentence(data, now) {
-  if (!data) return "I can't get the planes right now. Check your phone has internet, then try again.";
+  if (!data) return "I can't get the planes right now. " + netProblem()[1];
   const age = now - (data.updated || now);
   if (age > 3 * 3600) {
     return "planespotter's last update was " + ago(age) + ". Is it still running on your Mac, and is the Mac awake?";
@@ -496,7 +546,7 @@ function buildWidget(data, now) {
   if (!data) {
     w.refreshAfterDate = new Date((now + 5 * 60) * 1000);
     text(w, "Can't get the planes", Font.boldSystemFont(14));
-    const t = w.addText("No internet? It'll try again soon.");
+    const t = w.addText(netProblem()[0] + (netWhy ? ". " : " ") + "It'll try again soon.");
     t.font = Font.systemFont(11);
     t.textColor = MUTED;
     return w;
@@ -1672,9 +1722,9 @@ function hms(s) {
 function clockAt(t) { return new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
 function waitingCard(t) {
   var i = t.info || {}, now = Date.now() / 1000, lines = [];
-  var where = t.ground && t.airport ? "On the ground at " + t.airport.town + " (" + t.airport.code + ")" + (t.ground.gs > 5 ? ", taxiing" : "")
+  var where = t.ground && t.airport ? "On the ground at " + esc(t.airport.town) + " (" + esc(t.airport.code) + ")" + (t.ground.gs > 5 ? ", taxiing" : "")
     : t.ground ? "On the ground" + (t.ground.gs > 5 ? ", taxiing" : "")
-    : t.airport ? "At " + t.airport.town + " (" + t.airport.code + ")" : t.pending ? "Looking for it…" : "Where it is isn't known yet";
+    : t.airport ? "At " + esc(t.airport.town) + " (" + esc(t.airport.code) + ")" : t.pending ? "Looking for it…" : "Where it is isn't known yet";
   var phase = { taxi: "Left the gate", air: "In the air (" + esc(i.source || "") + ") · the free receivers can't see it",
                 landed: "Landed", cancelled: "Cancelled" }[i.phase];
   lines.push(phase || "Not in the air yet");
@@ -1688,7 +1738,7 @@ function waitingCard(t) {
     lines.push("In " + esc(i.to || "?") + (i.arrGate ? " · 🚪 gate " + esc(i.arrGate) : ""));
   } else lines.push(where);
   if (i.phase !== "air") {
-    if (i.gate) lines.push("🚪 Gate " + i.gate + (i.terminal ? ", terminal " + i.terminal : ""));
+    if (i.gate) lines.push("🚪 Gate " + esc(i.gate) + (i.terminal ? ", terminal " + esc(i.terminal) : ""));
     else if (t.info && !i.note) lines.push(i.takeoff && i.takeoff - now > 2 * 3600 ? "No gate listed yet (usually an hour or two before)" : "No gate listed");
   }
   if (i.takeoff && i.phase !== "air" && i.phase !== "landed" && i.phase !== "cancelled") {
@@ -1939,7 +1989,7 @@ async function pointNow() {
     const a = new Alert();
     a.title = "Can't get the planes";
     a.message = got && got.limited ? "This phone has asked adsb.lol as often as it should today: try tomorrow."
-      : "Check your phone has internet, then try again.";
+      : netProblem()[1];
     a.addAction("OK");
     await a.present();
     return;
@@ -1958,17 +2008,35 @@ async function page(wv, code) {
   }
 }
 
-async function fullApp(cache) {
-  // The Mac's full app, if it answers: at its address, or by its name (if the Wi-Fi gave it a new address).
-  // "" away from home or with the Mac asleep (then it's the map here). Not even tried when the phone was far
-  // from home a moment ago, so the map doesn't wait.
+async function macBase(cache) {
+  // Your Mac's map, if it answers on this Wi-Fi: at the address that worked last time, the one the Mac last
+  // posted, the one in this script, or by its name. All are asked at once and the first to answer wins, so a
+  // wrong address costs no time. "" if none does within a second and a half: away, on mobile data, the Mac
+  // asleep, or a guest Wi-Fi that keeps devices apart. Not even tried when the phone was far from home a
+  // moment ago.
   const last = cache.where, home = SETTINGS.home;
   if (last && now - last.at < 30 * 60 && miles(last.lat, last.lon, home.lat, home.lon) > 50) return "";
-  for (const base of [SETTINGS.mac, SETTINGS.macName].filter(Boolean).map((b) => b.replace(/\/$/, ""))) {
-    const c = await getJSON(base + "/api/config", 2);
-    if (c && c.home) return base;
-  }
-  return "";
+  const bases = [...new Set([cache.mac && cache.mac.base, cache.macPosted, SETTINGS.mac, SETTINGS.macName]
+    .filter((b) => typeof b === "string" && /^https?:\/\//.test(b)).map((b) => b.replace(/\/$/, "")))];
+  if (!bases.length) return "";
+  // It has to be your planespotter (the same home), not something else at that address on another network.
+  const mine = (c) => c && c.home && Math.abs(c.home.lat - home.lat) < 0.001 && Math.abs(c.home.lon - home.lon) < 0.001;
+  const first = new Promise((resolve) => {
+    let left = bases.length;
+    for (const b of bases) {
+      getJSON(b + "/api/config", 1.5).then((c) => { if (mine(c)) resolve(b); else if (--left === 0) resolve(""); });
+    }
+  });
+  const found = (await withTimeout(first, 1.8)) || "";
+  if (found) cache.mac = { base: found, at: now };
+  return found;
+}
+
+async function fullApp(cache) {
+  // The Mac's full app, if it's there (see macBase); "" for the map here.
+  const base = await macBase(cache);
+  if (base) saveCache(cache);
+  return base;
 }
 
 async function showMap() {
@@ -2014,7 +2082,7 @@ async function showMap() {
         } else if (got && got.limited) {
           update.status = "Paused for today (adsb.lol's daily allowance)";
         } else {
-          update.status = "No connection: trying again…";
+          update.status = (netWhy && netWhy !== "offline" ? netProblem()[0] : "No connection") + ": trying again…";
         }
       }
       if (following && !following.hex) {  // not in the air yet: watch for it taking off, and show where it waits

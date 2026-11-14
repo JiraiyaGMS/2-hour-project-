@@ -30,6 +30,27 @@ def get_json(url: str, timeout: float = 15, headers: dict | None = None) -> Any:
         return json.load(resp)
 
 
+def counted(budget, kind: str, call):
+    """Run one request to adsb.lol, and count it in the day's budget only if adsb.lol answered. A connection
+    that failed, or a Wi-Fi sign-in page answering instead, used none of the allowance: counting those would
+    slow the alerts down for the rest of the day after an hour offline."""
+    try:
+        result = call()
+    except urllib.error.HTTPError:  # it answered (too many requests, not found...): that counts
+        if budget is not None:
+            budget.record(kind)
+        raise
+    except (OSError, ValueError):  # never reached adsb.lol (offline, timed out, or not its answer)
+        raise
+    except Exception:  # some other answer from it
+        if budget is not None:
+            budget.record(kind)
+        raise
+    if budget is not None:
+        budget.record(kind)
+    return result
+
+
 def key_header(api_key: str) -> dict:
     """adsb.lol reads an (optional) API key from the x-api-key header."""
     return {"x-api-key": api_key} if api_key else {}
@@ -82,17 +103,23 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
         value = raw.get(key)
         return float(value) if isinstance(value, (int, float)) else None
 
+    def plain(key: str, size: int) -> str:
+        # Only letters, digits and dashes: these come from what aircraft broadcast (anyone can transmit
+        # anything), and end up in web pages, notifications and the database.
+        return "".join(c for c in str(raw.get(key) or "").strip() if c.isascii() and (c.isalnum() or c == "-"))[:size]
+
     return Aircraft(
-        hex=str(raw.get("hex", "")).lower(),
-        callsign=str(raw.get("flight") or "").strip(),
-        registration=str(raw.get("r") or "").strip(),
-        type_code=str(raw.get("t") or "").strip(),
+        # (adsb.lol puts "~" in front of addresses that aren't real aircraft ones: radar-only targets. Kept.)
+        hex=("~" if str(raw.get("hex") or "").strip().startswith("~") else "") + plain("hex", 8).lower(),
+        callsign=plain("flight", 8).upper(),
+        registration=plain("r", 10).upper(),
+        type_code=plain("t", 6).upper(),
         lat=float(raw["lat"]),
         lon=float(raw["lon"]),
         alt_ft=alt_ft,
         speed_kt=num("gs"),
         track=num("track") if num("track") is not None else num("true_heading"),
-        squawk=str(raw.get("squawk") or ""),
+        squawk=plain("squawk", 4),
         seen_pos=float(raw.get("seen_pos") or 0),
         category=str(raw.get("category") or ""),
         db_flags=int(raw.get("dbFlags") or 0) if str(raw.get("dbFlags") or 0).isdigit() else 0,
@@ -113,9 +140,7 @@ class LiveFeed:
     def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
         radius = max(1, min(250, math.ceil(radius_nm)))
         url = f"{self.base_url}/v2/point/{lat:.5f}/{lon:.5f}/{radius}"
-        if self.budget:
-            self.budget.record("poll")
-        data = get_json(url, self.timeout, key_header(self.api_key))
+        data = counted(self.budget, "poll", lambda: get_json(url, self.timeout, key_header(self.api_key)))
         found = (parse_aircraft(raw) for raw in data.get("ac") or [])
         return [ac for ac in found if ac and ac.hex]
 
@@ -263,9 +288,7 @@ class PositionLookup:
     def fetch(self, hexes: list[str]) -> tuple[list[Aircraft], set[str]]:
         """(planes in the air, addresses of planes on the ground) among ``hexes``."""
         url = f"{self.base_url}/v2/hex/{','.join(hexes)}"
-        if self.budget:
-            self.budget.record("positions")
-        data = get_json(url, timeout=15, headers=key_header(self.api_key))
+        data = counted(self.budget, "positions", lambda: get_json(url, timeout=15, headers=key_header(self.api_key)))
         raw = data.get("ac") or []
         flying = [ac for ac in (parse_aircraft(r) for r in raw) if ac]
         ground = {str(r.get("hex", "")).lower() for r in raw if r.get("alt_baro") == "ground"}

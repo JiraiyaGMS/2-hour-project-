@@ -7,6 +7,7 @@ import logging
 from .astro import transits
 from .geo import compass
 from .myflight import my_flights
+from .net import lan_address
 from .outlook import best_time, best_time_text
 from .predict import crossings, glide
 from .relay import build_status
@@ -111,7 +112,13 @@ def relay_job(watcher, relay, outlook):
                 slow["regulars"] = regulars_due(watcher.store, cfg, now)
             except Exception as exc:
                 log.debug("no regulars for the widget: %s", exc)
+            # Where the Mac's map is on the Wi-Fi right now, so the phone still finds it after the router
+            # gives the Mac a new address.
+            ip = lan_address() if cfg.map_enabled and cfg.map_lan and not cfg.server else None
+            slow["mac"] = f"http://{ip}:{cfg.map_port}" if ip else ""
         extras["regulars"] = [r for r in slow["regulars"] if r["at"] > now - 20 * 60]
+        if slow.get("mac"):
+            extras["mac"] = slow["mac"]
         flights = my_flights(watcher.store)
         active = [f for f in flights if f["state"] in ("waiting", "airborne")]
         if active:

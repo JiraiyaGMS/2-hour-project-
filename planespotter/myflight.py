@@ -16,7 +16,7 @@ import urllib.error
 from datetime import date, timedelta
 
 from .airlines import IATA_TO_ICAO  # flight numbers use 2-letter codes; planes broadcast 3-letter ones
-from .adsb import Lookup, get_json, key_header, parse_aircraft
+from .adsb import Lookup, counted, get_json, key_header, parse_aircraft
 from .airports import airports
 from .geo import distance_miles
 
@@ -103,9 +103,7 @@ class FlightWatch:
                 continue
             if self.budget is not None and not self.budget.allow("positions"):
                 break
-            if self.budget is not None:
-                self.budget.record("positions")
-            raw = self.fetch(f["callsign"]).get("ac") or []
+            raw = counted(self.budget, "positions", lambda f=f: self.fetch(f["callsign"])).get("ac") or []
             events += self.update(f, raw, now)
         return events
 

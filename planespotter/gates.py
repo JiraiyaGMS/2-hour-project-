@@ -193,7 +193,7 @@ def stale(at: float, info: dict | None, now: float, keep: bool = False) -> bool:
     """Is an answer from ``at`` probably out of date? Gates are given out (and changed) in the last few hours
     before a flight leaves, and arrival gates near the end, so ask again more often then (the phone's rule).
     ``keep``: a page refreshing by itself, which otherwise keeps what it has."""
-    age = now - at
+    age = (now - at) / (1.5 if keep else 1)  # a page refreshing by itself asks a third less often (36 a month)
     if not info:
         return age > 30 * 60
     if info["phase"] in ("cancelled", "diverted"):
@@ -208,7 +208,7 @@ def stale(at: float, info: dict | None, now: float, keep: bool = False) -> bool:
         return age > 15 * 60
     if off and off - now < 3 * 3600:
         return age > (40 if info["dep"]["gate"] else 20) * 60
-    return age > (6 * 3600 if keep else 30 * 60)
+    return age > (4 * 3600 if keep else 30 * 60)
 
 
 def place_name(code: str) -> str:
@@ -330,6 +330,13 @@ class GateBook:
         with self.lock:
             row = self.db.execute("SELECT n FROM gate_usage WHERE month = ?", (self._month(self.clock()),)).fetchone()
         return int(row[0]) if row else 0
+
+    def peek(self, callsign: str) -> dict | None:
+        """What we last heard for this flight (the trip that fits now), without asking the service."""
+        cs = "".join(c for c in callsign.upper() if c.isalnum())[:10]
+        with self.lock:
+            row = self.db.execute("SELECT trips FROM gate_trips WHERE callsign = ?", (cs,)).fetchone()
+        return pick(json.loads(row[0]), self.clock()) if row else None
 
     def _answer(self, at: float, trips: list, ctx: dict | None, now: float) -> dict:
         info = pick(trips, now, ctx)

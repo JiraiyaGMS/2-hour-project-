@@ -21,7 +21,7 @@ import urllib.request
 from datetime import date, datetime, timezone
 from typing import Callable, NamedTuple
 
-from .adsb import USER_AGENT, key_header
+from .adsb import USER_AGENT, counted, key_header
 from .airports import route_from_path
 from .heat import route_cells
 
@@ -206,9 +206,9 @@ class FlightLookup:
         if self.budget is not None:
             if not self.budget.allow(kind):
                 raise OverBudget(kind)
-            self.budget.record("catchup" if kind == "catchup" else "trace")
         try:
-            return self.fetch(trace_url(hex_code, self.api_base))
+            return counted(self.budget, "catchup" if kind == "catchup" else "trace",
+                           lambda: self.fetch(trace_url(hex_code, self.api_base)))
         except TraceNotFound:
             return None
 

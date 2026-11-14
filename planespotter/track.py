@@ -14,7 +14,7 @@ import time
 import urllib.error
 from typing import Any
 
-from .adsb import get_json, key_header, parse_aircraft
+from .adsb import counted, get_json, key_header, parse_aircraft, retry_after_seconds
 from .airlines import AIRLINES, IATA_TO_ICAO
 from .airports import Airport, airports
 from .geo import distance_miles
@@ -128,34 +128,51 @@ def read_query(text: str, home: tuple[float, float] | None = None) -> dict:
 
 
 class Sky:
-    """adsb.lol for searches: anywhere in the world, counted in the Mac's daily allowance (as clicks)."""
+    """adsb.lol for searching and tracking: anywhere in the world, inside the Mac's daily allowance. Searches
+    and tracking each have their own small share (see ApiBudget.allow), so they can never starve the plane
+    alerts, and only requests that reached adsb.lol count."""
 
     def __init__(self, base_url: str, api_key: str = "", budget=None, clock=time.time, ttl: float = 30):
         self.base_url, self.api_key, self.budget, self.clock, self.ttl = base_url.rstrip("/"), api_key, budget, clock, ttl
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[float, list]] = {}
+        self.blocked_until = 0.0
 
-    def get(self, path: str) -> list[dict] | None:
-        """The raw aircraft at this path (kept ``ttl`` seconds), or None when we can't ask now."""
+    def get_at(self, path: str, ttl: float | None = None, kind: str = "search") -> tuple[list[dict] | None, float]:
+        """(the raw aircraft at this path, when they were fetched). Kept ``ttl`` seconds. (None, 0) when we
+        can't ask now (the day's share is used, adsb.lol asked us to wait, or there's no connection) and
+        there's nothing recent enough to show instead."""
         now = self.clock()
+        ttl = self.ttl if ttl is None else ttl
         with self.lock:
             hit = self.cache.get(path)
-            if hit and now - hit[0] < self.ttl:
-                return hit[1]
-        if self.budget and not self.budget.allow("click"):
-            return None
-        if self.budget:
-            self.budget.record("click")
+        if hit and now - hit[0] < ttl:
+            return hit[1], hit[0]
+        recent = (hit[1], hit[0]) if hit and now - hit[0] < max(ttl * 3, 300) else (None, 0.0)
+        if now < self.blocked_until or (self.budget and not self.budget.allow(kind)):
+            return recent
         try:
-            data = get_json(self.base_url + path, timeout=12, headers=key_header(self.api_key))
+            data = counted(self.budget, kind, lambda: get_json(self.base_url + path, timeout=12,
+                                                               headers=key_header(self.api_key)))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:  # asked too often (a shared connection?): leave it alone for a while
+                self.blocked_until = now + max(180.0, retry_after_seconds(exc))
+            return recent
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-            return None
-        raw = [r for r in (data.get("ac") or []) if isinstance(r, dict)]
+            return recent
+        raw = [r for r in (data.get("ac") or []) if isinstance(r, dict)] if isinstance(data, dict) else []
         with self.lock:
             self.cache[path] = (now, raw)
-            for k in [k for k, (t, _) in self.cache.items() if now - t > 600]:
+            for k in [k for k, (t, _) in self.cache.items() if now - t > 1800]:
                 del self.cache[k]
-        return raw
+        return raw, now
+
+    def get(self, path: str, ttl: float | None = None, kind: str = "search") -> list[dict] | None:
+        return self.get_at(path, ttl, kind)[0]
+
+    def paused(self, kind: str) -> bool:
+        """Can't ask right now: the day's share for this is used up, or adsb.lol asked us to wait."""
+        return self.clock() < self.blocked_until or bool(self.budget and not self.budget.allow(kind))
 
 
 def _result(ac, home: tuple[float, float], score: float, why: str) -> dict:
@@ -165,9 +182,9 @@ def _result(ac, home: tuple[float, float], score: float, why: str) -> dict:
             "score": round(score, 1), "why": why}
 
 
-def search(text: str, sky: Sky, home: tuple[float, float], route_for=None) -> dict:
+def search(text: str, sky: Sky, home: tuple[float, float], routes_for=None) -> dict:
     """The planes a search asks for, best match first (up to 100; the map shows 10 at a time).
-    ``route_for(result)`` -> {"airline", "origin", "destination"} (checked routes), for airport searches."""
+    ``routes_for(results)`` -> {hex: {"airline", "origin", "destination"}} (checked routes) for the best 20."""
     ask = read_query(text, home)
     found: dict[str, dict] = {}
     not_flying: list[str] = []
@@ -220,9 +237,10 @@ def search(text: str, sky: Sky, home: tuple[float, float], route_for=None) -> di
         understood = understood or ((airline[2] if airline else "Planes") +
                                     (f" near {airport.code} ({airport.city or airport.name})" if airport else " near home"))
     results = sorted(found.values(), key=lambda r: -r["score"])
-    if route_for:
+    if routes_for and results:
+        routes = routes_for(results[:20]) or {}
         for r in results[:20]:
-            rt = route_for(r) or {}
+            rt = routes.get(r["hex"]) or {}
             r["airline"] = rt.get("airline") or ""
             if rt.get("origin") and rt.get("destination"):
                 r["route"] = f"{rt['origin']} → {rt['destination']}"
@@ -236,25 +254,34 @@ def search(text: str, sky: Sky, home: tuple[float, float], route_for=None) -> di
             "limited": limited and not results}
 
 
-def where_now(callsign: str, hex_code: str, sky: Sky, positions=None) -> dict:
-    """Where a flight you're tracking is: {"flying": plane} or {"ground": {...}} or {} (not seen)."""
+def where_now(callsign: str, hex_code: str, sky, ttl: float = 60) -> dict:
+    """Where a flight you're tracking is: {"flying": plane, "at": when that was} or {"ground": {...}} or {}
+    (not seen), plus "paused": True when adsb.lol can't be asked right now. Asked at most every ``ttl``
+    seconds: the page moves the plane along between answers."""
     names = [callsign, *flown_as(callsign)] if callsign else []
-    if hex_code and positions is not None:
-        ac = positions.get([hex_code]).get(hex_code)
-        if ac and (not callsign or not ac.callsign or ac.callsign in names):
-            return {"flying": ac}
+    out: dict[str, Any] = {}
+    if hex_code:  # the aircraft we know it is: one request, wherever it is
+        raw, at = sky.get_at("/v2/hex/" + hex_code, ttl, "track")
+        for r in raw or []:
+            ac = parse_aircraft(r)
+            if ac and (not callsign or not ac.callsign or ac.callsign in names):
+                return {"flying": ac, "at": at}
+        if raw is None:
+            out["paused"] = sky.paused("track")
+            return out
     for cs in names:
-        raw = sky.get("/v2/callsign/" + cs)
-        if not raw:
-            continue
+        raw, at = sky.get_at("/v2/callsign/" + cs, ttl, "track")
+        if raw is None:
+            out["paused"] = sky.paused("track")
+            return out
         mine = [r for r in raw if str(r.get("flight") or "").strip() in names]
         for r in mine:
             ac = parse_aircraft(r)
             if ac:
-                return {"flying": ac}
+                return {"flying": ac, "at": at}
         for r in mine:
             if r.get("alt_baro") == "ground" and isinstance(r.get("lat"), (int, float)):
                 ap = airports().at(r["lat"], r["lon"], 0, max_km=8)
                 return {"ground": {"lat": r["lat"], "lon": r["lon"], "gs": r.get("gs") or 0, "hex": str(r.get("hex") or ""),
                                    "airport": {"code": ap.code, "icao": ap.icao, "city": ap.city or ap.name} if ap else None}}
-    return {}
+    return out

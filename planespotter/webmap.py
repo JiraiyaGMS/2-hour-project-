@@ -12,6 +12,8 @@ import re
 import logging
 from dataclasses import asdict
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -26,6 +28,7 @@ from .airlines import AIRLINES
 from .gates import APIS as GATE_APIS
 from .gates import GateBook, takeoff_at
 from .gates import shares as gate_shares
+from .net import lan_address  # noqa: F401  (other modules import it from here)
 from .track import Sky, search, where_now
 from .budget import ApiBudget
 from .collection import build_collection
@@ -271,19 +274,38 @@ class MapApp:
 
     # --- ✈︎ Track a flight and 🚪 Gate (the phone's features, on the Mac's map) ---
 
-    def route_for(self, r: dict) -> dict:
-        """The airline and a checked route for a search result (from adsbdb, kept in the database)."""
-        ac = Aircraft(hex=r["hex"], callsign=r["callsign"], registration=r.get("registration", ""),
-                      type_code=r.get("type", ""), lat=r["lat"], lon=r["lon"], alt_ft=r.get("alt_ft"),
-                      speed_kt=r.get("speed_kt"), track=r.get("heading"))
-        info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, self.clock())
-        return {"airline": info.airline, "origin": info.origin, "destination": info.destination}
+    def routes_for(self, results: list[dict]) -> dict[str, dict]:
+        """The airline and a checked route for search results (from adsbdb, kept in the database), by hex.
+        Looked up all at once, and stragglers are left out after 6 seconds, so a slow adsbdb can't hold a
+        search up (one after another, 20 slow lookups could take minutes)."""
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        now = self.clock()
+
+        def one(r: dict) -> dict:
+            store = Store(self.cfg.db_path)  # its own connection: SQLite's can't be shared between threads
+            try:
+                ac = Aircraft(hex=r["hex"], callsign=r["callsign"], registration=r.get("registration", ""),
+                              type_code=r.get("type", ""), lat=r["lat"], lon=r["lon"], alt_ft=r.get("alt_ft"),
+                              speed_kt=r.get("speed_kt"), track=r.get("heading"))
+                info = Lookup(store, self.cfg.adsbdb_api).info(ac, now)
+                return {"airline": info.airline, "origin": info.origin, "destination": info.destination}
+            finally:
+                store.close()
+
+        if not results:
+            return {}
+        pool = ThreadPoolExecutor(max_workers=8)
+        try:
+            jobs = {pool.submit(one, r): r["hex"] for r in results}
+            done, _ = wait(jobs, timeout=6)
+            return {jobs[f]: f.result() for f in done if f.exception() is None}
+        finally:
+            pool.shutdown(wait=False)
 
     def search_json(self, query: dict[str, str]) -> dict[str, Any]:
         q = query.get("q", "")[:80]
-        if self.budget:
-            self.budget.mark_viewing()
-        out = search(q, self.search_sky, (self.cfg.home_lat, self.cfg.home_lon), self.route_for)
+        out = search(q, self.search_sky, (self.cfg.home_lat, self.cfg.home_lon), self.routes_for)
         return {**out, "gates_on": bool(self.gatebook)}
 
     def plane_ctx(self, query: dict[str, str]) -> dict:
@@ -324,13 +346,25 @@ class MapApp:
         cs = "".join(c for c in query.get("cs", "").upper() if c.isalnum())[:10]
         hex_code = clean_hex(query.get("hex", ""))
         now = self.clock()
-        if self.budget:
-            self.budget.mark_viewing()
-        where = where_now(cs, hex_code, self.search_sky, self.positions)
-        out: dict[str, Any] = {"cs": cs, "time": now, "gates_on": bool(self.gatebook)}
+        # How often adsb.lol is asked (the page moves the plane along in between). Flying: every minute at
+        # first, then every 3. Waiting: every 10 minutes, every minute and a half around its take-off time;
+        # every 3 when we don't know when that is. Tracking has its own share of the day's allowance.
+        known = self.gatebook.peek(cs) if self.gatebook and cs else None
+        off = takeoff_at(known) if known else None
+        if hex_code:
+            eased = self.budget and self.budget.used("track") >= self.budget.limit * 0.08
+            ttl = 180 if eased else 60
+        elif off:
+            ttl = 90 if abs(off - now) < 45 * 60 else 600
+        else:
+            ttl = 300 if known else 180
+        where = where_now(cs, hex_code, self.search_sky, ttl)
+        out: dict[str, Any] = {"cs": cs, "time": now, "gates_on": bool(self.gatebook), "paused": bool(where.get("paused"))}
         if "flying" in where:
             ac = where["flying"]
-            out["plane"] = {**plane_json(self.cfg, ac), "vr": ac.vr}
+            age = max(0.0, now - where["at"])
+            moved = glide(ac, age + (ac.seen_pos or 0))  # where it is now, if it flew straight on
+            out["plane"] = {**plane_json(self.cfg, moved), "seen_pos": 0, "age_s": round(age)}
             info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, now)
             out["route"] = {"airline": info.airline, "origin": info.origin, "destination": info.destination,
                             "origin_city": info.origin_city, "destination_city": info.destination_city}
@@ -744,6 +778,11 @@ class MapApp:
         return asdict(info)
 
 
+# Requests that use up an allowance (adsb.lol's, or the gate service's): another website open in the same
+# browser mustn't be able to make them. Browsers say where a request comes from (Sec-Fetch-Site).
+SPENDING = {"/api/search", "/api/track", "/api/gate"}
+
+
 def relay_url(cfg: Config) -> str:
     """Where the widget and Siri read your latest status (your private ntfy relay topic)."""
     if not (cfg.ntfy_topic and cfg.relay):
@@ -758,7 +797,14 @@ def command_url(cfg: Config) -> str:
 
 def mac_name_url(cfg: Config) -> str:
     """This Mac by its Bonjour name (Your-Mac.local): still right when the Wi-Fi gives it a new address."""
-    name = socket.gethostname().split(".")[0]
+    name = ""
+    if sys.platform == "darwin":  # the name other devices see, which isn't always the computer's host name
+        try:
+            name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True,
+                                  timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            name = ""
+    name = name or socket.gethostname().split(".")[0]
     if not name or not all(c.isalnum() or c == "-" for c in name):
         return ""
     return f"http://{name}.local:{cfg.map_port}"
@@ -941,6 +987,8 @@ def make_handler(app: MapApp):
                     self.send_json(app.trace_json(query.get("hex", "")))
                 elif url.path == "/api/info":
                     self.send_json(app.info_json(query))
+                elif url.path in SPENDING and self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
+                    self.send_json({"error": "not allowed"}, 403)
                 elif url.path == "/api/search":
                     self.send_json(app.search_json(query))
                 elif url.path == "/api/track":
@@ -1000,17 +1048,6 @@ def make_handler(app: MapApp):
                     pass
 
     return Handler
-
-
-def lan_address() -> str | None:
-    """This computer's address on the home network, for opening the map on a phone."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("192.0.2.1", 80))  # nothing is sent; this just picks the right interface
-            ip = s.getsockname()[0]
-        return None if ip.startswith("127.") else ip
-    except OSError:
-        return None
 
 
 def start_map_server(cfg: Config, feed=None, port: int | None = None, flight_lookup=None,

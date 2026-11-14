@@ -26,7 +26,7 @@ import threading
 import time
 import urllib.error
 
-from .adsb import Aircraft, get_json, key_header, retry_after_seconds
+from .adsb import Aircraft, counted, get_json, key_header, retry_after_seconds
 from .fullpath import TRACE_HOURS, FlightLookup, OverBudget, Point, as_path, save_flight, simplify, split_legs
 from .geo import bearing_deg, distance_miles, offset, segment_min_distance_miles
 from .heat import path_cells
@@ -157,10 +157,8 @@ class CatchUp:
 
     def _fetch_wide(self) -> list[dict]:
         cfg = self.cfg
-        if self.budget is not None:
-            self.budget.record("catchup")
         url = f"{cfg.adsb_api}/v2/point/{cfg.home_lat:.5f}/{cfg.home_lon:.5f}/{WIDE_NM}"
-        return get_json(url, 30, key_header(cfg.adsb_api_key)).get("ac") or []
+        return counted(self.budget, "catchup", lambda: get_json(url, 30, key_header(cfg.adsb_api_key))).get("ac") or []
 
     def regulars(self) -> set[str]:
         """Aircraft you've seen at least twice: likely to have come over again."""

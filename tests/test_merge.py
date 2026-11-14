@@ -20,15 +20,23 @@ def raw(hex_, flight, lat, lon, alt, gs=300, track=0, rate=0):
 
 
 class FakeSky:
-    def __init__(self, answers):
-        self.answers, self.calls = answers, []
+    def __init__(self, answers, clock=time.time):
+        self.answers, self.calls, self.clock, self.stopped = answers, [], clock, False
 
-    def get(self, path):
+    def get_at(self, path, ttl=None, kind="search"):
         self.calls.append(path)
+        if self.stopped:
+            return None, 0.0
         for prefix, value in self.answers.items():
             if path == prefix or (prefix.endswith("*") and path.startswith(prefix[:-1])):
-                return value
-        return []
+                return value, self.clock()
+        return [], self.clock()
+
+    def get(self, path, ttl=None, kind="search"):
+        return self.get_at(path, ttl, kind)[0]
+
+    def paused(self, kind):
+        return self.stopped
 
 
 def trip(icao, status, frm, to, out, inn, gate="", dep=None, arr=None):
@@ -75,7 +83,7 @@ class SearchTests(unittest.TestCase):
                   raw("a00003", "DAL3", 45.6, -122.6, 2000)]
         sky = FakeSky({"/v2/point/*": planes})
         routes = {"ASA2": {"airline": "Alaska Airlines", "origin": "SEA", "destination": "PDX"}}
-        out = search("Alaska PDX", sky, HOME, lambda r: routes.get(r["callsign"], {}))
+        out = search("Alaska PDX", sky, HOME, lambda rs: {r["hex"]: routes.get(r["callsign"], {}) for r in rs})
         self.assertTrue(sky.calls[0].startswith("/v2/point/45.5"))
         self.assertEqual([r["callsign"] for r in out["results"]], ["ASA2", "ASA1"])  # Delta's left out; to PDX first
         self.assertEqual((out["results"][0]["why"], out["results"][0]["route"]), ("Flying to PDX", "SEA → PDX"))
@@ -88,6 +96,75 @@ class SearchTests(unittest.TestCase):
         self.assertEqual((ground["airport"]["code"], ground["gs"]), ("PDX", 12))
         self.assertEqual(where_now("ASA2034", "", sky)["flying"].callsign, "QXE2034")
         self.assertEqual(where_now("ASA5", "", sky), {})
+        sky.stopped = True  # the day's share is used up (or adsb.lol asked us to wait)
+        self.assertEqual(where_now("ASA99", "", sky), {"paused": True})
+
+
+class AllowanceTests(unittest.TestCase):
+    """Tracking and searching on the Mac's map can't use up the allowance the plane alerts need."""
+
+    def setUp(self):
+        from planespotter.budget import ApiBudget
+        self.tmp = tempfile.TemporaryDirectory()
+        self.clock = [ts(2026, 11, 14, 20)]
+        self.budget = ApiBudget(Path(self.tmp.name) / "b.db", 500, clock=lambda: self.clock[0])
+        self.asked = []
+
+    def tearDown(self):
+        self.budget.db.close()
+        self.tmp.cleanup()
+
+    def sky(self, answer):
+        import planespotter.track as track
+        sky = track.Sky("https://adsb.test", budget=self.budget, clock=lambda: self.clock[0])
+        self.fetch = lambda url, timeout=0, headers=None: (self.asked.append(url), answer())[1]
+        self._old, track.get_json = track.get_json, self.fetch
+        self.addCleanup(lambda: setattr(track, "get_json", self._old))
+        return sky
+
+    def test_tracking_stops_at_a_fifth_of_the_day(self):
+        sky = self.sky(lambda: {"ac": [raw("a00001", "ASA1", 45.7, -122.7, 30000)]})
+        for _ in range(400):  # a tab left open all day, asking every minute
+            self.clock[0] += 61
+            sky.get_at("/v2/hex/a00001", 60, "track")
+        self.assertEqual(len(self.asked), 100)                       # 20% of 500, then it stops asking
+        self.assertTrue(sky.paused("track"))
+        self.assertTrue(self.budget.allow("poll"))                   # the alerts still have theirs
+
+    def test_answers_are_kept_and_failures_cost_nothing(self):
+        import urllib.error
+        sky = self.sky(lambda: {"ac": []})
+        sky.get("/v2/callsign/ASA1", 600, "track")
+        self.clock[0] += 300
+        sky.get("/v2/callsign/ASA1", 600, "track")                  # 5 minutes later: kept (asked once)
+        self.assertEqual((len(self.asked), self.budget.used("track")), (1, 1))
+
+        def offline():
+            raise urllib.error.URLError("no route to host")
+        sky = self.sky(offline)
+        self.assertIsNone(sky.get("/v2/callsign/ASA2", 60, "track"))
+        self.assertEqual(self.budget.used("track"), 1)               # never reached adsb.lol: not counted
+
+        def too_many():
+            raise urllib.error.HTTPError("u", 429, "Too Many Requests", {"Retry-After": "600"}, None)
+        sky = self.sky(too_many)
+        sky.get("/v2/callsign/ASA3", 60, "track")
+        before = len(self.asked)
+        self.clock[0] += 120
+        sky.get("/v2/callsign/ASA4", 60, "track")                    # told to wait 10 minutes: doesn't ask
+        self.assertEqual(len(self.asked), before)
+
+    def test_a_sign_in_page_isnt_counted_for_the_alerts_either(self):
+        import planespotter.adsb as adsb
+
+        def sign_in_page(url, timeout=0, headers=None):
+            raise ValueError("Expecting value: line 1 column 1")     # a web page, not JSON
+        old, adsb.get_json = adsb.get_json, sign_in_page
+        self.addCleanup(lambda: setattr(adsb, "get_json", old))
+        feed = adsb.LiveFeed("https://adsb.test", budget=self.budget)
+        with self.assertRaises(ValueError):
+            feed.aircraft_near(45.0, -122.0, 20)
+        self.assertEqual(self.budget.used(), 0)
 
 
 class GateBookTests(unittest.TestCase):
@@ -193,11 +270,21 @@ class FullAppTests(unittest.TestCase):
         out = self.get("/api/search?q=AS%202034")
         self.assertEqual(out["results"][0]["callsign"], "QXE2034")
         flying = self.get("/api/track?cs=ASA2034")
-        self.assertEqual(flying["plane"]["callsign"], "QXE2034")
+        self.assertEqual((flying["plane"]["callsign"], flying["plane"]["seen_pos"], flying["paused"]), ("QXE2034", 0, False))
+        self.assertGreater(flying["plane"]["lat"], 46.2)  # moved on along its heading (north) to now
         waiting = self.get("/api/track?cs=ASA1349")
         info = waiting["info"]
         self.assertEqual((info["dep"]["gate"], info["dep"]["delay"], waiting["ground"]), ("C7", 20, None))
         self.assertAlmostEqual(info["takeoff_at"], info["dep"]["scheduled"] + 900, delta=1)
+
+    def test_another_website_cant_spend_the_allowance(self):
+        import urllib.error
+        req = urllib.request.Request(self.base + "/api/gate?cs=ASA1349&force=1", headers={"Sec-Fetch-Site": "cross-site"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(caught.exception.code, 403)
+        ok = urllib.request.Request(self.base + "/api/gate?cs=ASA1349", headers={"Sec-Fetch-Site": "same-origin"})
+        self.assertEqual(urllib.request.urlopen(ok, timeout=10).status, 200)
 
     def test_gate(self):
         g = self.get("/api/gate?cs=ASA1349&force=1")

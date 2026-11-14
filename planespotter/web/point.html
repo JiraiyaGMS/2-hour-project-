@@ -284,7 +284,10 @@ if (!data) {
 }
 $("start").onclick = start;
 $("voice").onclick = function () { voice = !voice; this.textContent = voice ? "🔊 On" : "🔇 Off"; };
-$("refresh").onclick = function () { location.href = (data && data.back) || "scriptable:///run/planespotter?point=1"; };
+$("refresh").onclick = function () {
+  var back = data && typeof data.back === "string" && /^(scriptable:\/\/\/|https?:\/\/)/i.test(data.back) ? data.back : "";
+  location.href = back || "scriptable:///run/planespotter?point=1";
+};
 setInterval(tick, 200);
 </script>
 </body></html>

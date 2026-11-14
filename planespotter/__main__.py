@@ -644,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", metavar="command")
     sub.add_parser("setup", help="answer a few questions to create your settings")
     sub.add_parser("check", help="list planes near home right now")
+    sub.add_parser("doctor", help="will it work here? checks this computer and this network, and says what to fix")
+    sub.add_parser("update", help="get the newest planespotter, restart it, and update the script on your iPhone")
     p_watch = sub.add_parser("watch", help="run forever: alerts, daily report and the live map")
     p_watch.add_argument("--open", action="store_true", help="open the map in your browser")
     p_map = sub.add_parser("map", help="just the live 3D/2D map, no emails")
@@ -696,6 +698,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_server(env_path, args)
     if args.command == "gates":
         return cmd_gates(env_path, args)
+    if args.command == "update":
+        from .updater import cmd_update
+        return cmd_update(env_path, args)
 
     try:
         cfg = Config.load(env_path)
@@ -703,7 +708,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Settings problem: {exc}", file=sys.stderr)
         return 2
 
-    commands = {"check": cmd_check, "watch": cmd_watch, "map": cmd_map, "digest": cmd_digest,
+    from .doctor import cmd_doctor
+    commands = {"doctor": cmd_doctor, "check": cmd_check, "watch": cmd_watch, "map": cmd_map, "digest": cmd_digest,
                 "test-email": cmd_test_email, "test-push": cmd_test_push, "weekly": cmd_weekly,
                 "test-special": cmd_test_special, "phone": cmd_phone}
     try:

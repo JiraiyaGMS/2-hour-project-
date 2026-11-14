@@ -112,12 +112,41 @@ FIRST_LINE = "// planespotter for the free Scriptable app"
 HEADER = "// Variables used by Scriptable."
 
 
-def _is_planespotter(path) -> bool:
+def _in_the_cloud(path) -> bool:
+    """A file iCloud keeps only in the cloud (newer macOS shows it under its real name): reading it makes
+    macOS download it first, which can take a long time, or forever with no internet."""
     try:
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            return FIRST_LINE in f.read(2000)
+        return bool(getattr(path.stat(), "st_flags", 0) & 0x40000000)  # SF_DATALESS
     except OSError:
         return False
+
+
+def _read_quick(path, seconds: float = 10, size: int = -1) -> str | None:
+    """The file's text, or None if it can't be read in time (iCloud still downloading it)."""
+    import threading
+
+    box: list = []
+
+    def read() -> None:
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                box.append(f.read(size))
+        except OSError:
+            box.append(None)
+    worker = threading.Thread(target=read, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return box[0] if box else None
+
+
+def _is_planespotter(path) -> bool:
+    """Is this script planespotter's? Scripts with planespotter in their name are read (waiting a little for
+    iCloud); other people's scripts are only looked at when they're already on this Mac."""
+    named = "planespotter" in path.name.lower()
+    if not named and _in_the_cloud(path):
+        return False
+    text = _read_quick(path, 10 if named else 3, 2000)
+    return bool(text and FIRST_LINE in text)
 
 
 def install_in_scriptable(script: str, folder=None, backup_dir=None, download=None, wait_s: float = 30) -> dict:
@@ -154,8 +183,8 @@ def install_in_scriptable(script: str, folder=None, backup_dir=None, download=No
     for path in found:
         header = ""
         if path.exists():
-            old = path.read_text(encoding="utf-8", errors="ignore")
-            if backup_dir:
+            old = _read_quick(path, 15) or ""  # (not waiting for ever on iCloud: then it's just replaced)
+            if backup_dir and old:
                 Path(backup_dir).mkdir(parents=True, exist_ok=True)
                 (Path(backup_dir) / f"previous-{path.name}").write_text(old, encoding="utf-8")
             if old.startswith(HEADER):  # Scriptable's icon and colour for the script
