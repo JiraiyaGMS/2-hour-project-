@@ -1297,7 +1297,7 @@ const MAP_PAGE = `<!doctype html>
 </head><body>
 <div id="map"></div>
 <div id="top"><div class="chip" id="where">✈ planespotter</div><div class="chip" id="status">Finding planes…</div></div>
-<div id="tools"><button class="tool" id="trackBtn">✈︎ Track a flight</button><button class="tool" id="pointBtn">🔭 Point</button></div>
+<div id="tools"><button class="tool" id="trackBtn">✈︎ Track a flight</button><button class="tool" id="pointBtn">🔭 Point ↗</button></div>
 <div id="card" class="hidden"></div>
 <div id="panel"><h2>Next over you</h2><div id="list"><div class="empty">Looking…</div></div></div>
 <div id="sheet" class="hidden">

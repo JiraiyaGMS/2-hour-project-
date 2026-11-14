@@ -534,6 +534,23 @@ def cmd_phone(cfg: Config, args) -> int:
 
     if args.test:
         return phone_test(cfg)
+    if args.install:
+        from .phonekit import install_in_scriptable
+
+        done = install_in_scriptable(k["widget"], backup_dir=folder)
+        if "error" in done:
+            print(f"Couldn't put it in Scriptable directly: {done['error']}.")
+            print("  (That folder only exists when this Mac uses iCloud Drive with the same Apple ID as your iPhone.)")
+            print("  Copy and paste it instead:  python3 -m planespotter phone --copy widget")
+            return 1
+        names = done["updated"] + ([done["added"]] if done["added"] else [])
+        print(f"✔ {'Added' if done['added'] and not done['updated'] else 'Updated'} the planespotter script in Scriptable's "
+              f"iCloud Drive folder: {', '.join(names)}.")
+        print("  On your iPhone, open Scriptable: iCloud brings the new version over in a minute or so.")
+        print("  To check: tap the widget; the map's Point button should read  🔭 Point ↗")
+        print("  Nothing changed on the phone after a few minutes? Close Scriptable (swipe it away) and open it again,")
+        print("  or copy and paste it instead:  python3 -m planespotter phone --copy widget")
+        return 0
     if args.copy:
         what = {"widget": k["widget"], "siri": k["siri_url"], "commands": k["cmd_url"], "family": k["family_topic"],
                 "friend": k["friend_code"]}[args.copy]
@@ -541,6 +558,10 @@ def cmd_phone(cfg: Config, args) -> int:
             print(f"✔ Copied the {args.copy} {'script' if args.copy == 'widget' else 'link'} to this Mac's clipboard.")
             print("  On your iPhone (same Apple ID, Bluetooth on), paste it within a couple of minutes:")
             print("  in Scriptable for the widget script (Siri uses the same script), or wherever the link goes.")
+            if args.copy == "widget":
+                print("  In Scriptable: open the planespotter script, tap in it, Select All, then Paste over everything.")
+                print("  To check it worked: tap the widget; the map's Point button should read  🔭 Point ↗")
+                print("  No clipboard on the phone? Put it straight into Scriptable:  python3 -m planespotter phone --install")
         else:
             print(what)
         return 0
@@ -638,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
     p_phone.add_argument("--copy", choices=["widget", "siri", "commands", "family", "friend"],
                          help="copy one part to this Mac's clipboard instead (paste it on your iPhone)")
     p_phone.add_argument("--test", action="store_true", help="show what Siri and the widget would say right now")
+    p_phone.add_argument("--install", action="store_true",
+                         help="put the script straight into Scriptable through iCloud Drive (no copy and paste)")
     p_emails = sub.add_parser("emails", help="turn emails off (phone notifications only) or back on")
     p_emails.add_argument("state", choices=["on", "off"])
     p_auto = sub.add_parser("autostart", help="run planespotter by itself, from login (or boot), all the time")

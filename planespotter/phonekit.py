@@ -103,3 +103,64 @@ def kit_email(cfg, k: dict) -> Email:
     subject = "Your planespotter phone setup"
     return Email(subject=subject, text="\n".join(text), html=_page(subject, "".join(html)),
                  attachments=[("planespotter-widget.js", k["widget"].encode("utf-8"), "text/plain")])
+
+
+# --- putting the script straight into Scriptable, through iCloud Drive (no copy and paste) ---
+
+SCRIPTABLE_ICLOUD = "~/Library/Mobile Documents/iCloud~dk~simonbs~Scriptable/Documents"
+FIRST_LINE = "// planespotter for the free Scriptable app"
+HEADER = "// Variables used by Scriptable."
+
+
+def _is_planespotter(path) -> bool:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return FIRST_LINE in f.read(2000)
+    except OSError:
+        return False
+
+
+def install_in_scriptable(script: str, folder=None, backup_dir=None, download=None, wait_s: float = 30) -> dict:
+    """Write the script into Scriptable's iCloud Drive folder on this Mac; iCloud then puts it on the iPhone.
+
+    Every planespotter script already there is replaced (so a second copy can't keep the old one), keeping
+    the icon and colour Scriptable stores at the top; the old ones are kept in ``backup_dir``. With none
+    there yet, it's added as "planespotter". Returns {"folder", "updated": [names], "added": name or None},
+    or {"error": why} when this Mac has no Scriptable folder in iCloud Drive.
+    """
+    import shutil
+    import subprocess
+    import time
+    from pathlib import Path
+
+    folder = Path(folder or SCRIPTABLE_ICLOUD).expanduser()
+    if not folder.is_dir():
+        return {"error": f"no Scriptable folder in iCloud Drive on this Mac ({folder})"}
+    # Files iCloud hasn't downloaded to this Mac show up as ".name.js.icloud": fetch the planespotter ones first.
+    waiting = [folder / p.name[1:-len(".icloud")] for p in folder.glob(".*.js.icloud") if "planespotter" in p.name.lower()]
+    if waiting:
+        fetch = download or (lambda p: subprocess.run(["brctl", "download", str(p)], capture_output=True, timeout=60)
+                             if shutil.which("brctl") else None)
+        for p in waiting:
+            fetch(p)
+        until = time.time() + wait_s
+        while time.time() < until and not all(p.exists() for p in waiting):
+            time.sleep(1)
+    found = sorted(p for p in folder.glob("*.js") if _is_planespotter(p))
+    added = None
+    if not found:
+        found = [folder / "planespotter.js"]
+        added = None if found[0].exists() else "planespotter"
+    for path in found:
+        header = ""
+        if path.exists():
+            old = path.read_text(encoding="utf-8", errors="ignore")
+            if backup_dir:
+                Path(backup_dir).mkdir(parents=True, exist_ok=True)
+                (Path(backup_dir) / f"previous-{path.name}").write_text(old, encoding="utf-8")
+            if old.startswith(HEADER):  # Scriptable's icon and colour for the script
+                lines = old.splitlines(keepends=True)
+                while lines and lines[0].startswith("//") and not lines[0].startswith(FIRST_LINE):
+                    header += lines.pop(0)
+        path.write_text(header + script, encoding="utf-8")
+    return {"folder": str(folder), "updated": [p.stem for p in found if p.stem != added], "added": added}

@@ -641,9 +641,18 @@ iPhone decides when widgets refresh (often only every 15 to 30 minutes), so
 the countdowns tick by themselves in between. Tapping the widget opens the
 map (on your home Wi-Fi).
 
-To update the widget after updating planespotter, run
+To update the widget after updating planespotter, the easiest way is
+`python3 -m planespotter phone --install` on your Mac. It puts the script
+straight into Scriptable's folder in iCloud Drive (the Mac and iPhone need the
+same Apple ID with iCloud Drive on), and iCloud brings it to the phone within
+a minute or so. It replaces every planespotter script there, keeps the icon,
+and saves the old one in the `phone-setup` folder. Or copy and paste:
 `python3 -m planespotter phone --copy widget` on your Mac, then in Scriptable
 open **planespotter**, select all, paste over it, and tap **Done**.
+
+**Did it update?** Tap the widget: on the map, the Point button reads
+**🔭 Point ↗**. If it says just **🔭 Point** (and Point says *The compass
+wasn't allowed*), your phone still has the old script.
 
 ### Live map on your phone
 

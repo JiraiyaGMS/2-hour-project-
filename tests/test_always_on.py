@@ -460,6 +460,66 @@ class SearchAndPointTests(unittest.TestCase):
 
 
 
+class InstallInScriptableTests(unittest.TestCase):
+    """`phone --install`: the script goes straight into Scriptable's iCloud Drive folder, no copy and paste."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.tmp = Path(tempfile.mkdtemp())
+        self.icloud = self.tmp / "iCloud~dk~simonbs~Scriptable" / "Documents"
+        self.icloud.mkdir(parents=True)
+        self.backups = self.tmp / "phone-setup"
+        from planespotter.webmap import widget_script
+        self.new = widget_script(make_config(ntfy_topic="planespotter-test"), "", with_keys=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp)
+
+    def test_no_icloud_folder(self):
+        from planespotter.phonekit import install_in_scriptable
+        self.assertIn("error", install_in_scriptable(self.new, folder=self.tmp / "nope"))
+
+    def test_replaces_every_copy_and_keeps_the_icon(self):
+        from planespotter.phonekit import install_in_scriptable
+        header = ("// Variables used by Scriptable.\n// These must be at the very top of the file. Do not edit.\n"
+                  "// icon-color: deep-blue; icon-glyph: plane;\n")
+        old = "// planespotter for the free Scriptable app (https://scriptable.app): old\nnoCompass();\n"
+        (self.icloud / "planespotter.js").write_text(header + old)
+        (self.icloud / "planespotter 2.js").write_text(old)        # pasted into a second copy by mistake
+        (self.icloud / "Hello World.js").write_text("log('hi')\n")  # someone else's script
+        done = install_in_scriptable(self.new, folder=self.icloud, backup_dir=self.backups)
+        self.assertEqual((sorted(done["updated"]), done["added"]), (["planespotter", "planespotter 2"], None))
+        main = (self.icloud / "planespotter.js").read_text()
+        self.assertTrue(main.startswith(header + "// planespotter for the free Scriptable app"))
+        self.assertIn("🔭 Point ↗", main)
+        self.assertNotIn("noCompass", main)
+        self.assertEqual((self.icloud / "planespotter 2.js").read_text(), self.new)
+        self.assertEqual((self.icloud / "Hello World.js").read_text(), "log('hi')\n")
+        self.assertEqual((self.backups / "previous-planespotter.js").read_text(), header + old)
+
+    def test_adds_it_when_missing(self):
+        from planespotter.phonekit import install_in_scriptable
+        done = install_in_scriptable(self.new, folder=self.icloud)
+        self.assertEqual((done["updated"], done["added"]), ([], "planespotter"))
+        self.assertEqual((self.icloud / "planespotter.js").read_text(), self.new)
+
+    def test_fetches_a_copy_icloud_left_in_the_cloud(self):
+        from planespotter.phonekit import install_in_scriptable
+        (self.icloud / ".planespotter.js.icloud").write_bytes(b"placeholder")
+        asked = []
+
+        def download(path):  # what `brctl download` does: the real file appears
+            asked.append(path.name)
+            path.write_text("// planespotter for the free Scriptable app: old\n")
+            (self.icloud / ".planespotter.js.icloud").unlink()
+        done = install_in_scriptable(self.new, folder=self.icloud, download=download, wait_s=2)
+        self.assertEqual((asked, done["updated"], done["added"]), (["planespotter.js"], ["planespotter"], None))
+        self.assertEqual((self.icloud / "planespotter.js").read_text(), self.new)
+        self.assertEqual(sorted(p.name for p in self.icloud.iterdir()), ["planespotter.js"])  # no duplicate
+
+
 class WheresMyPlaneTests(unittest.TestCase):
     def test_the_mac_shares_the_flight_it_follows(self):
         from planespotter.jobs import relay_job
