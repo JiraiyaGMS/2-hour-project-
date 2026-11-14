@@ -92,6 +92,67 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(kinds, ["lan", "lan", "lan", "vpn", "none", "public", "none"])
 
 
+class SignInPageTests(unittest.TestCase):
+    """A Wi-Fi's sign-in page answers every request with a web page: that mustn't count as the real thing."""
+
+    def test_a_notification_the_sign_in_page_swallowed_isnt_sent(self):
+        import io as _io
+        import urllib.request
+        from planespotter.notify import PushNotifier
+
+        class Answer(_io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        answers = [b"<html><body>Sign in to Hotel WiFi</body></html>", b'{"id":"abc","event":"message"}']
+        old = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=0: Answer(answers.pop(0))
+        self.addCleanup(lambda: setattr(urllib.request, "urlopen", old))
+        n = PushNotifier(make_config(ntfy_topic="planespotter-test", quiet_hours=None))
+        self.assertFalse(n.send("✈ Test", "one plane", kind="test"))   # the page answered: not sent
+        self.assertTrue(n.send("✈ Test", "one plane", kind="test"))    # ntfy answered: sent
+
+    def test_a_gate_lookup_that_never_reached_the_service_isnt_counted(self):
+        import urllib.error
+        from planespotter.gates import GateBook
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_config(db_path=Path(tmp) / "g.db", gates_api="aviationstack", gates_key="K")
+
+            def offline(url, headers):
+                raise urllib.error.URLError("no route to host")
+
+            def page(url, headers):
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")  # a web page, not the service's JSON
+            for fetch in (offline, page):
+                book = GateBook(cfg, fetch=fetch)
+                self.assertEqual(book.lookup("ASA1349")["error"], "other")
+                self.assertEqual(book.used(), 0)
+                book.db.close()
+            book = GateBook(cfg, fetch=lambda u, h: (200, {"data": []}))
+            self.assertTrue(book.lookup("ASA1349").get("none"))
+            self.assertEqual(book.used(), 1)
+            book.db.close()
+
+    def test_the_mac_posts_where_its_map_is(self):
+        import planespotter.jobs as jobs
+        from helpers import make_watcher, ts
+        from test_always_on import FakePost
+        from planespotter.jobs import relay_job
+        from planespotter.notify import PushNotifier
+        from planespotter.relay import Relay
+        import json as _json
+        old = jobs.lan_address
+        jobs.lan_address = lambda: "192.168.1.50"
+        self.addCleanup(lambda: setattr(jobs, "lan_address", old))
+        watcher, _, _ = make_watcher(ntfy_topic="planespotter-test")
+        now = ts(2026, 11, 13, 18)
+        post = FakePost()
+        relay_job(watcher, Relay(PushNotifier(watcher.cfg, post=post), lambda: now), None)([], now)
+        self.assertEqual(_json.loads(post.sent[-1]["message"])["mac"], "http://192.168.1.50:8765")
+
+
 def archive(files: dict, links: dict = None) -> bytes:
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w:gz") as tar:

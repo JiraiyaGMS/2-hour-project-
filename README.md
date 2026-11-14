@@ -105,6 +105,17 @@ mkdir -p ~/planespotter && curl -fsSL https://github.com/JiraiyaGMS/2-hour-proje
 To see it in Finder, press **⌘ Shift H** (that opens your home folder) and
 open **planespotter**.
 
+**Updating later** is one command, from inside the folder:
+
+```bash
+python3 -m planespotter update
+```
+
+It downloads the newest version, restarts planespotter if it runs by itself,
+and puts the newest script on your iPhone. Your settings, history and photos
+are never touched. If it can't download, it says why (not online, a Wi-Fi
+that wants you to sign in first, or GitHub blocked).
+
 ### 4. Go into the folder
 
 ```bash
@@ -1206,6 +1217,14 @@ alerts never run dry:
   until 60% of the day's allowance is used.
 - **Whole flights** get a quarter of the allowance, and live positions
   for the map get a little.
+- **✈︎ Track a flight** on the Mac's app gets at most a fifth for following a
+  flight and a tenth for searches. A flying plane is asked about every
+  minute at first, then every three (the map moves it along in between). A
+  waiting one is asked about every ten minutes, more often around take-off.
+  If that share is used up, tracking pauses and the alerts carry on.
+- **Only requests that reach adsb.lol count.** An hour offline, or on a
+  Wi-Fi that wants you to sign in, uses none of the allowance. Your phone
+  has its own separate allowance (about 400 a day), counted the same way.
 
 You can raise the limit for free:
 
@@ -1222,10 +1241,43 @@ carries on by itself once adsb.lol allows more requests.
 
 ---
 
+## Will it work on this Wi-Fi?
+
+Run this on your Mac, on whatever network it's on:
+
+```bash
+python3 -m planespotter doctor
+```
+
+It tries everything planespotter needs and marks each **✔** (works), **⚠**
+(might not: something to know) or **✘** (won't work here), with what to do.
+What to expect on different networks:
+
+| Network | What happens |
+| --- | --- |
+| **Home Wi-Fi** | Everything works. On it, your phone opens the Mac's full app. |
+| **Guest network, or Wi-Fi that keeps devices apart** (most hotel, airport and school Wi-Fi) | ⚠ Your phone can't reach your Mac, even on the same Wi-Fi. It uses its own map, widget and Siri instead, which need no Mac. |
+| **Hotel or airport Wi-Fi before you've signed in** | ✘ Nothing gets through until you open Safari and accept the Wi-Fi's page (often every day). The widget and Siri say *the Wi-Fi wants you to sign in*, and nothing is counted or saved from the sign-in page. |
+| **Shared Wi-Fi** (hotel, airport, school, a big office) | ⚠ adsb.lol allows about 500 requests a day *per internet connection*, and everyone there counts together. If it's used up, planespotter says so and waits as long as adsb.lol asks. Mobile data usually works, and a free adsb.lol key gives you your own allowance. |
+| **School or work Wi-Fi with a filter** | ⚠ It may block adsb.lol (no planes), ntfy (no notifications), raw.githack.com (no 🔭 Point) or unpkg.com (the map doesn't draw; the lists still work). `doctor` shows which. |
+| **A VPN on the Mac** | ⚠ Your phone may not reach the Mac's full app while it's on. |
+| **A VPN on the phone** | ⚠ The phone can't see your home Wi-Fi's devices, so it uses its own map. |
+| **Mobile data** | ✔ The phone's map, widget, Siri, Track a flight, gates and Point all work. The Mac's full app doesn't (it's only on your home Wi-Fi). |
+| **Mac asleep or off** | ⚠ No notifications from the Mac. The phone carries on by itself. |
+| **The Wi-Fi gave your Mac a new address** | ✔ The phone finds it again by itself (by its name, and from the address the Mac posts). |
+
+The first time your phone opens the full app, iPhone asks to let Scriptable
+*find devices on your local network*. If you tapped **Don't Allow**, turn
+it on in **Settings → Privacy & Security → Local Network → Scriptable**.
+
 ## If something goes wrong
 
 | What you see | What to do |
 | --- | --- |
+| Something doesn't work and you're not sure why | Run `python3 -m planespotter doctor`: it checks this computer and this network and says what to fix. |
+| The widget or Siri says *the Wi-Fi wants you to sign in* | Open Safari on the phone and accept the Wi-Fi's page. Or turn Wi-Fi off: mobile data works. |
+| The widget or Siri says *this connection has asked too often* | You're on shared Wi-Fi and adsb.lol's daily limit for that connection is used up. It tries again by itself in a few minutes. Mobile data works. |
+| The tracking card says *⏸ Paused for now* | Following a flight on the Mac's app uses at most a fifth of the Mac's daily adsb.lol allowance, so your plane alerts always have theirs. It carries on later. Your phone's map has its own allowance. |
 | `No such file or directory` or `No module named planespotter` | You're not in the folder. Run `cd ~/planespotter`, then try again. If that also fails, redo step 3. |
 | `Settings problem: No home location set` | Run `python3 -m planespotter setup`. |
 | `CERTIFICATE_VERIFY_FAILED` | Open **Finder → Applications → Python 3.x** and double-click **Install Certificates.command**. Then try again. |
@@ -1290,6 +1342,8 @@ Run these from inside the planespotter folder.
 | --- | --- |
 | `python3 -m planespotter setup` | Asks a few questions and saves your settings. |
 | `python3 -m planespotter check` | Lists the planes near you right now. Sends nothing. |
+| `python3 -m planespotter doctor` | Will it work here? Checks this computer and this network: ✔ works, ⚠ might not, ✘ won't, and what to do. |
+| `python3 -m planespotter update` | Gets the newest version, restarts planespotter, and updates the script on your iPhone. |
 | `python3 -m planespotter watch` | Runs until you stop it: alerts, the daily report and the live map. Add `--open` to open the map in your browser. |
 | `python3 -m planespotter map` | Just the live map, without any emails. |
 | `python3 -m planespotter digest` | Sends the daily report right now. |

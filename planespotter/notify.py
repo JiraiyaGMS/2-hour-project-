@@ -167,7 +167,13 @@ class PushNotifier:
             headers["Authorization"] = f"Bearer {self.cfg.ntfy_token}"
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
+            answer = resp.read(20000)
+        try:  # ntfy answers with the message it took, as JSON
+            took = isinstance(json.loads(answer), dict)
+        except ValueError:
+            took = False
+        if not took:  # a Wi-Fi's sign-in page "answers" too: the notification went nowhere
+            raise urllib.error.URLError("something else answered instead of ntfy (does this Wi-Fi want you to sign in?)")
 
     def send(self, title: str, message: str, click: str = "", tags=("airplane",), priority: int = 3,
              icon: str = "", image: str = "", kind: str = "alert") -> bool:

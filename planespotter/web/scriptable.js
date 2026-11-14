@@ -379,7 +379,7 @@ async function tellMyMac(where, cache) {
     req.body = "location " + where.lat.toFixed(4) + "," + where.lon.toFixed(4);
     req.timeoutInterval = 5;
     const answer = await withTimeout(req.loadString(), 6);
-    const ok = answer !== null && (!req.response || req.response.statusCode < 300);  // ntfy busy (429)? next time
+    const ok = ntfyTook(answer, req);  // ntfy busy (429), or a Wi-Fi sign-in page answering? next time
     if (ok) cache.shared = { lat: where.lat, lon: where.lon, at: now };
   } catch (e) {}
 }
@@ -691,7 +691,8 @@ async function allAirports() {
       const req = new Request(SETTINGS.airportsUrl);
       req.timeoutInterval = 20;
       text = await withTimeout(req.loadString(), 25);
-      if (text && text.includes("code,icao,kind")) fm.writeString(path, text); else text = null;
+      // Only the whole list is kept (about 12,000 airports): not a sign-in page, not a download that was cut off.
+      if (text && text.includes("code,icao,kind") && text.split("\n").length > 5000) fm.writeString(path, text); else text = null;
     } catch (e) { text = null; }
   }
   if (!text) return null;
@@ -824,6 +825,17 @@ async function search(q, where, cache) {
   return { query: q, understood, results: results.slice(0, 100), notFlying, canFollow: !!SETTINGS.cmd };
 }
 
+function ntfyTook(answer, req) {
+  // Did ntfy really take what we posted? (A Wi-Fi's sign-in page "answers" too, with a web page.)
+  if (answer === null || (req.response && req.response.statusCode >= 300)) return false;
+  try {
+    const j = JSON.parse(answer);
+    return !!(j && (j.id || j.event));
+  } catch (e) {
+    return false;
+  }
+}
+
 async function sendCommand(text) {
   // To planespotter on your Mac (or server), through your private command topic.
   if (!SETTINGS.cmd) return false;
@@ -833,7 +845,7 @@ async function sendCommand(text) {
     req.body = text;
     req.timeoutInterval = 8;
     const answer = await withTimeout(req.loadString(), 9);
-    return answer !== null && (!req.response || req.response.statusCode < 300);
+    return ntfyTook(answer, req);
   } catch (e) {
     return false;
   }
@@ -1029,7 +1041,6 @@ async function gateLookup(cs, cache, opts) {
   const hit = cache.gates[cs];
   if (hit && !opts.force && (!gateStale(hit, opts) || (tight && opts.anyAge))) return gateAnswer(hit, opts.ctx);  // free
   if (cache.gateUsage.n >= cap) return { error: "limit" };
-  cache.gateUsage.n += 1;
   const ident = g.api === "aviationstack" ? listedAs(cs) : cs;
   let status = 0, body = null;
   try {
@@ -1045,7 +1056,8 @@ async function gateLookup(cs, cache, opts) {
     body = null;
   }
   const err = body && body.error, code = err && typeof err === "object" ? String(err.code) : "";
-  if (!body) return { error: "other" };
+  if (!body || typeof body !== "object") return { error: "other" };  // no answer, or not the service's (a sign-in page)
+  cache.gateUsage.n += 1;  // the service answered: that's one of this month's lookups
   if (status === 401 || status === 403 ||
       ["invalid_access_key", "missing_access_key", "inactive_user", "101", "https_access_restricted", "105"].includes(code)) return { error: "key" };
   if (status === 429 || ["usage_limit_reached", "104", "rate_limit_reached", "106"].includes(code)) return { error: "limit" };

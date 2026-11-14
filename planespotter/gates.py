@@ -363,14 +363,14 @@ class GateBook:
                 return self._answer(row[0], trips, ctx, now)
         if used >= self.monthly:
             return {"error": "limit"}
-        with self.lock:
-            self.db.execute("INSERT OR IGNORE INTO gate_usage (month, n) VALUES (?, 0)", (self._month(now),))
-            self.db.execute("UPDATE gate_usage SET n = n + 1 WHERE month = ?", (self._month(now),))
-            self.db.commit()
         try:
             got = fetch_trips(self.api, self.key, cs, now, self.fetch)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            return {"error": "other", "detail": str(exc)[:200]}
+            return {"error": "other", "detail": str(exc)[:200]}  # never reached the service: not counted
+        with self.lock:  # the service answered: that's one of this month's lookups
+            self.db.execute("INSERT OR IGNORE INTO gate_usage (month, n) VALUES (?, 0)", (self._month(now),))
+            self.db.execute("UPDATE gate_usage SET n = n + 1 WHERE month = ?", (self._month(now),))
+            self.db.commit()
         if "error" in got:
             return {"error": got["error"]}
         trips = [r for r in got["trips"] if not trip_span(r)[0] or abs(trip_span(r)[0] - now) < 2 * 86400][:12]
