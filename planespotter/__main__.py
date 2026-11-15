@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
 import threading
 import time
