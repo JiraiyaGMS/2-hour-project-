@@ -178,6 +178,74 @@ def _linux_status(run=subprocess.run) -> dict:
             "pid": pid}
 
 
+# --- updating itself every night (on a Linux server) ----------------------------------
+
+UPDATER = f"{SERVICE}-update"
+
+
+def build_update_units(python: str, env_path: Path, project_dir: Path, zone: str = "") -> tuple[str, str]:
+    """(the service that runs one safe update, the timer that starts it every night around 3:30 local time)."""
+    log_path = project_dir / "planespotter.log"
+    command = " ".join(_quote(str(a)) for a in (python, "-m", "planespotter", "--env", env_path, "--log-file",
+                                                 log_path, "update", "--nightly"))
+    service = ("[Unit]\nDescription=planespotter: get the newest version (only if it works)\n"
+               "After=network-online.target\nWants=network-online.target\n\n"
+               f"[Service]\nType=oneshot\nWorkingDirectory={_quote(str(project_dir))}\nExecStart={command}\n"
+               "Environment=PYTHONUNBUFFERED=1\nTimeoutStartSec=900\n")
+    when = f"*-*-* 03:30:00 {zone}".strip() if zone else "*-*-* 03:30:00"
+    timer = ("[Unit]\nDescription=planespotter: update every night\n\n"
+             f"[Timer]\nOnCalendar={when}\nRandomizedDelaySec=20min\nPersistent=true\n\n"
+             "[Install]\nWantedBy=timers.target\n")
+    return service, timer
+
+
+def autoupdate_on(env_path: Path, project_dir: Path, zone: str = "", run=subprocess.run) -> tuple[bool, str]:
+    """Update by itself every night (Linux, with systemd). Returns (worked, what happened)."""
+    if not (sys.platform.startswith("linux") and shutil.which("systemctl")):
+        return False, "Nightly updates are for your server (Linux). Turn them on there:  python3 -m planespotter server autoupdate on"
+    folder = unit_path().parent
+    folder.mkdir(parents=True, exist_ok=True)
+    service, timer = build_update_units(sys.executable, env_path.resolve(), project_dir.resolve(), zone)
+    (folder / f"{UPDATER}.service").write_text(service)
+    (folder / f"{UPDATER}.timer").write_text(timer)
+    for step in (("daemon-reload",), ("enable", "--now", f"{UPDATER}.timer")):
+        done = _systemctl(*step, run=run)
+        if done.returncode != 0 and zone:  # an older systemd that can't take a time zone: plain 03:30
+            (folder / f"{UPDATER}.timer").write_text(build_update_units(sys.executable, env_path.resolve(),
+                                                                        project_dir.resolve())[1])
+            done = _systemctl(*step, run=run)
+        if done.returncode != 0:
+            return False, (done.stderr or done.stdout).strip()
+    return True, f"every night around 3:30{' (' + zone + ')' if zone else ''}"
+
+
+def autoupdate_off(run=subprocess.run) -> bool:
+    folder = unit_path().parent
+    _systemctl("disable", "--now", f"{UPDATER}.timer", run=run)
+    found = False
+    for name in (f"{UPDATER}.timer", f"{UPDATER}.service"):
+        if (folder / name).exists():
+            (folder / name).unlink()
+            found = True
+    if found:
+        _systemctl("daemon-reload", run=run)
+    return found
+
+
+def autoupdate_status(project_dir: Path, run=subprocess.run) -> str:
+    on = (unit_path().parent / f"{UPDATER}.timer").exists()
+    lines = [f"Nightly updates: {'on' if on else 'off'}"]
+    if on:
+        nxt = _systemctl("show", f"{UPDATER}.timer", "-p", "NextElapseUSecRealtime", run=run).stdout.strip()
+        if "=" in nxt and nxt.split("=", 1)[1]:
+            lines.append(f"  Next: {nxt.split('=', 1)[1]}")
+    log = project_dir / "update.log"
+    if log.exists():
+        recent = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-5:]
+        lines += ["  Lately:"] + [f"    {line}" for line in recent]
+    return "\n".join(lines)
+
+
 # --- only once, and a log that trims itself ---------------------------------------
 
 def single_instance(db_path: Path):

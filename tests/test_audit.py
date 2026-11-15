@@ -176,7 +176,7 @@ class UpdateTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "planespotter-folder"
         (self.home / "planespotter").mkdir(parents=True)
-        (self.home / ".env").write_text("HOME_LAT=1\nGATES_KEY=secret\n")
+        (self.home / ".env").write_text("HOME_LAT=1\nHOME_LON=2\nGATES_KEY=secret\n")
         (self.home / "planespotter.db").write_text("history")
         (self.home / "planespotter" / "__main__.py").write_text("print('old')\n")
 
@@ -189,7 +189,7 @@ class UpdateTests(unittest.TestCase):
                        links={"planespotter/link.py": "/etc/passwd"})
         self.assertEqual(unpack(data, self.home), (3, 3))
         self.assertEqual((self.home / "planespotter" / "__main__.py").read_text(), "print('new')\n")
-        self.assertEqual((self.home / ".env").read_text(), "HOME_LAT=1\nGATES_KEY=secret\n")  # yours: never replaced
+        self.assertEqual((self.home / ".env").read_text(), "HOME_LAT=1\nHOME_LON=2\nGATES_KEY=secret\n")  # yours: never replaced
         self.assertEqual((self.home / "planespotter.db").read_text(), "history")
         self.assertFalse((self.home.parent / "outside.txt").exists() or (self.home.parent / "up.txt").exists())
         self.assertFalse((self.home / "planespotter" / "link.py").exists())
@@ -216,8 +216,13 @@ class UpdateTests(unittest.TestCase):
 
     def test_the_command(self):
         import contextlib
+        import sys
+        from unittest import mock
         from planespotter.updater import UpdateError, cmd_update
         ran, out = [], io.StringIO()
+        patch = mock.patch.object(sys, "platform", "darwin")  # on a Mac, the phone's script is updated too
+        patch.start()
+        self.addCleanup(patch.stop)
 
         def offline():
             raise UpdateError("Couldn't reach GitHub: this computer isn't online")
@@ -228,6 +233,74 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("isn't online", out.getvalue())
         self.assertIn("Updated (3 of 3 files changed)", out.getvalue())
         self.assertEqual(ran[-1][-2:], ["phone", "--install"])  # then the phone's script
+        (self.home / "accounts.db").write_text("")  # with accounts on, not: it would replace your phone's pass
+        ran.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_update(self.home / ".env", None, self.home, lambda: archive({**GOOD, "README.md": "newer\n"}),
+                       lambda *a, **k: ran.append(a[0]))
+        self.assertFalse(any("phone" in r for r in ran))
+
+
+class NightlyTests(unittest.TestCase):
+    """By itself, at night: only a version that works."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        (self.home / "planespotter").mkdir()
+        (self.home / ".env").write_text("HOME_LAT=1\nHOME_LON=2\n")
+        (self.home / "planespotter" / "__main__.py").write_text("print('old')\n")
+        (self.home / "README.md").write_text("old\n")
+        self.ran, self.lines = [], []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_it(self, fetch, loads=True, starts=True):
+        from planespotter.updater import nightly
+
+        class Done:
+            def __init__(self, code):
+                self.returncode, self.stdout, self.stderr = code, "", "" if code == 0 else "SyntaxError: oops"
+
+        def run(cmd, **kw):
+            self.ran.append(cmd)
+            return Done(0 if loads or "-c" not in cmd else 1)
+        return nightly(self.home / ".env", self.home, fetch, run, check=lambda port: starts, log=self.lines.append)
+
+    def files(self):
+        return ((self.home / "planespotter" / "__main__.py").read_text(), (self.home / "README.md").read_text(),
+                (self.home / "planespotter" / "web" / "scriptable.js").exists())
+
+    def test_a_working_version_goes_in(self):
+        self.assertEqual(self.run_it(lambda: archive(GOOD)), 0)
+        self.assertEqual(self.files(), ("print('new')\n", "new\n", True))
+        self.assertEqual(sum(1 for r in self.ran if r[-1:] == ["autostart"]), 1)  # restarted once
+        self.assertIn("updated", self.lines[-1])
+        self.assertEqual(self.run_it(lambda: archive(GOOD)), 0)
+        self.assertIn("already up to date", self.lines[-1])
+
+    def test_a_version_that_doesnt_load_never_runs(self):
+        self.assertEqual(self.run_it(lambda: archive(GOOD), loads=False), 1)
+        self.assertEqual(self.files(), ("print('old')\n", "old\n", False))  # yesterday's, and nothing new left behind
+        self.assertFalse(any(r[-1:] == ["autostart"] for r in self.ran))   # never restarted
+        self.assertIn("didn't load", self.lines[-1])
+
+    def test_a_version_that_doesnt_start_is_swapped_back(self):
+        self.assertEqual(self.run_it(lambda: archive(GOOD), starts=False), 1)
+        self.assertEqual(self.files(), ("print('old')\n", "old\n", False))
+        self.assertEqual(sum(1 for r in self.ran if r[-1:] == ["autostart"]), 2)  # tried the new, then yesterday's
+        self.assertIn("went back", self.lines[-1])
+
+    def test_no_internet_or_a_bad_download_changes_nothing(self):
+        from planespotter.updater import UpdateError
+
+        def offline():
+            raise UpdateError("Couldn't reach GitHub")
+        self.assertEqual(self.run_it(offline), 1)
+        self.assertEqual(self.run_it(lambda: archive(GOOD)[: len(archive(GOOD)) // 2]), 1)  # cut off part-way
+        self.assertEqual(self.files(), ("print('old')\n", "old\n", False))
+        self.assertEqual(self.ran, [])
 
 
 class WhatPlanesBroadcastTests(unittest.TestCase):

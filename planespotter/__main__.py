@@ -430,6 +430,27 @@ def cmd_accounts(env_path: Path, args) -> int:
     return 0
 
 
+def cmd_autoupdate(env_path: Path, args) -> int:
+    """Update by itself every night, on the server: only to a version that loads and starts."""
+    from . import autostart
+    from .config import PROJECT_DIR
+
+    if args.state == "on":
+        try:
+            zone = getattr(Config.load(env_path).timezone, "key", "") or ""
+        except ConfigError:
+            zone = ""
+        worked, said = autostart.autoupdate_on(env_path, PROJECT_DIR, zone)
+        print(f"✔ planespotter updates itself {said}. If a new version doesn't work, it keeps the one before."
+              if worked else f"✘ {said}")
+        return 0 if worked else 1
+    if args.state == "off":
+        print("✔ Nightly updates are off." if autostart.autoupdate_off() else "Nightly updates weren't on.")
+        return 0
+    print(autostart.autoupdate_status(PROJECT_DIR))
+    return 0
+
+
 def env_path_of(args) -> Path:
     return Path(args.env).expanduser() if getattr(args, "env", None) else DEFAULT_ENV
 
@@ -594,6 +615,26 @@ def cmd_server(env_path: Path, args) -> int:
         print(f"Fix your settings first: {exc}")
         return 2
     action = args.what.lower()
+    if action == "autoupdate":
+        if not cfg.server:
+            print("First move planespotter to your server:  python3 -m planespotter server ubuntu@<its address>")
+            return 1
+        state = (args.target or "status").lower()
+        if state not in ("on", "off", "status"):
+            print("Use:  python3 -m planespotter server autoupdate on   (or off, or status)")
+            return 1
+        from .server import REMOTE_DIR, ServerError as _SE
+        try:
+            remote = Remote(cfg.server)
+            if state == "on":  # it needs the version that knows how
+                remote.must(remote.ssh(f"cd {REMOTE_DIR} && python3 -m planespotter autoupdate status"), "Checking the server")
+            print(remote.must(remote.ssh(f"cd {REMOTE_DIR} && python3 -m planespotter autoupdate {state}"),
+                              "Setting up nightly updates").strip())
+        except _SE as exc:
+            print(f"✘ {exc}")
+            print("  (If it says it doesn't know 'autoupdate', update the server first:  python3 -m planespotter server update)")
+            return 1
+        return 0
     if action == "web":
         from .server import ServerError as _SE, web
         if not (args.target and cfg.server):
@@ -913,7 +954,10 @@ def main(argv: list[str] | None = None) -> int:
                        choices=["on", "invite", "list", "remove", "password", "url", "off"])
     p_acc.add_argument("value", nargs="?", help="a username, or your web address")
     sub.add_parser("doctor", help="will it work here? checks this computer and this network, and says what to fix")
-    sub.add_parser("update", help="get the newest planespotter, restart it, and update the script on your iPhone")
+    p_update = sub.add_parser("update", help="get the newest planespotter, restart it, and update the script on your iPhone")
+    p_update.add_argument("--nightly", action="store_true", help=argparse.SUPPRESS)
+    p_auto_up = sub.add_parser("autoupdate", help="on a server: update by itself every night (only to versions that work)")
+    p_auto_up.add_argument("state", nargs="?", choices=["on", "off", "status"], default="status")
     p_watch = sub.add_parser("watch", help="run forever: alerts, daily report and the live map")
     p_watch.add_argument("--open", action="store_true", help="open the map in your browser")
     p_map = sub.add_parser("map", help="just the live 3D/2D map, no emails")
@@ -940,8 +984,9 @@ def main(argv: list[str] | None = None) -> int:
     p_gates.add_argument("value", nargs="?", help="your key (or a flight to test, like UAL123)")
     p_server = sub.add_parser("server", help="move planespotter to an always-on server (ubuntu@address), or: "
                                              "status, update, stop")
-    p_server.add_argument("what", help="user@address to move it there, or status / update / stop / web")
-    p_server.add_argument("target", nargs="?", help="user@address (if it isn't saved yet), or your domain for web")
+    p_server.add_argument("what", help="user@address to move it there, or status / update / stop / web / autoupdate")
+    p_server.add_argument("target", nargs="?", help="user@address (if it isn't saved yet), your domain for web, "
+                                                    "or on / off / status for autoupdate")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -971,6 +1016,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_update(env_path, args)
     if args.command == "accounts":
         return cmd_accounts(env_path, args)
+    if args.command == "autoupdate":
+        return cmd_autoupdate(env_path, args)
 
     try:
         cfg = Config.load(env_path)
