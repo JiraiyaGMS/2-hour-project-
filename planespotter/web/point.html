@@ -51,6 +51,18 @@
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
 "use strict";
+// In the Android app, the phone speaks through the app itself: Android's built-in web view has no voice
+// (or one that stays silent), so the app's own always takes over there.
+if (window.PlanespotterAndroid) {
+  var androidVoice = {
+    speak: function (u) { window.PlanespotterAndroid.speak(String((u && u.text) || '')); },
+    cancel: function () { window.PlanespotterAndroid.stop(); },
+    getVoices: function () { return []; }
+  };
+  Object.defineProperty(window, 'speechSynthesis', { value: androidVoice, configurable: true, writable: true });
+  Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+    value: function (text) { this.text = text; }, configurable: true, writable: true });
+}
 var BEAM = 15, BEAM_MILES = 30, R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] };
 var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
 var data = null, map = null, ready = false, heading = null, voice = true, picked = null, pickedAt = 0, said = "", lastGuide = 0;

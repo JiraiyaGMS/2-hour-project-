@@ -1,0 +1,43 @@
+// planespotter for Android: your planespotter's website in an app, plus a home-screen widget and spoken
+// long-press shortcuts. Plain Java and Android itself: no extra libraries.
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "app.planespotter"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "app.planespotter"
+        minSdk 26  // Android 8 (2017) and newer
+        targetSdk 34  // (Android 15 runs it as it is: no drawing under the clock)
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            // The key that signs the app: kept out of the repository (see android/README.md).
+            def keystore = System.getenv("PLANESPOTTER_KEYSTORE")
+            if (keystore) {
+                storeFile file(keystore)
+                storePassword System.getenv("PLANESPOTTER_KEYSTORE_PASSWORD")
+                keyAlias "planespotter"
+                keyPassword System.getenv("PLANESPOTTER_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv("PLANESPOTTER_KEYSTORE") ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

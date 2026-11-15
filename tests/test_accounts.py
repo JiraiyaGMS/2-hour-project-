@@ -233,6 +233,14 @@ class FrontDoorTests(unittest.TestCase):
             self.assertTrue(h.get("Content-Type", "").startswith(kind), path)
         self.assertEqual(self.req("/api/live")[0], 401)  # but nothing of yours
 
+    def test_the_android_app_downloads(self):
+        s, h, _ = self.req("/planespotter.apk")
+        self.assertEqual((s, h.get("Content-Type")), (200, "application/vnd.android.package-archive"))
+        self.assertIn('filename="planespotter.apk"', h.get("Content-Disposition", ""))
+        apk = (Path(__file__).resolve().parent.parent / "planespotter" / "web" / "planespotter.apk").read_bytes()
+        self.assertEqual(apk[:2], b"PK")  # an Android app is a zip
+        self.assertIn(b"AndroidManifest.xml", apk)
+
     def test_android_phones_see_android_steps_first(self):
         henry = self.sign_in("henry", "correct horse")
         android = self.req("/account", cookie=henry, accept="text/html",
@@ -240,6 +248,7 @@ class FrontDoorTests(unittest.TestCase):
         iphone = self.req("/account", cookie=henry, accept="text/html",
                           headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"})[2]
         self.assertLess(android.index("🤖 Android"), android.index("📱 iPhone"))
+        self.assertIn('href="/planespotter.apk"', android)
         self.assertLess(iphone.index("📱 iPhone"), iphone.index("🤖 Android"))
 
     def test_forms_from_other_sites_and_unsafe_next(self):

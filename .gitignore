@@ -11,3 +11,10 @@ __pycache__/
 *.pyc
 .venv/
 phone-setup/
+
+# Android app: build output and this computer's SDK path (the app itself is planespotter/web/planespotter.apk)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.jks

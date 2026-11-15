@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">planespotter</string>
+    <string name="widget_name">Next plane over you</string>
+    <string name="s_next">What\'s that plane?</string>
+    <string name="s_next_short">That plane?</string>
+    <string name="s_mine">Where\'s my plane?</string>
+    <string name="s_mine_short">My plane</string>
+    <string name="s_track">Track a flight</string>
+    <string name="s_track_short">Track</string>
+    <string name="s_point">Point at a plane</string>
+    <string name="s_point_short">Point</string>
+</resources>

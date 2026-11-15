@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Press and hold planespotter's icon. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="next" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/s_next_short" android:shortcutLongLabel="@string/s_next">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.planespotter"
+            android:targetClass="app.planespotter.MainActivity" android:data="planespotter:/?say=next" />
+    </shortcut>
+    <shortcut android:shortcutId="mine" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/s_mine_short" android:shortcutLongLabel="@string/s_mine">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.planespotter"
+            android:targetClass="app.planespotter.MainActivity" android:data="planespotter:/?say=mine" />
+    </shortcut>
+    <shortcut android:shortcutId="track" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/s_track_short" android:shortcutLongLabel="@string/s_track">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.planespotter"
+            android:targetClass="app.planespotter.MainActivity" android:data="planespotter:/?track=1" />
+    </shortcut>
+    <shortcut android:shortcutId="point" android:enabled="true" android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/s_point_short" android:shortcutLongLabel="@string/s_point">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.planespotter"
+            android:targetClass="app.planespotter.MainActivity" android:data="planespotter:/#point" />
+    </shortcut>
+</shortcuts>

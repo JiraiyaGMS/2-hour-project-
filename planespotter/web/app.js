@@ -3,6 +3,19 @@
  * All data comes from planespotter running on this computer: /api/config, /api/live,
  * /api/flights and /api/info.
  */
+// In the Android app, the phone speaks through the app itself: Android's built-in web view has no voice
+// (or one that stays silent), so the app's own always takes over there.
+if (window.PlanespotterAndroid) {
+  var androidVoice = {
+    speak: function (u) { window.PlanespotterAndroid.speak(String((u && u.text) || '')); },
+    cancel: function () { window.PlanespotterAndroid.stop(); },
+    getVoices: function () { return []; }
+  };
+  Object.defineProperty(window, 'speechSynthesis', { value: androidVoice, configurable: true, writable: true });
+  Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+    value: function (text) { this.text = text; }, configurable: true, writable: true });
+}
+
 (() => {
   'use strict';
 

@@ -248,15 +248,23 @@ def make_handler(front: Front):
               plane?"), and the planes over wherever you are.</p>{phone}
               <form method="post" action="/account/phone"><button class="ghost">{'Make a new script' if script else 'Get my script'}</button></form>
               <p class="muted">Also: in Safari, <b>Share → Add to Home Screen</b> gives the app its own icon.</p></div>"""
-            android = """<div class="card"><h2>🤖 Android: an app on your home screen</h2><ol>
-              <li>Open this site in <b>Chrome</b> and sign in.</li>
-              <li>Tap <b>⋮</b> (top right), then <b>Add to Home screen</b> → <b>Install</b>. planespotter gets its own icon
-              and opens like an app.</li>
-              <li><b>Press and hold the icon</b> for shortcuts: <b>What's that plane?</b> and <b>Where's my plane?</b> (both read the
-              answer out loud), <b>Track a flight</b> and <b>Point</b>.</li>
-              <li>Notifications: the ntfy app (above) works the same on Android.</li></ol>
-              <p class="muted">Android has no Scriptable, so there's no home-screen widget: notifications tell you when
-              planes are coming, and the shortcuts answer out loud instead of Siri.</p></div>"""
+            site = escape(self.base_url().replace("https://", "").replace("http://", ""))
+            android = f"""<div class="card"><h2>🤖 Android: the planespotter app</h2>
+              <p>An app for any Android phone (any browser): planespotter with a <b>home-screen widget</b> (the next plane
+              over you, with a countdown), and shortcuts that <b>answer out loud</b>.</p>
+              <a class="btn" href="/planespotter.apk" download>Download the app</a>
+              <ol style="margin-top:14px"><li>Tap <b>Download the app</b>, then open the download (it's called
+              <b>planespotter.apk</b>).</li>
+              <li>Android asks whether your browser may install apps: tap <b>Settings</b>, turn on <b>Allow from this
+              source</b>, go back, and tap <b>Install</b>. (It comes from this site, not the Play Store, so Android
+              asks; if Play Protect asks to scan it, let it.)</li>
+              <li>Open planespotter, type <b>{site}</b>, and sign in.</li>
+              <li>Widget: press and hold an empty spot on your home screen → <b>Widgets</b> → <b>planespotter</b>.</li>
+              <li><b>Press and hold the app's icon</b> for <b>What's that plane?</b> and <b>Where's my plane?</b> (out loud),
+              <b>Track a flight</b> and <b>Point</b>.</li>
+              <li>Notifications: the ntfy app (above), from Google Play.</li></ol>
+              <p class="muted">Rather not install an app? In Chrome: ⋮ → <b>Add to Home screen</b> gives the same app
+              without the widget.</p></div>"""
             on_android = "Android" in self.headers.get("User-Agent", "")
             return android + iphone if on_android else iphone + android
 
@@ -307,9 +315,11 @@ def make_handler(front: Front):
             from .webmap import PUBLIC_FILES, WEB_DIR
             if path in PUBLIC_FILES:  # the installed app's icon and pieces: before signing in, too
                 name, ctype = PUBLIC_FILES[path]
-                self.send(200, (WEB_DIR / name).read_bytes(), ctype,
-                          headers={"Cache-Control": "no-cache"} if path in ("/sw.js", "/manifest.webmanifest") else
-                          {"Cache-Control": "max-age=86400"})
+                extra = {"Cache-Control": "no-cache"} if path in ("/sw.js", "/manifest.webmanifest", "/planespotter.apk") \
+                    else {"Cache-Control": "max-age=86400"}
+                if path.endswith(".apk"):
+                    extra["Content-Disposition"] = 'attachment; filename="planespotter.apk"'
+                self.send(200, (WEB_DIR / name).read_bytes(), ctype, headers=extra)
                 return
             if path == "/login":
                 self.send(200, self.login_page(next_path=safe_next(query.get("next", "/"))))

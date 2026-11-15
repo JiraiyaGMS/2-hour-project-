@@ -1280,23 +1280,24 @@ start theirs. On their account page they find:
 Other commands: `accounts list`, `accounts remove NAME` (deletes their
 history too), `accounts password NAME`, `accounts off` (nothing is deleted).
 
-**Friends with Android phones** get nearly the same. Scriptable (the widget
-and Siri) is iPhone-only, so on Android planespotter is an app installed
-from Chrome:
-1. Open your planespotter's address in **Chrome** and sign in.
-2. Tap **⋮ → Add to Home screen → Install**. planespotter gets its own icon.
-3. **Press and hold the icon** for its shortcuts:
-   - **What's that plane?** and **Where's my plane?**, which read the answer
-     out loud, like Siri;
-   - **Track a flight**;
-   - **Point**, which uses the phone's compass, like on iPhone.
-4. Notifications: the **ntfy** app from Google Play, the same topic as on
-   iPhone.
+**Friends with Android phones** get the **planespotter app**. It works on
+any Android phone, whatever its browser (Firefox too). It has:
+- a **home-screen widget** showing the next plane over them, with a countdown
+  that ticks, where to look, and the last one over;
+- **long-press shortcuts** on its icon: *What's that plane?* and *Where's my
+  plane?*, read out loud with the phone's own voice, *Track a flight* and
+  *Point*;
+- the phone's compass for Point.
 
-Android has no home-screen widget; the notifications and the spoken
-shortcuts stand in for it. Each person's account page shows the steps for
-their phone first. iPhones can also install the app from Safari with
-**Share → Add to Home Screen**.
+On their account page: **Download the app**, open the download, allow their
+browser to install apps when Android asks, then **Install**. They type your
+planespotter's address once and sign in. It comes from your site rather than
+the Play Store, so Android asks first; if Play Protect offers to scan it, let
+it. For notifications, they use the **ntfy** app from Google Play. The
+account page shows the steps for their kind of phone first. (In Chrome,
+**⋮ → Add to Home screen** gives the same app without the widget; iPhones can
+do the same from Safari with **Share → Add to Home Screen**.) How the app is
+built and signed is in `android/README.md`.
 
 **How it's kept safe**
 - **Passwords:** stored only as scrypt hashes, never in a readable form.

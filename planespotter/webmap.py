@@ -81,6 +81,7 @@ PUBLIC_FILES = {
     "/icon-maskable-512.png": ("icon-maskable-512.png", "image/png"),
     "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
     "/favicon.ico": ("icon-192.png", "image/png"),
+    "/planespotter.apk": ("planespotter.apk", "application/vnd.android.package-archive"),  # the Android app
 }
 STATIC_FILES.update(PUBLIC_FILES)
 MAX_UPLOAD = 16 * 1024 * 1024  # bytes: a photo (sent as text) or a batch of noise levels
