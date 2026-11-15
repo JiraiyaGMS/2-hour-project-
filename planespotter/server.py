@@ -128,11 +128,78 @@ def move(remote: Remote, env_path: Path, db_path: Path, say=print) -> None:
             remote.must(remote.copy_to(db_copy, f"{REMOTE_DIR}/planespotter.db"), "Copying your history")
         elif has_history:
             say("  ✔ The server already has a history: keeping it.")
+        copy_accounts(remote, Path(db_path).parent, Path(tmp), say)
     say("  ✔ Starting it there, so it runs by itself from now on...")
     out = remote.must(remote.ssh(f"cd {REMOTE_DIR} && python3 -m planespotter autostart"), "Starting planespotter there")
     for line in out.splitlines():
         if "⚠" in line:
             say(line)
+
+
+def copy_accounts(remote: Remote, folder: Path, tmp: Path, say=print) -> None:
+    """With accounts on: the accounts, and each friend's settings and history, unless the server has them."""
+    accounts_db = folder / "accounts.db"
+    if not accounts_db.exists() or remote.ssh(f"test -e {REMOTE_DIR}/accounts.db").returncode == 0:
+        return
+    say("  ✔ Copying the accounts (and each friend's settings and history)...")
+    snapshot(accounts_db, tmp / "accounts.db")
+    remote.must(remote.copy_to(tmp / "accounts.db", f"{REMOTE_DIR}/accounts.db"), "Copying the accounts")
+    for friend in sorted((folder / "accounts").glob("*/")) if (folder / "accounts").is_dir() else []:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,19}", friend.name):
+            continue
+        there = f"{REMOTE_DIR}/accounts/{friend.name}"
+        remote.must(remote.ssh(f"mkdir -p {there} && chmod 700 {there}"), f"Making {friend.name}'s folder")
+        if (friend / ".env").exists():
+            remote.must(remote.copy_to(friend / ".env", f"{there}/.env"), f"Copying {friend.name}'s settings")
+        if (friend / "planespotter.db").exists():
+            snapshot(friend / "planespotter.db", tmp / f"{friend.name}.db")
+            remote.must(remote.copy_to(tmp / f"{friend.name}.db", f"{there}/planespotter.db"), f"Copying {friend.name}'s history")
+
+
+# Puts planespotter on your own web address, with the padlock (https). Caddy is a small free web server that
+# gets and renews the certificate by itself; it passes everything to planespotter's sign-in page.
+WEB_SETUP = r"""set -e
+if ! command -v caddy >/dev/null 2>&1; then
+  sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy
+fi
+printf '%s {
+  encode gzip
+  reverse_proxy 127.0.0.1:{port}
+}
+' '{domain}' | sudo tee /etc/caddy/Caddyfile >/dev/null
+# Let the web in (ports 80 and 443) through the server's own firewall, if it has one.
+if command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q active; then sudo ufw allow 80/tcp && sudo ufw allow 443/tcp; fi
+if sudo iptables -L INPUT -n 2>/dev/null | grep -q 'REJECT'; then
+  for p in 80 443; do sudo iptables -C INPUT -p tcp --dport $p -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 5 -p tcp --dport $p -j ACCEPT; done
+  if command -v netfilter-persistent >/dev/null 2>&1; then sudo netfilter-persistent save >/dev/null 2>&1 || true; fi
+fi
+sudo systemctl enable --now caddy >/dev/null 2>&1 || true
+sudo systemctl reload caddy || sudo systemctl restart caddy
+"""
+
+
+def check_domain(domain: str) -> str:
+    d = domain.strip().lower().removeprefix("https://").removeprefix("http://").rstrip("/")
+    if not re.fullmatch(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", d):
+        raise ServerError(f"{domain!r} doesn't look like a web address. Write it like  planebell.com")
+    return d
+
+
+def web(remote: Remote, domain: str, port: int, say=print) -> str:
+    """Your own address with https, pointing at the server's planespotter. Returns the address."""
+    domain = check_domain(domain)
+    # On the internet, anyone can open it: only behind the sign-in page.
+    if remote.ssh(f"test -e {REMOTE_DIR}/accounts.db").returncode != 0:
+        raise ServerError("Turn accounts on first, so it asks everyone to sign in (otherwise anyone could see your "
+                          "map and your home):  python3 -m planespotter accounts on  (then  server update)")
+    say(f"Setting up https://{domain} on your server (a minute or two)...")
+    remote.must(remote.ssh(WEB_SETUP.replace("{domain}", domain).replace("{port}", str(int(port))), timeout=600),
+                "Setting up the web server (Caddy)")
+    url = f"https://{domain}"
+    remote.must(remote.ssh(f"cd {REMOTE_DIR} && python3 -c \"from pathlib import Path; from planespotter.wizard import "
+                           f"set_env_value; set_env_value(Path('.env'), 'PUBLIC_URL', '{url}')\" && "
+                           "python3 -m planespotter autostart"), "Telling planespotter its address")
+    return url
 
 
 def status(remote: Remote) -> str:

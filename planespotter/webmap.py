@@ -214,6 +214,7 @@ class MapApp:
         self.flights = flight_lookup or FlightLookup(clock=clock, api_base=cfg.adsb_api, api_key=key, budget=budget)
         self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget)
         self.logos = logo_cache or LogoCache(Path(cfg.db_path).parent / "logo-cache")
+        self.account = None   # {"name", "owner"} when accounts are on: whose planespotter this is
         # ✈︎ Track a flight and 🚪 Gate, the same as on the phone.
         self.search_sky = Sky(cfg.adsb_api, key, budget, clock)
         self.gatebook = GateBook(cfg, clock) if cfg.gates_api in GATE_APIS and cfg.gates_key else None
@@ -269,6 +270,7 @@ class MapApp:
             "travel": self.travel.status() if self.travel else None,
             "can_travel": self.travel is not None,
             "gates": {"on": bool(self.gatebook), "name": self.gatebook.name if self.gatebook else ""},
+            "account": self.account,
             "point_url": POINT_URL,
         }
 
@@ -810,7 +812,7 @@ def mac_name_url(cfg: Config) -> str:
     return f"http://{name}.local:{cfg.map_port}"
 
 
-def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
+def widget_script(cfg: Config, map_url: str, with_keys: bool = False, token: str = "") -> str:
     """The Scriptable script (widget and Siri), with your settings filled in.
 
     No adsb.lol key: the phone asks adsb.lol from its own connection, within its own free allowance,
@@ -821,10 +823,13 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False) -> str:
         "home": {"name": cfg.home_name, "lat": round(cfg.home_lat, 5), "lon": round(cfg.home_lon, 5),
                  "groundFt": home_elevation_ft(cfg)},
         "radius": cfg.radius_miles, "maxAlt": cfg.max_altitude_ft,
-        "mac": map_url, "macName": mac_name_url(cfg) if map_url else "",
+        "mac": map_url, "macName": mac_name_url(cfg) if map_url and not token else "",
         "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
         "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
     }
+    if token:  # accounts are on: this account's own pass to its planespotter (only in the copy for its phone)
+        settings["token"] = token
+        settings["public"] = map_url.startswith("https://")  # on the internet: the full app opens from anywhere
     settings["airportsUrl"] = AIRPORTS_URL
     settings["pointUrl"] = POINT_URL
     if with_keys and cfg.gates_api in GATE_APIS and cfg.gates_key:
@@ -899,9 +904,19 @@ def make_handler(app: MapApp):
         def send_json(self, data: Any, status: int = 200) -> None:
             self.send(status, json.dumps(data, separators=(",", ":")).encode(), "application/json")
 
+        def from_the_internet(self) -> bool:
+            """Came through a web server in front (on your own web address) while accounts are off: anyone on the
+            internet could see your map and home, so it's refused. (With accounts on, the sign-in page is in front.)"""
+            if app.account is None and self.headers.get("X-Forwarded-For"):
+                self.send_json({"error": "planespotter is private: turn accounts on (python3 -m planespotter accounts on)"}, 403)
+                return True
+            return False
+
         def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
             query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if self.from_the_internet():
+                return
             try:
                 if url.path in STATIC_FILES:
                     name, ctype = STATIC_FILES[url.path]
@@ -1016,6 +1031,8 @@ def make_handler(app: MapApp):
             return urllib.parse.urlsplit(origin).netloc == self.headers.get("Host", "")
 
         def do_POST(self):
+            if self.from_the_internet():
+                return
             url = urllib.parse.urlsplit(self.path)
             routes = {"/api/saw": app.saw, "/api/photo": app.add_photo, "/api/photo/delete": app.delete_photo,
                       "/api/noise/levels": app.add_noise, "/api/follow": app.follow, "/api/quiz": app.quiz_reply,

@@ -593,3 +593,5 @@ code.code { font-size: 11.5px; background: var(--panel-2); padding: 1px 5px; bor
   #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .map-controls { top: 8px; right: 8px; }
 }
+
+a.chime { text-decoration: none; display: inline-flex; align-items: center; }

@@ -11,7 +11,7 @@ import webbrowser
 from datetime import date
 from pathlib import Path
 
-from .adsb import Lookup, PositionLookup
+from .adsb import FeedWithReceiver, Lookup, PositionLookup, ReceiverFeed
 from .follow import start_follow_worker
 from .space import SpaceWatch
 from .config import DEFAULT_ENV, Config, ConfigError, fmt_clock_range
@@ -35,18 +35,65 @@ from .webmap import (MapServerError, home_elevation_ft, make_budget, shared_feed
 from .wizard import Cancelled, Wizard
 
 
-def build(cfg: Config, budget=None, share: int = 1, quota=None) -> Watcher:
+def build(cfg: Config, budget=None, share: int = 1, quota=None, feed=None) -> Watcher:
     store = Store(cfg.db_path)
     budget = budget or make_budget(cfg)
     flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
                if cfg.whole_flights else None)
-    watcher = Watcher(cfg, store, shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
+    watcher = Watcher(cfg, store, feed or shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
                       budget=budget, flights=flights, notifier=PushNotifier(cfg, quota=quota),
                       sky=SkyWatch(cfg) if cfg.weather else None,
                       ground_ft=home_elevation_ft(cfg),
                       space=SpaceWatch(cfg, lambda: store) if cfg.space_alerts else None)
     watcher.share = share
     return watcher
+
+
+def open_accounts(cfg: Config):
+    """The accounts, if they're on (there's an accounts.db with someone in it next to your settings)."""
+    from .accounts import Accounts
+
+    folder = Path(cfg.db_path).parent
+    if not (folder / "accounts.db").exists():
+        return None
+    accounts = Accounts(folder)
+    if accounts.enabled():
+        return accounts
+    accounts.close()
+    return None
+
+
+def view_nm(cfg: Config) -> float:
+    """How far around a home planes are fetched for (the map's view, or the zone if it's bigger)."""
+    return miles_to_nm(max(cfg.view_radius_miles if cfg.map_enabled else 0, cfg.radius_miles * 3, 10))
+
+
+def launch_account(cfg: Config, budget, shared: dict, quota, feed, account: dict, public_url: str) -> threading.Thread:
+    """A friend's planespotter, in the background: their own watcher, history, notifications and map (which
+    listens only on this computer: people reach it through the sign-in page)."""
+    def run():
+        try:
+            watcher = build(cfg, budget=budget, quota=quota, feed=feed)  # built in its own thread (SQLite)
+            watcher.shared = shared
+            try:
+                server, urls = start_map_server(cfg, feed=watcher.feed, budget=budget, sky=watcher.sky)
+                server.app.account = account
+                server.app.outlook = Outlook(cfg)
+                watcher.notifier.map_url = public_url or urls[0]
+            except MapServerError as exc:
+                print(f"  (No map for {account['name']}: {exc})")
+            positions = PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
+            start_follow_worker(cfg, positions, watcher.notifier)
+            start_flight_worker(cfg, budget, watcher.notifier)
+            watcher.after_poll += [transit_job(watcher)]
+            if cfg.relay:
+                watcher.after_poll.append(relay_job(watcher, Relay(watcher.notifier, time.time), None))
+            watcher.run()
+        except Exception:  # one account's trouble mustn't stop the others
+            logging.getLogger(__name__).exception("%s's planespotter stopped", account["name"])
+    thread = threading.Thread(target=run, name=f"account-{account['name']}", daemon=True)
+    thread.start()
+    return thread
 
 
 def start_place(cfg: Config, budget, share, maps: list, quota=None, ready=None) -> threading.Thread:
@@ -176,10 +223,40 @@ def cmd_watch(cfg: Config, args) -> int:
         print("  To stop it running by itself:  python3 -m planespotter autostart off")
         return 0
     args._lock = lock
+    # Accounts on: everyone's planespotter runs here side by side, behind one sign-in page. Homes near each
+    # other share one request to adsb.lol, and they all share its daily limit.
+    accounts = open_accounts(cfg)
+    hub = None
+    if accounts:
+        from .accounts import AccountError, account_config
+        from .adsb import LiveFeed
+        from .cluster import ClusterFeed
+
+        front_host, front_port = ("0.0.0.0" if cfg.map_lan else "127.0.0.1"), cfg.map_port
+        hub = {"ports": {}, "cfgs": {}, "front": (front_host, front_port), "owner_cfg": cfg}
+        for i, user in enumerate(accounts.users()):
+            port = front_port + (20 if user["owner"] else 40 + i)
+            try:
+                hub["cfgs"][user["username"]] = account_config(cfg, accounts, user, port, cfg.public_url, env_path_of(args))
+                hub["ports"][user["username"]] = port
+            except AccountError as exc:
+                print(f"  (Skipping an account: {exc})")
+        owner_name = next(u["username"] for u in accounts.users() if u["owner"])
+        cfg = hub["cfgs"][owner_name]  # the owner's, with its map on this computer only (behind the sign-in)
     places = cfg.place_configs()
-    quota = NtfyQuota(cfg.db_path, cfg.ntfy_server) if cfg.ntfy_topic else None  # ntfy's 250 a day
+    has_ntfy = cfg.ntfy_topic or (hub and any(c.ntfy_topic for c in hub["cfgs"].values()))
+    quota = NtfyQuota(cfg.db_path, cfg.ntfy_server) if has_ntfy else None  # ntfy's 250 a day
+    feed = None
     shared = {"n": 1 + len(places)}  # how many places share adsb.lol's daily limit (travel mode adds one)
-    watcher = build(cfg, quota=quota)
+    budget = make_budget(cfg)
+    if hub:
+        cluster = ClusterFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget),
+                              [(c.home_lat, c.home_lon, view_nm(c)) for c in hub["cfgs"].values()], budget)
+        hub["cluster"] = cluster
+        shared["n"] = cluster.count + len(places)
+        mine = cluster.view(cfg.home_lat, cfg.home_lon, view_nm(cfg))
+        feed = FeedWithReceiver(ReceiverFeed(cfg.receiver_url), mine) if cfg.receiver_url else mine
+    watcher = build(cfg, budget=budget, quota=quota, feed=feed)
     watcher.shared = shared
     print("Watching the sky. Leave this window open; press Ctrl+C to stop.\n")
     maps = [{"name": c.home_name, "port": c.map_port} for c in [cfg, *places]] if places else []
@@ -192,8 +269,11 @@ def cmd_watch(cfg: Config, args) -> int:
             server, urls = start_map_server(cfg, feed=watcher.feed, budget=watcher.budget, sky=watcher.sky)
             server.app.places = maps
             server.app.travel, server.app.outlook, server.app.friends = travel, outlook, friends
+            if hub:
+                server.app.account = {"name": owner_name, "owner": True}
+                urls = start_accounts_front(cfg, hub, accounts, env_path_of(args))
             print_map_urls(urls)
-            watcher.notifier.map_url = phone_url(urls)  # tapping a phone notification opens the map (home Wi-Fi)
+            watcher.notifier.map_url = cfg.public_url or phone_url(urls)  # tapping a notification opens the map
             for c in places:
                 print(f"  Map of {c.home_name}:{' ' * max(1, 14 - len(c.home_name))}http://localhost:{c.map_port}")
             print()
@@ -211,6 +291,15 @@ def cmd_watch(cfg: Config, args) -> int:
     for c in places:
         print(f"Also watching {c.home_name} ({c.radius_miles:g} mi zone).")
         start_place(c, watcher.budget, shared, maps, quota)
+    if hub:
+        for name, c in hub["cfgs"].items():
+            if name == owner_name:
+                continue
+            print(f"Also running {name}'s planespotter ({c.home_name}, {c.radius_miles:g} mi zone).")
+            launch_account(c, watcher.budget, shared, quota, hub["cluster"].view(c.home_lat, c.home_lon, view_nm(c)),
+                           {"name": name, "owner": False}, cfg.public_url)
+        print(f"  {len(hub['cfgs'])} account{'s' if len(hub['cfgs']) != 1 else ''} share adsb.lol's daily limit as {hub['cluster'].count} "
+              f"group{'s' if hub['cluster'].count != 1 else ''} (homes near each other share one request).")
     try:
         travel.restore()  # carry on with a trip that was running before a restart
     except Exception as exc:
@@ -220,6 +309,152 @@ def cmd_watch(cfg: Config, args) -> int:
     except KeyboardInterrupt:
         print("\nStopped.")
     return 0
+
+
+def cmd_accounts(env_path: Path, args) -> int:
+    """Accounts for you and the friends you invite: each gets their own planespotter, behind a sign-in page."""
+    import getpass
+    from .accounts import AccountError, Accounts
+    from .wizard import set_env_value
+
+    try:
+        cfg = Config.load(env_path)
+    except ConfigError as exc:
+        print(f"Set planespotter up first ({exc}):  python3 -m planespotter setup")
+        return 1
+    folder = Path(cfg.db_path).parent
+    what = args.what
+    if cfg.server and what not in ("url",):
+        # The accounts moved with planespotter: changes made here wouldn't reach them.
+        where = cfg.public_url or "your planespotter's address"
+        print(f"Your accounts live on your server now ({cfg.server}). Manage them on the website: sign in at {where},")
+        print("then use 👤 (your account) and Invite people. Or on the server itself:")
+        print(f"  ssh {cfg.server}")
+        print(f"  cd planespotter && python3 -m planespotter accounts {what}{' ' + args.value if args.value else ''}")
+        return 0 if what == "list" else 1
+    accounts = Accounts(folder)
+    users = accounts.users()
+
+    def ask_password(prompt: str = "Pick a password (8 characters or more): ") -> str:
+        while True:
+            first = getpass.getpass(prompt)
+            if len(first) < 8:
+                print("  At least 8 characters, please.")
+                continue
+            if getpass.getpass("Type it again: ") == first:
+                return first
+            print("  Those didn't match. Again:")
+
+    def restart_note() -> None:
+        from . import autostart
+        try:
+            running = autostart.supported() and autostart.status().get("installed")
+        except Exception:
+            running = False
+        if running:
+            print("Restarting planespotter to pick that up…")
+            subprocess.run([sys.executable, "-m", "planespotter", "--env", str(env_path), "autostart"], check=False)
+        else:
+            print("Restart planespotter to pick that up (or run it by itself:  python3 -m planespotter autostart).")
+
+    def address() -> str:
+        if cfg.public_url:
+            return cfg.public_url
+        from .net import lan_address
+        ip = lan_address()
+        return f"http://{ip}:{cfg.map_port}" if ip else f"http://localhost:{cfg.map_port}"
+
+    try:
+        if what == "on":
+            if users:
+                print(f"Accounts are already on ({len(users)}). Invite someone:  python3 -m planespotter accounts invite")
+                return 0
+            print("Turning accounts on. First, your own account (you're the owner: your home, history and settings")
+            print("stay exactly as they are, and only you can invite people).\n")
+            name = (args.value or input("Pick a username (like henry): ")).strip()
+            accounts.add_user(name, ask_password(), owner=True)
+            print(f"\n✔ Accounts are on. You sign in as {name.lower()} at {address()}")
+            print("  Invite a friend:  python3 -m planespotter accounts invite")
+            if not cfg.public_url:
+                print("  (Friends outside your Wi-Fi need it on the internet: see 'Accounts and your own web address' in the README.)")
+            restart_note()
+        elif not users:
+            print("Accounts are off. To turn them on (you first, then invite friends):  python3 -m planespotter accounts on")
+            return 0 if what == "list" else 1
+        elif what == "invite":
+            code = accounts.new_invite()
+            print(f"Send this link to one friend. It works once, for {7} days:\n\n  {address()}/join?code={code}\n")
+            print("They pick a username and password and set their home; their planespotter starts by itself.")
+            if not cfg.public_url:
+                print("(It only opens on your Wi-Fi until planespotter is on the internet: see the README.)")
+        elif what == "list":
+            for u in users:
+                extra = " (owner)" if u["owner"] else f"  · {accounts.folder(u)}"
+                print(f"  {u['username']}{extra}")
+            print(f"\n{len(users)} account{'s' if len(users) != 1 else ''}. Everyone signs in at {address()}")
+        elif what == "remove":
+            name = (args.value or "").strip().lower()
+            if not name or input(f"Remove {name} and delete their history, photos and settings? Type yes: ").strip().lower() != "yes":
+                print("Nothing removed.")
+                return 1
+            accounts.remove_user(name)
+            print(f"✔ Removed {name}.")
+            restart_note()
+        elif what == "password":
+            name = (args.value or "").strip().lower()
+            if not accounts.user(name):
+                raise AccountError(f"There's no account called {name!r}. They are: " + ", ".join(u["username"] for u in users))
+            accounts.set_password(name, ask_password(f"New password for {name}: "))
+            print(f"✔ {name}'s password is changed (and they're signed out everywhere).")
+        elif what == "url":
+            url = (args.value or "").strip().rstrip("/")
+            if url and not url.startswith(("https://", "http://")):
+                raise AccountError("Write the whole address, like https://yourdomain.com")
+            set_env_value(env_path, "PUBLIC_URL", url)
+            print(f"✔ People open it at {url}" if url else "✔ Not on the internet any more (your Wi-Fi only).")
+            restart_note()
+        elif what == "off":
+            if input("Turn accounts off? Friends can't sign in until you turn them on again (nothing is deleted). Type yes: ").strip().lower() != "yes":
+                return 1
+            accounts.close()
+            (folder / "accounts.db").rename(folder / "accounts.db.off")
+            print("✔ Accounts are off: it's just your planespotter again, with no sign-in. (Saved as accounts.db.off.)")
+            restart_note()
+    except AccountError as exc:
+        print(f"✘ {exc}")
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return 1
+    return 0
+
+
+def env_path_of(args) -> Path:
+    return Path(args.env).expanduser() if getattr(args, "env", None) else DEFAULT_ENV
+
+
+def start_accounts_front(cfg: Config, hub: dict, accounts, env_path: Path) -> list[str]:
+    """The sign-in page, at the map's usual address; everyone's own planespotter sits behind it."""
+    from .accounts_web import Front, start_front
+    from .net import lan_address
+    from .phonekit import kit
+
+    def phone_script(user: dict, token: str, base: str) -> str:
+        return kit(hub["cfgs"][user["username"]], base, token=token)["widget"]
+    host, port = hub["front"]
+    front = Front(accounts, env_path, hub["ports"], cfg.public_url, phone_script=phone_script)
+    try:
+        start_front(front, host, port)
+    except OSError as exc:
+        raise MapServerError(f"Couldn't start the sign-in page on port {port} ({exc.strerror or exc}). "
+                             f"It may already be running: try http://localhost:{port}") from None
+    urls = [f"http://localhost:{port}"]
+    ip = lan_address() if host == "0.0.0.0" else None
+    if ip:
+        urls.append(f"http://{ip}:{port}")
+    print(f"  Accounts are on: {len(hub['cfgs'])} account{'s' if len(hub['cfgs']) != 1 else ''}. "
+          f"Everyone signs in at {cfg.public_url or urls[-1]}")
+    return urls
 
 
 def cmd_map(cfg: Config, args) -> int:
@@ -358,6 +593,22 @@ def cmd_server(env_path: Path, args) -> int:
         print(f"Fix your settings first: {exc}")
         return 2
     action = args.what.lower()
+    if action == "web":
+        from .server import ServerError as _SE, web
+        if not (args.target and cfg.server):
+            print("First move planespotter to your server, then give it your web address:")
+            print("  python3 -m planespotter server web yourdomain.com")
+            return 1
+        try:
+            url = web(Remote(cfg.server), args.target, cfg.map_port)
+        except _SE as exc:
+            print(f"✘ {exc}")
+            return 1
+        set_env_value(env_path, "PUBLIC_URL", url)
+        print(f"✔ planespotter is at {url}")
+        print("  (If it doesn't open yet: the address can take up to an hour to reach everyone after you set it up at")
+        print("   your domain company, and some cloud companies also need ports 80 and 443 opened: see the README.)")
+        return 0
     if action in ("status", "update", "stop"):
         target = args.target or cfg.server
         if not target:
@@ -525,7 +776,18 @@ def cmd_phone(cfg: Config, args) -> int:
         print("Set up phone notifications first: run  python3 -m planespotter setup  and answer y at question 5.")
         return 1
     ip = lan_address() if cfg.map_lan and not cfg.server else None  # with a server, the Mac's map isn't running
-    k = kit(cfg, f"http://{ip}:{cfg.map_port}" if ip else "")
+    accounts = None if cfg.server else open_accounts(cfg)  # (on a server, the accounts are there)
+    if cfg.server and (Path(cfg.db_path).parent / "accounts.db").exists():
+        print("Accounts are on, on your server: get your phone script from the website, where it comes with your")
+        print(f"own pass. Sign in at {cfg.public_url or 'your planespotter'}, tap 👤 (your account), then Get my script.")
+        return 0
+    if accounts:  # accounts are on: your script gets your own pass (a new one: the old script stops working)
+        owner = next(u for u in accounts.users() if u["owner"])
+        base = cfg.public_url or (f"http://{ip}:{cfg.map_port}" if ip else "")
+        k = kit(cfg, base, token=accounts.phone_token(owner))
+        accounts.close()
+    else:
+        k = kit(cfg, f"http://{ip}:{cfg.map_port}" if ip else "")
     folder = Path(cfg.db_path).parent / "phone-setup"
     folder.mkdir(exist_ok=True)
     (folder / "planespotter-widget.js").write_text(k["widget"], encoding="utf-8")
@@ -644,6 +906,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", metavar="command")
     sub.add_parser("setup", help="answer a few questions to create your settings")
     sub.add_parser("check", help="list planes near home right now")
+    p_acc = sub.add_parser("accounts", help="accounts for you and friends: on, invite, list, remove NAME, password NAME, "
+                                            "url https://yourdomain.com, off")
+    p_acc.add_argument("what", nargs="?", default="list",
+                       choices=["on", "invite", "list", "remove", "password", "url", "off"])
+    p_acc.add_argument("value", nargs="?", help="a username, or your web address")
     sub.add_parser("doctor", help="will it work here? checks this computer and this network, and says what to fix")
     sub.add_parser("update", help="get the newest planespotter, restart it, and update the script on your iPhone")
     p_watch = sub.add_parser("watch", help="run forever: alerts, daily report and the live map")
@@ -672,8 +939,8 @@ def main(argv: list[str] | None = None) -> int:
     p_gates.add_argument("value", nargs="?", help="your key (or a flight to test, like UAL123)")
     p_server = sub.add_parser("server", help="move planespotter to an always-on server (ubuntu@address), or: "
                                              "status, update, stop")
-    p_server.add_argument("what", help="user@address to move it there, or status / update / stop")
-    p_server.add_argument("target", nargs="?", help="user@address (if it isn't saved yet)")
+    p_server.add_argument("what", help="user@address to move it there, or status / update / stop / web")
+    p_server.add_argument("target", nargs="?", help="user@address (if it isn't saved yet), or your domain for web")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
@@ -701,6 +968,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "update":
         from .updater import cmd_update
         return cmd_update(env_path, args)
+    if args.command == "accounts":
+        return cmd_accounts(env_path, args)
 
     try:
         cfg = Config.load(env_path)

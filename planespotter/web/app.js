@@ -3129,6 +3129,14 @@
     const { home, radius_miles: radius, max_altitude_ft: ceiling } = state.config;
     $('#home-line').textContent = `${home.name} · ${radius} mi zone${ceiling ? `, below ${ceiling.toLocaleString()} ft` : ''}`;
     document.title = `planespotter · ${home.name}`;
+    if (state.config.account) {  // accounts are on: whose this is, and the way to your account page
+      const who = document.createElement('a');
+      who.className = 'chime';
+      who.href = 'account';
+      who.textContent = `👤 ${state.config.account.name}`;
+      who.title = 'Your account: your home, notifications, phone script, password';
+      document.querySelector('.sounds').appendChild(who);
+    }
     state.zone = circle(home.lat, home.lon, radius);
 
     const is3d = state.mode === '3d';

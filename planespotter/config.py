@@ -168,6 +168,7 @@ class Config:
     emails: bool = True          # off: no emails at all (the reports come as phone notifications instead)
     follow_phone: bool = True    # watch wherever your phone is (it sends its location when it moves)
     server: str = ""             # planespotter runs on this server instead ("ubuntu@203.0.113.5")
+    public_url: str = ""         # where people open it from the internet ("https://yourdomain.com"), if anywhere
     gates_api: str = ""          # gate numbers from "aeroapi" (FlightAware) or "aviationstack", with your own key
     gates_key: str = ""
     gates_monthly: int = 0       # lookups a month at most (0 = just under the service's free allowance)
@@ -357,6 +358,7 @@ class Config:
             transit_alerts=flag("TRANSIT_ALERTS", True),
             transit_sun=flag("TRANSIT_SUN", False),
             relay=flag("RELAY", True),
+            public_url=get("PUBLIC_URL").rstrip("/") if get("PUBLIC_URL").startswith(("http://", "https://")) else "",
             emails=flag("EMAILS", True),
             follow_phone=flag("FOLLOW_PHONE", True),
             server=get("SERVER"),
@@ -373,7 +375,7 @@ KNOWN_KEYS = {
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
     "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
-    "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES",
+    "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES", "PUBLIC_URL",
     "FAMILY_ALERTS", "FRIENDS", "SHARE_NAME", "TRANSIT_ALERTS", "TRANSIT_SUN", "RELAY",
     "EMAILS", "FOLLOW_PHONE", "SERVER", "GATES_API", "GATES_KEY", "GATES_MONTHLY",
 }

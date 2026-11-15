@@ -511,6 +511,7 @@ class Watcher:
                      fmt_clock_range(cfg.quiet_hours), cfg.digest_time.strftime("%H:%M"))
         failures = 0
         last_check = 0.0
+        last_data = self.clock()
         self.start_offline_log(self.clock())  # planes that came over while planespotter was off
         while not self.stopped.is_set():
             now = self.clock()
@@ -522,7 +523,10 @@ class Watcher:
             if failures:
                 interval = max(interval, min(300, cfg.poll_seconds * 2 ** min(failures, 4)))
             self.check_space(now)
-            if now - last_check < interval:
+            # Accounts near each other share one request: when another account's check has just brought fresh
+            # planes, use them now rather than at this one's own turn (so nobody's are minutes old).
+            fresher = getattr(self.feed, "newer_than", None)
+            if now - last_check < interval and not (fresher and fresher(last_data)):
                 time.sleep(2)
                 today = self.digest_due(now)
                 if today is not None:
@@ -548,6 +552,7 @@ class Watcher:
                               "in Applications → Python 3.x, then start again.")
                 self.last_positions = {}
                 self.open_paths = {}
+            last_data = self.clock()  # (answers fetched from here on count as newer)
 
             today = self.digest_due(now)
             if today is not None:

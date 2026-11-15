@@ -1241,6 +1241,112 @@ carries on by itself once adsb.lol allows more requests.
 
 ---
 
+## Accounts for you and your friends
+
+With accounts on, you and the friends you invite each sign in to **your own
+planespotter**. Each person has:
+- their own home, zone and quiet hours;
+- their own history, collection, photos and tracked flights;
+- their own notifications;
+- their own iPhone widget and Siri.
+
+Nobody sees anyone else's. There's no public sign-up: you make an invite
+link, and whoever opens it picks a username and password and sets their home.
+
+**Turn it on** (on your Mac, inside the planespotter folder):
+
+```bash
+python3 -m planespotter accounts on
+```
+
+It asks for a username and password for you (the owner). Your home, history
+and settings stay as they are. From then on, everyone signs in first (on
+your Wi-Fi, or on your own web address: see below). Then invite a friend
+from the website (**👤 your name → Invite people**), or:
+
+```bash
+python3 -m planespotter accounts invite
+```
+
+Each invite link works **once, for a week**. Your friend opens it, picks a
+username and password, and sets their home (*📍 Use where I am now*, or the
+two numbers from Apple or Google Maps). planespotter restarts by itself to
+start theirs. On their account page they find:
+- **🔔 Notifications:** a private topic for the free ntfy app.
+- **📱 Get my script:** their own Scriptable script, with a pass that only
+  works for them.
+- **Their home's settings**, and a password change.
+
+Other commands: `accounts list`, `accounts remove NAME` (deletes their
+history too), `accounts password NAME`, `accounts off` (nothing is deleted).
+
+**How it's kept safe**
+- **Passwords:** stored only as scrypt hashes, never in a readable form.
+- **Guessing:** 5 wrong tries locks that username for 15 minutes.
+- **Sign-ins:** last 30 days. Changing your password signs you out everywhere.
+- **Other websites:** can't send forms or spend your allowances.
+
+**Sharing adsb.lol's allowance.** One server has one daily allowance (about
+500 requests, or 1,000 with a free key). Friends who live within about 150
+miles of each other share one request, so they cost nothing extra. Homes
+farther apart take turns, so each checks less often. For example, Los
+Angeles and Portland each check every 8 minutes instead of 4 (planes are
+still caught: planespotter joins up their positions). A free adsb.lol key
+on the server halves that. There's room for 12 accounts.
+
+## Your own web address (a domain)
+
+To open planespotter from anywhere at an address like
+`https://planebell.com`, it needs to run on a computer that's always on and
+on the internet: a small cloud server. Your Mac can stay asleep. Once it's
+online, everyone's widget and Siri use it from anywhere, and the full app
+opens from anywhere too, not just on your Wi-Fi.
+
+**1. Buy the domain** (about $10–11 a year for a .com). Cloudflare
+Registrar sells at cost and renews at the same price. Porkbun is about the
+same. Some others are cheap the first year and charge more after.
+
+**2. Get a server.**
+- **Free:** Oracle Cloud *Always Free* (pick *Ubuntu*). In 2026 its free
+  ARM allowance was cut to 2 CPUs and 12 GB, which is still plenty. It needs
+  a card to sign up, new servers are sometimes "out of capacity" (try again
+  later or another zone), and you must open ports **80** and **443** in the
+  server's *Security List* in Oracle's console.
+- **Also free:** Google Cloud's *e2-micro*, only in us-west1, us-central1 or
+  us-east1. Set a budget alert: extras such as the public address can cost a
+  little.
+- **About $4–5 a month:** any small Ubuntu server ("VPS") from a hosting
+  company. The simplest choice if you don't want to fight a free tier.
+
+**3. Turn accounts on first** (it won't go on the internet without them):
+
+```bash
+python3 -m planespotter accounts on
+```
+
+**4. Move planespotter to the server.** Your history and accounts go with
+it. Use the user and address the cloud company shows you, like `ubuntu@` plus
+four numbers:
+
+```bash
+python3 -m planespotter server ubuntu@203.0.113.5
+```
+
+**5. Point the domain at the server.** At your domain company, add a DNS
+record of type **A**, name **@**, with the server's address. On Cloudflare,
+set it to *DNS only* (grey cloud).
+
+**6. Give planespotter its address.** This sets up the padlock (https,
+renewed by itself) with Caddy, a small free web server:
+
+```bash
+python3 -m planespotter server web yourdomain.com
+```
+
+Then open `https://yourdomain.com`, sign in, and invite your friends from
+**👤 → Invite people**. Get your own phone script from **👤 → Get my
+script**. From now on, manage accounts on the website.
+
 ## Will it work on this Wi-Fi?
 
 Run this on your Mac, on whatever network it's on:
@@ -1344,6 +1450,8 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter check` | Lists the planes near you right now. Sends nothing. |
 | `python3 -m planespotter doctor` | Will it work here? Checks this computer and this network: ✔ works, ⚠ might not, ✘ won't, and what to do. |
 | `python3 -m planespotter update` | Gets the newest version, restarts planespotter, and updates the script on your iPhone. |
+| `python3 -m planespotter accounts on` | Accounts for you and invited friends, each with their own planespotter. Also: `invite`, `list`, `remove NAME`, `password NAME`, `off`. |
+| `python3 -m planespotter server web yourdomain.com` | Puts planespotter (on your server) on your own web address, with https. |
 | `python3 -m planespotter watch` | Runs until you stop it: alerts, the daily report and the live map. Add `--open` to open the map in your browser. |
 | `python3 -m planespotter map` | Just the live map, without any emails. |
 | `python3 -m planespotter digest` | Sends the daily report right now. |

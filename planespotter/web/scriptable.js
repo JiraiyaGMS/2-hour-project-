@@ -399,7 +399,7 @@ async function gather() {
     // On your home Wi-Fi the Mac answers directly; everywhere, adsb.lol does; and the Mac's posted status fills
     // in what only it knows. All asked at once, so a Mac that isn't there costs no time.
     const [mac, live, status] = await Promise.all([
-      atHome ? macBase(cache).then((base) => (base ? getJSON(base + "/api/next", 2) : null)) : Promise.resolve(null),
+      atHome ? macBase(cache).then((base) => (base ? getJSON(base + "/api/next", 2, pass()) : null)) : Promise.resolve(null),
       livePlanes(spot, cache),
       atHome && SETTINGS.relay ? getJSON(SETTINGS.relay, forSiri ? 4 : 8) : Promise.resolve(null)]);
     if (status && typeof status.mac === "string") cache.macPosted = status.mac;  // where the Mac is on the Wi-Fi now
@@ -2020,6 +2020,11 @@ async function page(wv, code) {
   }
 }
 
+function pass() {
+  // With accounts on, your planespotter only answers you: this script's own token says it's yours.
+  return SETTINGS.token ? { Authorization: "Bearer " + SETTINGS.token } : undefined;
+}
+
 async function macBase(cache) {
   // Your Mac's map, if it answers on this Wi-Fi: at the address that worked last time, the one the Mac last
   // posted, the one in this script, or by its name. All are asked at once and the first to answer wins, so a
@@ -2027,7 +2032,7 @@ async function macBase(cache) {
   // asleep, or a guest Wi-Fi that keeps devices apart. Not even tried when the phone was far from home a
   // moment ago.
   const last = cache.where, home = SETTINGS.home;
-  if (last && now - last.at < 30 * 60 && miles(last.lat, last.lon, home.lat, home.lon) > 50) return "";
+  if (!SETTINGS.public && last && now - last.at < 30 * 60 && miles(last.lat, last.lon, home.lat, home.lon) > 50) return "";
   const bases = [...new Set([cache.mac && cache.mac.base, cache.macPosted, SETTINGS.mac, SETTINGS.macName]
     .filter((b) => typeof b === "string" && /^https?:\/\//.test(b)).map((b) => b.replace(/\/$/, "")))];
   if (!bases.length) return "";
@@ -2039,7 +2044,7 @@ async function macBase(cache) {
   const first = new Promise((resolve) => {
     let left = bases.length;
     for (const b of bases) {
-      getJSON(b + "/api/config", quick ? 0.6 : 1.5).then((c) => { if (mine(c)) resolve(b); else if (--left === 0) resolve(""); });
+      getJSON(b + "/api/config", quick ? 0.6 : 1.5, pass()).then((c) => { if (mine(c)) resolve(b); else if (--left === 0) resolve(""); });
     }
   });
   const found = (await withTimeout(first, quick ? 0.7 : 1.8)) || "";
@@ -2211,8 +2216,10 @@ if (config.runsInApp) {
   if (/point/i.test(asked)) await pointNow();  // "Point Planespotter", or ↻ on the Point page
   else {
     // On your home Wi-Fi: the Mac's full app (Spotted, Collection, Noise, replay, and everything here too).
+    // (On your own web address, that's anywhere: it's on the internet.)
     const full = /phone ?map/i.test(asked) ? "" : await fullApp(loadCache());
-    if (full) Safari.open(full + "/");
+    // (With accounts on, the link signs you in, so Safari doesn't ask for your password each time.)
+    if (full) Safari.open(full + (SETTINGS.token ? "/auth?k=" + encodeURIComponent(SETTINGS.token) : "/"));
     else await showMap();
   }
 } else if (forSiri && siriAsked()) {
