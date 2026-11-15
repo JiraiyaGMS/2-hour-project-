@@ -160,7 +160,14 @@ def copy_accounts(remote: Remote, folder: Path, tmp: Path, say=print) -> None:
 # gets and renews the certificate by itself; it passes everything to planespotter's sign-in page.
 WEB_SETUP = r"""set -e
 if ! command -v caddy >/dev/null 2>&1; then
-  sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy
+  sudo apt-get update -qq
+  if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy; then
+    # Older Ubuntu doesn't have it: from Caddy's own package site (their documented way).
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+    curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | sudo gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+    sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy
+  fi
 fi
 printf '%s {
   encode gzip
