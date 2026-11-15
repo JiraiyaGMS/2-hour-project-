@@ -55,6 +55,7 @@ var BEAM = 15, BEAM_MILES = 30, R = 3958.8, EMPTY = { type: "FeatureCollection",
 var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
 var data = null, map = null, ready = false, heading = null, voice = true, picked = null, pickedAt = 0, said = "", lastGuide = 0;
 var routes = {};
+var ANDROID = /Android/i.test(navigator.userAgent);
 function $(id) { return document.getElementById(id); }
 function rad(d) { return d * Math.PI / 180; }
 function deg(r) { return r * 180 / Math.PI; }
@@ -164,14 +165,20 @@ function start() {
     setTimeout(function () {
       if (heading === null) {
         $("main").textContent = "The compass isn't coming through";
-        $("sub").textContent = "On your iPhone: Settings → Apps → Safari → turn on Motion & Orientation Access (if it's there), then reload this page.";
+        $("sub").textContent = ANDROID
+          ? "In Chrome: ⋮ → Settings → Site settings → Motion sensors → Allowed. Then reload this page."
+          : "On your iPhone: Settings → Apps → Safari → turn on Motion & Orientation Access (if it's there), then reload this page.";
       }
     }, 3000);
   };
   if (D && typeof D.requestPermission === "function") {
+    // Safari (and newer Chrome) ask first. Only a real "no" stops it: "prompt" (not decided yet) still tries.
     D.requestPermission().then(function (r) {
-      if (r === "granted") go();
-      else { $("main").textContent = "The compass wasn't allowed"; $("sub").textContent = "Reload the page and tap Allow when Safari asks."; }
+      if (r !== "denied") { go(); return; }
+      $("main").textContent = "The compass wasn't allowed";
+      $("sub").textContent = ANDROID
+        ? "Tap the icon left of the address, then Permissions (or Site settings) → Motion sensors → Allow. Then reload."
+        : "Reload the page and tap Allow when Safari asks.";
     }, function () { go(); });
   } else go();
 }

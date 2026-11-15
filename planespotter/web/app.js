@@ -2389,6 +2389,73 @@
     for (const el of document.querySelectorAll('[data-countdown]')) el.textContent = hms(Number(el.dataset.countdown) - now);
   }, 1000);
 
+  // ---------- "What's that plane?" / "Where's my plane?" out loud (the installed app's shortcuts) ----------
+  // On Android there's no Siri: long-press planespotter's icon and pick one. The answer shows big and is read
+  // out (phones only let a page speak after a tap, so there's a 🔊 button if it couldn't start by itself).
+  function speakText(text, button) {
+    if (!('speechSynthesis' in window)) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.onerror = (e) => { if (button && e.error === 'not-allowed') button.textContent = '🔊 Tap to hear it'; };
+      speechSynthesis.speak(u);
+    } catch { /* no voice: the words are on the screen */ }
+  }
+
+  async function mineSentence() {
+    // The flight you're tracking here, else the newest one you follow.
+    const t = state.tracking || ((state.myFlights || [])[0] ? { cs: state.myFlights[0].callsign, label: state.myFlights[0].label } : null);
+    if (!t) return 'I don’t know which plane is yours yet. Tap Track a flight, find your flight, and tap Track.';
+    const d = await getJSON(`api/track?cs=${encodeURIComponent(t.cs)}&hex=${encodeURIComponent(t.hex || '')}`);
+    const name = t.label || t.cs;
+    if (d.plane) {
+      const p = d.plane, r = d.route || {};
+      const to = r.destination_city || r.destination;
+      return `${name} is in the air, about ${Math.round(p.distance_miles)} miles ${compassWord(p.bearing)} of home, at ${Math.round((p.alt_ft || 0) / 100) * 100} feet${to ? `, heading to ${to}` : ''}.`;
+    }
+    const i = d.info && d.info.dep ? d.info : null;
+    if (i && i.note) return `${name}. ${i.note}`;
+    if (i && i.phase === 'landed') return `${name} has landed${i.arr.code ? ` in ${i.arr.code}` : ''}${i.arr.gate ? `, at gate ${i.arr.gate}` : ''}.`;
+    if (i && i.phase === 'cancelled') return `${name} is cancelled.`;
+    if (i) {
+      const now = Date.now() / 1000;
+      const off = i.takeoff_at;
+      const mins = off ? Math.round((off - now) / 60) : null;
+      const when = mins === null ? '' : mins > 90 ? `, taking off in about ${Math.round(mins / 60 * 10) / 10} hours` : mins > 1 ? `, taking off in about ${mins} minutes` : ', taking off about now';
+      const late = typeof i.dep.delay === 'number' && i.dep.delay >= 5 ? ` It's running ${i.dep.delay} minutes late.` : '';
+      return `${name} hasn't taken off yet. It leaves ${i.dep.code || 'its airport'}${i.dep.gate ? ` from gate ${i.dep.gate}` : ''}${when}.${late}`;
+    }
+    return `I can't see ${name} right now. It may not have taken off yet, or it's out of range of the receivers.`;
+  }
+
+  function compassWord(deg) {
+    return ({ N: 'north', NE: 'north-east', E: 'east', SE: 'south-east', S: 'south', SW: 'south-west', W: 'west', NW: 'north-west' })[compass(deg)] || '';
+  }
+
+  async function sayNow(kind) {
+    openOverlay(`<div class="quiz say-card"><div class="k">${kind === 'mine' ? '✈︎ Where’s my plane?' : '✈︎ What’s that plane?'}</div>
+      <h2 id="say-text">Looking…</h2><div class="overlay-actions" style="margin-top:14px">
+      <button class="btn" id="say-again">🔊 Say it again</button></div></div>`);
+    let text;
+    try {
+      if (kind === 'mine') {
+        await loadMyFlights();
+        text = await mineSentence();
+      } else {
+        const res = await fetch('api/now.txt', { cache: 'no-store' });
+        text = res.ok ? (await res.text()).trim() : 'I can’t get the planes right now.';
+      }
+    } catch (err) {
+      text = 'I can’t reach planespotter right now. Check you have internet, then try again.';
+    }
+    const box = $('#say-text');
+    if (!box) return;
+    box.textContent = text;
+    const again = $('#say-again');
+    again.onclick = () => { again.textContent = '🔊 Say it again'; speakText(text, again); };
+    speakText(text, again);
+  }
+
   // ---------- planes crossing the Moon ----------
   function transitTarget() {
     const now = Date.now() / 1000;
@@ -3183,6 +3250,12 @@
       state.pointOnLoad = true;
     }
     if (state.tracking) pollTrack(true, false);
+    // Shortcuts on the installed app's icon (long-press it): say it out loud, or straight to a search.
+    if (params.get('say')) sayNow(params.get('say') === 'mine' ? 'mine' : 'next');
+    else if (params.get('track')) openTrackSearch();
+    if (params.get('say') || params.get('track')) history.replaceState(null, '', location.pathname + location.hash);
+    // An installable app (Android's Install app; iPhone's Add to Home Screen). Only on secure pages.
+    if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
     loadFriends();
     setInterval(() => { if (!document.hidden && state.tab === 'collection') loadFriends(); }, 10 * 60000);
     renderTravel();

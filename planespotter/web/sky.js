@@ -390,8 +390,9 @@
   async function startSensors() {
     const D = window.DeviceOrientationEvent;
     if (!D) return false;
-    if (typeof D.requestPermission === 'function') {  // iPhone and iPad ask first
-      try { if ((await D.requestPermission()) !== 'granted') return false; } catch { return false; }
+    if (typeof D.requestPermission === 'function') {  // iPhone, iPad and newer Chrome ask first
+      // Only a real "no" stops it: "prompt" (not decided yet) still tries.
+      try { if ((await D.requestPermission()) === 'denied') return false; } catch { return false; }
     }
     if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', onOrientation);
     else window.addEventListener('deviceorientation', onOrientation);

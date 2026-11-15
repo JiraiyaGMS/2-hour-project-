@@ -1280,6 +1280,24 @@ start theirs. On their account page they find:
 Other commands: `accounts list`, `accounts remove NAME` (deletes their
 history too), `accounts password NAME`, `accounts off` (nothing is deleted).
 
+**Friends with Android phones** get nearly the same. Scriptable (the widget
+and Siri) is iPhone-only, so on Android planespotter is an app installed
+from Chrome:
+1. Open your planespotter's address in **Chrome** and sign in.
+2. Tap **⋮ → Add to Home screen → Install**. planespotter gets its own icon.
+3. **Press and hold the icon** for its shortcuts:
+   - **What's that plane?** and **Where's my plane?**, which read the answer
+     out loud, like Siri;
+   - **Track a flight**;
+   - **Point**, which uses the phone's compass, like on iPhone.
+4. Notifications: the **ntfy** app from Google Play, the same topic as on
+   iPhone.
+
+Android has no home-screen widget; the notifications and the spoken
+shortcuts stand in for it. Each person's account page shows the steps for
+their phone first. iPhones can also install the app from Safari with
+**Share → Add to Home Screen**.
+
 **How it's kept safe**
 - **Passwords:** stored only as scrypt hashes, never in a readable form.
 - **Guessing:** 5 wrong tries locks that username for 15 minutes.
@@ -1346,6 +1364,21 @@ python3 -m planespotter server web yourdomain.com
 Then open `https://yourdomain.com`, sign in, and invite your friends from
 **👤 → Invite people**. Get your own phone script from **👤 → Get my
 script**. From now on, manage accounts on the website.
+
+**Updating by itself every night.** From your Mac:
+
+```bash
+python3 -m planespotter server autoupdate on
+```
+
+Every night around 3:30 (your time), the server gets the newest version.
+It keeps a copy of every file it replaces and checks the new version loads
+before switching. Then it restarts and checks the site answers. If either
+check fails, it puts the previous version back, so a bad update can't leave
+the site down. With no internet, or a download that's cut off, nothing
+changes. `server autoupdate status` shows when it runs next and what the
+last few nights did, and `server autoupdate off` stops it. Updating by hand
+still works any time: `python3 -m planespotter server update`.
 
 ## Will it work on this Wi-Fi?
 
@@ -1452,6 +1485,7 @@ Run these from inside the planespotter folder.
 | `python3 -m planespotter update` | Gets the newest version, restarts planespotter, and updates the script on your iPhone. |
 | `python3 -m planespotter accounts on` | Accounts for you and invited friends, each with their own planespotter. Also: `invite`, `list`, `remove NAME`, `password NAME`, `off`. |
 | `python3 -m planespotter server web yourdomain.com` | Puts planespotter (on your server) on your own web address, with https. |
+| `python3 -m planespotter server autoupdate on` | The server updates itself every night, only to a version that works (`off`, `status`). |
 | `python3 -m planespotter watch` | Runs until you stop it: alerts, the daily report and the live map. Add `--open` to open the map in your browser. |
 | `python3 -m planespotter map` | Just the live map, without any emails. |
 | `python3 -m planespotter digest` | Sends the daily report right now. |

@@ -56,6 +56,8 @@ def page(title: str, body: str, refresh: str = "") -> bytes:
     meta = f'<meta http-equiv="refresh" content="{escape(refresh)}">' if refresh else ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">{meta}'
+            '<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+            '<link rel="icon" href="/icon-192.png"><meta name="theme-color" content="#0b0f14">'
             f'<title>{escape(title)} · planespotter</title><style>{CSS}</style></head><body><main>'
             f'<div class="logo">plane<span>spotter</span></div>{body}</main></body></html>').encode()
 
@@ -161,7 +163,8 @@ def make_handler(front: Front):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            if "Cache-Control" not in (headers or {}):
+                self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "same-origin")
@@ -229,15 +232,33 @@ def make_handler(front: Front):
               <form method="post" action="/account"><h2>Your home</h2>{home_fields(v, False)}<button>Save</button>
               <p class="muted">Saving restarts planespotter for a few seconds.</p></form></div>
               <div class="card"><h2>🔔 Notifications on your phone</h2>
-              {"<ol><li>Install the free <b>ntfy</b> app.</li><li>Tap <b>+</b> and subscribe to this topic (it's private to you):<br><code>" + escape(topic) + "</code></li></ol>" if topic else "<p>Not set up for this account.</p>"}</div>
-              <div class="card"><h2>📱 Widget and Siri on your iPhone</h2>
-              <p>Your own script for the Scriptable app: the planes over wherever you are, a widget, and Siri.</p>{phone}
-              <form method="post" action="/account/phone"><button class="ghost">{'Make a new script' if script else 'Get my script'}</button></form></div>
+              {"<ol><li>Install the free <b>ntfy</b> app (App Store on iPhone, Google Play on Android).</li><li>Tap <b>+</b> and subscribe to this topic (it's private to you):<br><code>" + escape(topic) + "</code></li><li>Leave the server as it is (ntfy.sh).</li></ol>" if topic else "<p>Not set up for this account.</p>"}</div>
+              {self.phone_cards(phone, script)}
               <div class="card"><h2>Change your password</h2><form method="post" action="/account/password">
               <label for="o">Your password now</label><input id="o" name="old" type="password" autocomplete="current-password" required>
               <label for="n">New password</label><input id="n" name="new" type="password" autocomplete="new-password" minlength="8" required>
               <button class="ghost">Change it</button><p class="muted">Changing it signs you out everywhere.</p></form></div>
               <form method="post" action="/logout"><button class="ghost">Sign out</button></form>""")
+
+        def phone_cards(self, phone: str, script: str) -> str:
+            """How to put planespotter on a phone: iPhone (Scriptable: widget and Siri) and Android (an installed app
+            with spoken shortcuts). The phone that's looking gets its own first."""
+            iphone = f"""<div class="card"><h2>📱 iPhone: widget and Siri</h2>
+              <p>Your own script for the free Scriptable app: a home-screen widget, Siri ("Hey Siri, what's that
+              plane?"), and the planes over wherever you are.</p>{phone}
+              <form method="post" action="/account/phone"><button class="ghost">{'Make a new script' if script else 'Get my script'}</button></form>
+              <p class="muted">Also: in Safari, <b>Share → Add to Home Screen</b> gives the app its own icon.</p></div>"""
+            android = """<div class="card"><h2>🤖 Android: an app on your home screen</h2><ol>
+              <li>Open this site in <b>Chrome</b> and sign in.</li>
+              <li>Tap <b>⋮</b> (top right), then <b>Add to Home screen</b> → <b>Install</b>. planespotter gets its own icon
+              and opens like an app.</li>
+              <li><b>Press and hold the icon</b> for shortcuts: <b>What's that plane?</b> and <b>Where's my plane?</b> (both read the
+              answer out loud), <b>Track a flight</b> and <b>Point</b>.</li>
+              <li>Notifications: the ntfy app (above) works the same on Android.</li></ol>
+              <p class="muted">Android has no Scriptable, so there's no home-screen widget: notifications tell you when
+              planes are coming, and the shortcuts answer out loud instead of Siri.</p></div>"""
+            on_android = "Android" in self.headers.get("User-Agent", "")
+            return android + iphone if on_android else iphone + android
 
         def admin_page(self, user: dict, error: str = "", link: str = "") -> bytes:
             rows = "".join(
@@ -282,6 +303,13 @@ def make_handler(front: Front):
                     self.post(path, self.form())
                 except AccountError as exc:
                     self.send(400, page("Sorry", f'<div class="card"><h1>Sorry</h1>{notice(str(exc))}<a class="btn ghost" href="/">Back</a></div>'))
+                return
+            from .webmap import PUBLIC_FILES, WEB_DIR
+            if path in PUBLIC_FILES:  # the installed app's icon and pieces: before signing in, too
+                name, ctype = PUBLIC_FILES[path]
+                self.send(200, (WEB_DIR / name).read_bytes(), ctype,
+                          headers={"Cache-Control": "no-cache"} if path in ("/sw.js", "/manifest.webmanifest") else
+                          {"Cache-Control": "max-age=86400"})
                 return
             if path == "/login":
                 self.send(200, self.login_page(next_path=safe_next(query.get("next", "/"))))

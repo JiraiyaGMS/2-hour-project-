@@ -1,0 +1,27 @@
+{
+  "name": "planespotter",
+  "short_name": "planespotter",
+  "description": "The planes over your house: what they are, where they're going, and what's next.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0f14",
+  "theme_color": "#0b0f14",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "What's that plane?", "short_name": "That plane?", "description": "Hear what's flying over now", "url": "/?say=next",
+     "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"}]},
+    {"name": "Where's my plane?", "short_name": "My plane", "description": "Hear where the flight you're tracking is", "url": "/?say=mine",
+     "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"}]},
+    {"name": "Track a flight", "short_name": "Track", "url": "/?track=1",
+     "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"}]},
+    {"name": "Point at a plane", "short_name": "Point", "url": "/#point",
+     "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"}]}
+  ]
+}

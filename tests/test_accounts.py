@@ -191,7 +191,7 @@ class FrontDoorTests(unittest.TestCase):
         r = urllib.request.Request(self.base + path, data=body, headers=h)
         try:
             resp = urllib.request.build_opener(NoRedirect).open(r, timeout=10)
-            return resp.status, resp.headers, resp.read().decode()
+            return resp.status, resp.headers, resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             return e.code, e.headers, e.read().decode()
 
@@ -219,6 +219,28 @@ class FrontDoorTests(unittest.TestCase):
         self.assertEqual(self.req("/api/next", headers={"Authorization": "Bearer made-up-token-made-up"})[0], 401)
         s, h, _ = self.req("/auth?k=" + token, accept="text/html")
         self.assertTrue(s == 303 and h.get("Set-Cookie"))
+
+    def test_the_installed_app_pieces_load_before_signing_in(self):
+        # Android's "Install app" (and iPhone's Add to Home Screen) fetch these without the sign-in.
+        s, h, body = self.req("/manifest.webmanifest")
+        manifest = json.loads(body)
+        self.assertEqual((s, h.get("Content-Type")), (200, "application/manifest+json"))
+        self.assertEqual([x["url"] for x in manifest["shortcuts"]], ["/?say=next", "/?say=mine", "/?track=1", "/#point"])
+        self.assertTrue(any(i.get("purpose") == "maskable" for i in manifest["icons"]))
+        for path, kind in (("/sw.js", "text/javascript"), ("/icon-512.png", "image/png"), ("/apple-touch-icon.png", "image/png")):
+            s, h, _ = self.req(path)
+            self.assertEqual(s, 200, path)
+            self.assertTrue(h.get("Content-Type", "").startswith(kind), path)
+        self.assertEqual(self.req("/api/live")[0], 401)  # but nothing of yours
+
+    def test_android_phones_see_android_steps_first(self):
+        henry = self.sign_in("henry", "correct horse")
+        android = self.req("/account", cookie=henry, accept="text/html",
+                           headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 7) Chrome/130"})[2]
+        iphone = self.req("/account", cookie=henry, accept="text/html",
+                          headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"})[2]
+        self.assertLess(android.index("🤖 Android"), android.index("📱 iPhone"))
+        self.assertLess(iphone.index("📱 iPhone"), iphone.index("🤖 Android"))
 
     def test_forms_from_other_sites_and_unsafe_next(self):
         henry = self.sign_in("henry", "correct horse")

@@ -71,6 +71,18 @@ STATIC_FILES = {
     "/sky.js": ("sky.js", "text/javascript; charset=utf-8"),
     "/kiosk": ("index.html", "text/html; charset=utf-8"),
 }
+# The installed app's pieces (Android's "Install app", iPhone's Add to Home Screen): anyone may fetch these,
+# even before signing in (phones fetch them without the sign-in).
+PUBLIC_FILES = {
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+    "/icon-maskable-512.png": ("icon-maskable-512.png", "image/png"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/favicon.ico": ("icon-192.png", "image/png"),
+}
+STATIC_FILES.update(PUBLIC_FILES)
 MAX_UPLOAD = 16 * 1024 * 1024  # bytes: a photo (sent as text) or a batch of noise levels
 MAX_PHOTO = 8 * 1024 * 1024
 MAX_THUMB = 600 * 1024
