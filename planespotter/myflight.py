@@ -78,7 +78,7 @@ class FlightWatch:
     def __init__(self, cfg, store, notifier, budget=None, fetch=None, lookup=None, clock=time.time):
         self.cfg, self.store, self.notifier, self.budget, self.clock = cfg, store, notifier, budget, clock
         self.fetch = fetch or (lambda cs: get_json(f"{cfg.adsb_api}/v2/callsign/{cs}", 15, key_header(cfg.adsb_api_key)))
-        self.lookup = lookup or Lookup(store, cfg.adsbdb_api)
+        self.lookup = lookup or Lookup.for_config(store, cfg)
 
     def tell(self, title: str, message: str, hex_code: str = "", tags=("airplane",)) -> None:
         if self.notifier is None or not self.notifier.enabled:
@@ -120,7 +120,7 @@ class FlightWatch:
                 start = place_text(info.origin, info.origin_city) if info.origin else (
                     place_text(origin.code, origin.city) if origin else "")
                 dest = place_text(info.destination, info.destination_city) if info.destination else ""
-                text = f"🛫 {name} has taken off" + (f" from {start}" if start else "")
+                text = f"{name} has taken off" + (f" from {start}" if start else "")
                 self.tell(text, f"Heading for {dest}." if dest else "planespotter will tell you when it lands.",
                           ac.hex, tags=("airplane_departure",))
                 self.set(cs, state="airborne", took_off=now, hex=ac.hex, origin=info.origin, destination=info.destination,
@@ -130,7 +130,7 @@ class FlightWatch:
                      state="airborne")
             near = distance_miles(self.cfg.home_lat, self.cfg.home_lon, ac.lat, ac.lon)
             if near <= max(10.0, self.cfg.radius_miles * 3) and not f["over_home"]:
-                text = f"✈ {name} is flying over {self.cfg.home_name} right now"
+                text = f"{name} is flying over {self.cfg.home_name} right now"
                 self.tell(text, f"{near:.0f} mi away at {ac.alt_ft or 0:,} ft. Look up and wave!", ac.hex)
                 self.set(cs, over_home=1)
                 events.append(text)
@@ -141,7 +141,7 @@ class FlightWatch:
         if on_ground or lost:
             airport = airports().at(f["last_lat"], f["last_lon"], 0, max_km=20) if f["last_lat"] is not None else None
             where = place_text(airport.code, airport.city) if airport else place_text(f["destination"], f["destination_city"])
-            text = f"🛬 {name} has landed" + (f" in {where}" if where != "somewhere" else "")
+            text = f"{name} has landed" + (f" in {where}" if where != "somewhere" else "")
             self.tell(text, "Safe and sound.", f["hex"] or "", tags=("airplane_arriving",))
             self.set(cs, state="landed", landed=now)
             events.append(text)

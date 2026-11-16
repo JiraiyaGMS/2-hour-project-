@@ -149,7 +149,8 @@ def shared_feed(cfg: Config, budget: ApiBudget | None = None):
 
     With your own receiver, that comes first, and adsb.lol is only the backup."""
     view = miles_to_nm(cfg.view_radius_miles) if cfg.map_enabled else 0
-    adsb_lol = SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), min_radius_nm=view)
+    adsb_lol = SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, backup_url=cfg.backup_feed),
+                          min_radius_nm=view)
     if cfg.receiver_url:
         return FeedWithReceiver(ReceiverFeed(cfg.receiver_url), adsb_lol)
     return adsb_lol
@@ -228,11 +229,12 @@ class MapApp:
         self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget)
         self.logos = logo_cache or LogoCache(Path(cfg.db_path).parent / "logo-cache")
         self.account = None   # {"name", "owner"} when accounts are on: whose planespotter this is
-        # ✈︎ Track a flight and 🚪 Gate, the same as on the phone.
+        # Track a flight and Gate, the same as on the phone.
         self.search_sky = Sky(cfg.adsb_api, key, budget, clock)
         self.gatebook = GateBook(cfg, clock) if cfg.gates_api in GATE_APIS and cfg.gates_key else None
         self._local = threading.local()
         self._whole_cache: dict[float, tuple[float, list]] = {}
+        self._origins: dict[str, tuple[float, Any]] = {}  # hex -> (when, the airport its track left from)
 
     def live_json(self) -> dict[str, Any]:
         """Live planes, plus how fresh they are and how the day's request budget is going."""
@@ -244,8 +246,12 @@ class MapApp:
         budget = self.budget.status() if self.budget else None
         if receiver and budget:
             budget["interval_s"] = self.cfg.poll_seconds
+        # (The shared feed wraps adsb.lol's; behind a receiver it's the fallback.)
+        shared = getattr(self.feed, "fallback", self.feed)
+        backup = not receiver and getattr(getattr(shared, "feed", None), "using_backup", False)
         return {**data, "paused_s": round(paused), "budget": budget,
-                "source": "receiver" if receiver else "adsb.lol", "transits": self.transits_json()}
+                "source": "receiver" if receiver else "adsb.fi" if backup else "adsb.lol",
+                "transits": self.transits_json()}
 
     def transits_json(self) -> list[dict]:
         """Planes about to cross in front of the Moon (or Sun), for the Look up! card. Worked out every 20 s."""
@@ -287,7 +293,7 @@ class MapApp:
             "point_url": POINT_URL,
         }
 
-    # --- ✈︎ Track a flight and 🚪 Gate (the phone's features, on the Mac's map) ---
+    # --- Track a flight and Gate (the phone's features, on the Mac's map) ---
 
     def routes_for(self, results: list[dict]) -> dict[str, dict]:
         """The airline and a checked route for search results (from adsbdb, kept in the database), by hex.
@@ -303,7 +309,7 @@ class MapApp:
                 ac = Aircraft(hex=r["hex"], callsign=r["callsign"], registration=r.get("registration", ""),
                               type_code=r.get("type", ""), lat=r["lat"], lon=r["lon"], alt_ft=r.get("alt_ft"),
                               speed_kt=r.get("speed_kt"), track=r.get("heading"))
-                info = Lookup(store, self.cfg.adsbdb_api).info(ac, now)
+                info = Lookup.for_config(store, self.cfg).info(ac, now)
                 return {"airline": info.airline, "origin": info.origin, "destination": info.destination}
             finally:
                 store.close()
@@ -340,7 +346,7 @@ class MapApp:
         return {}
 
     def point_json(self) -> dict[str, Any]:
-        """For 🔭 Point: every plane the Mac knows within 45 miles (wider than the map's view), moved on to now."""
+        """For Point: every plane the Mac knows within 45 miles (wider than the map's view), moved on to now."""
         planes, fetched_at = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
         now = self.clock()
         out = []
@@ -380,7 +386,7 @@ class MapApp:
             age = max(0.0, now - where["at"])
             moved = glide(ac, age + (ac.seen_pos or 0))  # where it is now, if it flew straight on
             out["plane"] = {**plane_json(self.cfg, moved), "seen_pos": 0, "age_s": round(age)}
-            info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, now)
+            info = Lookup.for_config(self.store(), self.cfg).info(ac, now)
             out["route"] = {"airline": info.airline, "origin": info.origin, "destination": info.destination,
                             "origin_city": info.origin_city, "destination_city": info.destination_city}
             return out
@@ -723,7 +729,7 @@ class MapApp:
     def next_json(self) -> dict[str, Any]:
         """For the home-screen widget: the next few planes and when they'll be over."""
         now = self.clock()
-        lookup = Lookup(self.store(), self.cfg.adsbdb_api)
+        lookup = Lookup.for_config(self.store(), self.cfg)
         report = self.sky.report() if self.sky else None
         out = []
         for c in self.coming()[:4]:
@@ -779,18 +785,54 @@ class MapApp:
         if not points:
             return {"path": []}
         origin, _ = route_from_path(as_path(points[:1]), landed=False)
-        return {"path": as_path(simplify(points)),
-                "origin": {"code": origin.code, "city": origin.city, "name": origin.name} if origin else None}
+        out: dict[str, Any] = {"path": as_path(simplify(points)),
+                               "origin": {"code": origin.code, "city": origin.city, "name": origin.name} if origin else None}
+        if origin is not None:
+            # Its track settles where it took off from: the route is the leg of its flight number that starts there.
+            now = self.clock()
+            ac = self.live_plane(hex_code)
+            if ac is not None:
+                self._origins[hex_code] = (now, origin, ac.callsign)
+            for old in [h for h, hit in self._origins.items() if now - hit[0] > 2 * 3600]:
+                del self._origins[old]
+            if ac is not None:
+                info = Lookup.for_config(self.store(), self.cfg).info(ac, now, took_off_from=origin)
+                out["route"] = {"airline": info.airline, "origin": info.origin, "origin_city": info.origin_city,
+                                "destination": info.destination, "destination_city": info.destination_city,
+                                "route_basis": info.route_basis, "route_checked": True}
+        return out
+
+    def live_plane(self, hex_code: str) -> Aircraft | None:
+        """A plane near home as the feed last saw it (its height, heading and climb included)."""
+        planes, _ = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
+        return next((ac for ac in planes or [] if ac.hex == hex_code), None)
+
+    def took_off_from(self, hex_code: str, callsign: str, now: float):
+        """The airport this plane's recorded track left the ground at, if we looked that up for this same
+        flight (when it crossed your zone, or when someone clicked it). The same aircraft is back in the air
+        on its next flight within the hour, so it has to be the same callsign, and recent."""
+        hit = self._origins.get(hex_code)
+        if hit and now - hit[0] < 2 * 3600 and hit[2] == callsign:
+            return hit[1]
+        row = self.store().latest_pass_for(hex_code, now - 2 * 3600)
+        if row is not None and row["route_checked"] and row["origin"] and row["callsign"] == callsign:
+            return airports().get(row["origin"])
+        return None
 
     def info_json(self, query: dict[str, str]) -> dict[str, Any]:
-        try:
-            lat, lon = float(query.get("lat", "")), float(query.get("lon", ""))
-        except ValueError:
-            lat, lon = self.cfg.home_lat, self.cfg.home_lon
-        ac = Aircraft(hex=query.get("hex", "").lower()[:10], callsign=query.get("callsign", "").upper()[:10],
-                      registration="", type_code="", lat=lat, lon=lon, alt_ft=None, speed_kt=None, track=None)
-        info = Lookup(self.store(), self.cfg.adsbdb_api).info(ac, self.clock())
-        return asdict(info)
+        hex_code = query.get("hex", "").lower()[:10]
+        callsign = "".join(c for c in query.get("callsign", "").upper() if c.isalnum())[:10]
+        ac = self.live_plane(hex_code)
+        if ac is None or (callsign and ac.callsign != callsign):
+            try:
+                lat, lon = float(query.get("lat", "")), float(query.get("lon", ""))
+            except ValueError:
+                lat, lon = self.cfg.home_lat, self.cfg.home_lon
+            ac = Aircraft(hex=hex_code, callsign=callsign, registration="", type_code="", lat=lat, lon=lon,
+                          alt_ft=None, speed_kt=None, track=None)
+        now = self.clock()
+        info = Lookup.for_config(self.store(), self.cfg).info(ac, now, self.took_off_from(hex_code, ac.callsign, now))
+        return {**asdict(info), "route_checked": info.route_checked}
 
 
 # Requests that use up an allowance (adsb.lol's, or the gate service's): another website open in the same
@@ -838,7 +880,7 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False, token: str
         "radius": cfg.radius_miles, "maxAlt": cfg.max_altitude_ft,
         "mac": map_url, "macName": mac_name_url(cfg) if map_url and not token else "",
         "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
-        "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
+        "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"), "routes": cfg.routes_api.rstrip("/"),
     }
     if token:  # accounts are on: this account's own pass to its planespotter (only in the copy for its phone)
         settings["token"] = token
@@ -858,7 +900,7 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False, token: str
 AIRPORTS_URL = ("https://raw.githubusercontent.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
                 "planespotter/data/airports.csv")
 AIRLINES_FOR_PHONE = [list(a) for a in AIRLINES]
-# 🔭 Point runs in Safari (which gives pages the compass), from planespotter's own files, served as a web page.
+# Point runs in Safari (which gives pages the compass), from planespotter's own files, served as a web page.
 POINT_URL = ("https://raw.githack.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
              "planespotter/web/point.html")
 

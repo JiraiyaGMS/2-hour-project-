@@ -77,9 +77,11 @@ if (window.PlanespotterAndroid) {
     flightsLoaded: false,
     selected: null,             // { kind: 'live' | 'history', key }
     lastSelectedLive: null,
-    info: new Map(),            // hex|callsign -> route + aircraft details
+    info: new Map(),            // hex|callsign -> route + aircraft details (and when we asked: at)
     infoQueue: [],
     infoBusy: 0,
+    infoPending: new Set(),     // being looked up right now
+    traceRoutes: new Map(),     // hex|callsign -> the route its own track confirmed (from api/trace), and when
     listLimit: LIST_PAGE,
     heat: saved.get('heat', false),
     heatDays: saved.get('heatDays', 7),
@@ -103,11 +105,11 @@ if (window.PlanespotterAndroid) {
     quiz: null,                 // the question you're answering
     myFlights: [],              // flights you're following
     myTrack: null,              // the one shown on the map
-    tracking: saved.get('tracking', null),  // ✈︎ Track a flight: {cs, hex, label}
+    tracking: saved.get('tracking', null),  // Track a flight: {cs, hex, label}
     trackData: null,            // where it is (api/track)
     trackTrail: [],             // its path so far
     trackSearch: null,          // the last search
-    gates: new Map(),           // callsign -> 🚪 Gate answer (or 'asking')
+    gates: new Map(),           // callsign -> the gate answer (or 'asking')
     transits: [],               // planes about to cross the Moon
     friends: null,              // friends' leaderboard
   };
@@ -124,6 +126,15 @@ if (window.PlanespotterAndroid) {
   const place = (code, city) => (city && code ? `${city} (${code})` : city || code || '?');
   const hasRoute = (i) => i && (i.origin || i.destination);
   const routeShort = (i) => (hasRoute(i) ? `${i.origin || '?'} → ${i.destination || '?'}` : '');
+  /** An icon from the sprite in index.html (scripts/build_icons.py lists them). */
+  const icon = (name, cls = '') => `<svg class="ic${cls ? ` ${cls}` : ''}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+  /** "SNA → PAE" for lists, with a tick when the plane's own track bears it out. An end we don't know is left out. */
+  const routeHtml = (i) => (hasRoute(i)
+    ? `<span class="route">${esc(i.origin || '')}${icon('arrow-right')}${esc(i.destination || '')}${i.route_checked
+      ? `<span class="verified" title="Checked against the plane’s own track">${icon('circle-check')}</span>` : ''}</span>` : '');
+  /** A country's flag as a picture (flagcdn.com), from its two-letter code. */
+  const flagImg = (code, cls = '') => (/^[A-Za-z]{2}$/.test(code || '')
+    ? `<img${cls ? ` class="${cls}"` : ''} src="https://flagcdn.com/${code.toLowerCase()}.svg" alt="" loading="lazy">` : icon('globe'));
   const routeLong = (i) => (hasRoute(i) ? `${place(i.origin, i.origin_city)} → ${place(i.destination, i.destination_city)}` : '');
   const sameDay = (x, y) => x.toDateString() === y.toDateString();
 
@@ -188,7 +199,7 @@ if (window.PlanespotterAndroid) {
         const sinceCheck = Math.max(0, (data.time || 0) - (data.updated || data.time || 0));
         state.live = data.aircraft.map((p) => ({ ...p, fixAt: now - (sinceCheck + (p.seen_pos || 0)) * 1000 }));
         state.liveMeta = { interval: data.budget ? data.budget.interval_s : 0, paused: data.paused_s || 0,
-                           waiting: !!data.waiting, receiver: data.source === 'receiver' };
+                           waiting: !!data.waiting, receiver: data.source === 'receiver', backup: data.source === 'adsb.fi' };
         state.liveError = null;
         state.quietNow = !!data.quiet_now;
         state.transits = data.transits || [];
@@ -215,14 +226,37 @@ if (window.PlanespotterAndroid) {
   const infoKey = (p) => `${p.hex}|${p.callsign || ''}`;
   const infoFor = (p) => state.info.get(infoKey(p)) || null;
 
+  // A route is judged by where the plane is and what it's doing, so it's asked again as the plane moves on
+  // (and a lookup that failed gets another go).
+  const INFO_FRESH_MS = 3 * 60000;
+
   function queueInfo(planes, first = false) {
+    const now = Date.now();
     for (const p of planes) {
       const key = infoKey(p);
-      if (state.info.has(key)) continue;
-      state.info.set(key, null);
+      if (state.infoPending.has(key)) continue;
+      const have = state.info.get(key);
+      if (have && now - have.at < INFO_FRESH_MS) continue;
+      if (have === undefined) state.info.set(key, null);
+      state.infoPending.add(key);
       if (first) state.infoQueue.unshift(p); else state.infoQueue.push(p);
     }
+    // Forget planes that left a while ago (a kiosk runs for weeks).
+    if (state.info.size > 600) {
+      const live = new Set(state.live.map(infoKey));
+      for (const [key, v] of state.info) if (!live.has(key) && v && now - v.at > 30 * 60000) state.info.delete(key);
+    }
     pumpInfo();
+  }
+
+  /** What we know about a live plane: its details, with the route its own track confirmed when there is one. */
+  function planeInfo(p) {
+    // (The same aircraft is back in the air on its next flight within the hour: what its track showed only
+    // holds for the same callsign, and not for long.)
+    const seen = state.traceRoutes.get(infoKey(p));
+    const info = { ...(infoFor(p) || {}), ...(seen && Date.now() - seen.at < 2 * 3600000 ? seen.route : {}) };
+    if (!hasRoute(info)) Object.assign(info, checkedRoute(p) || {});
+    return info;
   }
 
   let listTimer = 0;
@@ -236,14 +270,15 @@ if (window.PlanespotterAndroid) {
       const p = state.infoQueue.shift();
       state.infoBusy++;
       const q = new URLSearchParams({ hex: p.hex, callsign: p.callsign || '', lat: p.lat, lon: p.lon });
+      const key = infoKey(p);
       getJSON(`api/info?${q}`)
         .then((info) => {
-          state.info.set(infoKey(p), info);
+          state.info.set(key, { ...info, at: Date.now() });
           if (state.tab === 'live') renderListSoon();
           renderDetail();
         })
-        .catch(() => state.info.set(infoKey(p), {}))
-        .finally(() => { state.infoBusy--; pumpInfo(); });
+        .catch(() => state.info.set(key, { ...(state.info.get(key) || {}), at: Date.now() - INFO_FRESH_MS + 30000 }))
+        .finally(() => { state.infoPending.delete(key); state.infoBusy--; pumpInfo(); });
     }
   }
 
@@ -299,7 +334,7 @@ if (window.PlanespotterAndroid) {
   // ---------- airline logos ----------
   /** 'DAL1140' -> 'DAL': airline callsigns start with the airline's ICAO code. */
   const airlineCode = (callsign) => { const m = /^([A-Z]{3})\d/.exec(callsign || ''); return m ? m[1] : null; };
-  const SMALL_PLANE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c.8 0 1.3.9 1.3 2.1v5.4l7.9 4.7v2.1l-7.9-2.5v4.6l2.7 2v1.8L12 21.2l-4 1v-1.8l2.7-2v-4.6l-7.9 2.5v-2.1l7.9-4.7V4.1C10.7 2.9 11.2 2 12 2z"/></svg>';
+  const SMALL_PLANE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c.8 0 1.3.9 1.3 2.1v5.4l7.9 4.7v2.1l-7.9-2.5v4.6l2.7 2v1.8L12 21.2l-4 1v-1.8l2.7-2v-4.6l-7.9 2.5v-2.1l7.9-4.7V4.1C10.7 2.9 11.2 2 12 2z"/></svg>';
 
   function logo(callsign, big = false) {
     const code = airlineCode(callsign);
@@ -351,10 +386,24 @@ if (window.PlanespotterAndroid) {
       + '<div class="chart-tip" hidden></div></div>';
   }
 
+  // Which icon stands for each badge, bingo square and record (the server names them by key).
+  const BADGE_ICONS = {
+    first: 'takeoff', century: 'medal', thousand: 'trophy', airlines10: 'ticket', airlines25: 'globe', types25: 'layers',
+    countries10: 'earth', a380: 'gem', b747: 'crown', low: 'volume', overhead: 'target', night: 'moon', early: 'sunrise',
+    rush: 'timer', military: 'shield', helicopter: 'fan', emergency: 'siren', eyes1: 'eye', streak7: 'flame', photo1: 'camera',
+  };
+  const BINGO_ICONS = {
+    b787: 'plane', b777: 'plane', b737: 'plane', a320: 'plane', a350: 'plane', a220: 'plane', wide: 'takeoff', four: 'grid',
+    regional: 'feather', prop: 'fan', heli: 'fan', bizjet: 'briefcase', small: 'bird', cargo: 'package', abroad: 'earth',
+    intl: 'passport', long: 'compass', early: 'sunrise', late: 'moon', low: 'volume', close: 'target', rare: 'gem',
+    first: 'sparkles', free: 'star',
+  };
+  const RECORD_ICONS = { lowest: 'volume', closest: 'target', fastest: 'gauge', highest: 'mountain', longest: 'earth', regular: 'handshake' };
+
   function collectionHtml() {
     const c = state.collection;
-    if (!c) return empty('Loading your collection…');
-    if (!c.totals.planes) return empty('Nothing spotted yet. Keep planespotter running and your collection will grow.');
+    if (!c) return empty('Loading your collection…', 'trophy');
+    if (!c.totals.planes) return empty('Nothing spotted yet. Keep planespotter running and your collection will grow.', 'trophy');
     const t = c.totals;
     const since = new Date(c.since * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
     const tile = (k, v) => `<div class="ctile"><div class="k">${esc(k)}</div><div class="v">${Number(v).toLocaleString()}</div></div>`;
@@ -364,7 +413,7 @@ if (window.PlanespotterAndroid) {
     const dayTips = c.weekdays.map((n, i) => `${days[i]} · ${plural(n, 'plane')}`);
     const earned = c.badges.filter((b) => b.earned_at).length;
     const badge = (b) => `<div class="cbadge${b.earned_at ? ' earned' : ''}" title="${esc(b.how)}">
-        <div class="emoji">${b.emoji}</div><div class="name">${esc(b.name)}</div>
+        <div class="bicon">${icon(BADGE_ICONS[b.key] || 'award')}</div><div class="name">${esc(b.name)}</div>
         <div class="how">${b.earned_at ? esc(new Date(b.earned_at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }))
           : esc(b.progress || b.how)}</div></div>`;
     const showAll = state.collectionAll || {};
@@ -391,32 +440,38 @@ if (window.PlanespotterAndroid) {
       <h3>Aircraft types <span>${t.types}</span></h3>
       ${listOf('types', c.types, (ty) => `<div class="crow"><span class="ccode">${esc(ty.code)}</span><span class="cname">${esc(ty.name)}</span><span class="cnum">${ty.count}</span></div>`)}
       <h3>Countries <span>${t.countries}</span></h3>
-      ${listOf('countries', c.countries, (co) => `<div class="crow"><span class="cflag">${co.flag}</span><span class="cname">${esc(co.name)}</span><span class="cnum">${co.count}</span></div>`)}
+      ${listOf('countries', c.countries, (co) => `<div class="crow"><span class="cflag">${flagImg(co.code)}</span><span class="cname">${esc(co.name)}</span><span class="cnum">${co.count}</span></div>`)}
     </div>`;
   }
 
   // ---------- the list ----------
-  /** The route we checked against the plane's real flight, if it went over us in the last few hours. */
-  function checkedRoute(hex) {
-    const f = state.flights.find((x) => x.hex === hex && x.route_checked && Date.now() / 1000 - x.first_seen < 6 * 3600);
-    return f ? { origin: f.origin, destination: f.destination, origin_city: f.origin_city, destination_city: f.destination_city } : null;
+  /** The route we checked against this same flight's real track, if it went over us in the last couple of hours. */
+  function checkedRoute(p) {
+    const f = state.flights.find((x) => x.hex === p.hex && x.callsign === (p.callsign || '') && x.route_checked
+      && Date.now() / 1000 - x.first_seen < 2 * 3600);
+    return f ? { origin: f.origin, destination: f.destination, origin_city: f.origin_city, destination_city: f.destination_city,
+      route_checked: true, route_basis: 'track' } : null;
   }
 
-  /** "✨ A380", "🚨 7700"... for special planes. */
+  /** "A380", "7700"... for special planes. */
   const specialBadges = (p) => (p.special || []).map((x) =>
-    `<span class="badge ${x.emergency ? 'sos' : 'special'}" title="${esc(x.text)}">${x.emergency ? '🚨' : '✨'} ${esc(x.short)}</span>`).join('');
+    `<span class="badge ${x.emergency ? 'sos' : 'special'}" title="${esc(x.text)}">${icon(x.emergency ? 'siren' : 'sparkles')}${esc(x.short)}</span>`).join('');
+
+  /** A small arrow beside the height: climbing or coming down. */
+  const trend = (vr) => (vr == null || Math.abs(vr) < 300 ? ''
+    : `<svg class="ic trend ${vr > 0 ? 'rising' : 'sinking'}" aria-label="${vr > 0 ? 'climbing' : 'descending'}"><use href="#i-arrow-${vr > 0 ? 'up' : 'down'}"/></svg>`);
 
   function liveItem(p) {
-    const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+    const info = planeInfo(p);
     const selected = isSelected('live', p.hex) ? ' selected' : '';
     const sub = [info.airline, info.aircraft_desc || p.type].filter(Boolean).join(' · ');
     return `<button class="item${selected}" data-kind="live" data-key="${esc(p.hex)}" role="listitem">
       ${logo(p.callsign)}
       <div class="main">
-        <div class="title"><span class="callsign">${esc(label(p))}</span>${p.in_zone ? '<span class="badge">Overhead</span>' : ''}${specialBadges(p)}<span class="route">${esc(routeShort(info))}</span></div>
+        <div class="title"><span class="callsign">${esc(label(p))}</span>${p.in_zone ? '<span class="badge">Overhead</span>' : ''}${specialBadges(p)}${routeHtml(info)}</div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
-      <div class="meta"><div class="alt">${fmtAlt(p.alt_ft)}</div><div class="dist">${fmtDist(p.distance_miles)} ${compass(p.bearing)}</div></div>
+      <div class="meta"><div class="alt">${trend(p.vr)}${fmtAlt(p.alt_ft)}</div><div class="dist">${fmtDist(p.distance_miles)} ${compass(p.bearing)}</div></div>
     </button>`;
   }
 
@@ -428,7 +483,7 @@ if (window.PlanespotterAndroid) {
     return `<button class="item${selected}" data-kind="history" data-key="${f.id}" role="listitem">
       ${logo(f.callsign)}
       <div class="main">
-        <div class="title"><span class="callsign">${esc(label(f))}</span><span class="route">${esc(routeShort(f))}</span></div>
+        <div class="title"><span class="callsign">${esc(label(f))}</span>${routeHtml(f)}</div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
       <div class="meta">${pos ? `<div class="alt">${fmtAlt(pos.alt_ft)}</div><div class="dist">${esc(fromHome(pos.lat, pos.lon))}</div>`
@@ -442,10 +497,10 @@ if (window.PlanespotterAndroid) {
     const time = state.sort === 'newest' ? fmtTime(f.first_seen)
       : new Date(f.first_seen * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' });
     return `<button class="item${selected}" data-kind="history" data-key="${f.id}" role="listitem">
-      <div class="time">${time}${f.quiet ? '<br>🌙' : ''}${f.offline ? '<br><span title="Found afterwards: planespotter wasn’t running then">📴</span>' : ''}</div>
+      <div class="time"><span>${time}</span>${f.quiet || f.offline ? `<span>${f.quiet ? `<span title="Came over during quiet hours">${icon('moon')}</span>` : ''}${f.offline ? `<span title="Found afterwards: planespotter wasn’t running then">${icon('offline')}</span>` : ''}</span>` : ''}</div>
       ${logo(f.callsign)}
       <div class="main">
-        <div class="title"><span class="callsign">${esc(label(f))}</span>${isFlying(f.id) ? '<span class="badge air">In the air</span>' : ''}${delayBadge(f.delay)}<span class="route">${esc(routeShort(f))}</span></div>
+        <div class="title"><span class="callsign">${esc(label(f))}</span>${isFlying(f.id) ? '<span class="badge air">In the air</span>' : ''}${delayBadge(f.delay)}${routeHtml(f)}</div>
         <div class="sub">${esc(sub) || '&nbsp;'}</div>
       </div>
       <div class="meta"><div class="alt">${fmtAlt(f.closest_alt_ft)}</div><div class="dist">${fmtDist(f.closest_miles)} ${compass(f.bearing)}</div></div>
@@ -456,7 +511,7 @@ if (window.PlanespotterAndroid) {
   const delayBadge = (d) => (d == null ? '' : Math.abs(d) <= 10 ? '<span class="badge ok">on time</span>'
     : `<span class="badge ${d > 0 ? 'late' : 'ok'}">${Math.abs(d)} min ${d > 0 ? 'late' : 'early'}</span>`);
 
-  const empty = (text) => `<div class="empty">${text}</div>`;
+  const empty = (text, ic = 'radar') => `<div class="empty">${icon(ic)}<div>${text}</div></div>`;
   const moreButton = (shown, total) =>
     total > shown ? `<button class="chip more" data-action="more">Show more (${(total - shown).toLocaleString()} left)</button>` : '';
 
@@ -480,12 +535,12 @@ if (window.PlanespotterAndroid) {
       const mine = state.query ? '' : trackCardHtml() + myFlightsHtml();
       if (!items.length && !away.length) {
         el.innerHTML = mine + empty(state.query ? 'No planes in the air match your search.'
-          : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.') + extra;
+          : state.liveError ? 'Waiting for live data…' : 'No planes nearby right now.', state.query ? 'search' : 'radar') + extra;
         render();
         return;
       }
       el.innerHTML = mine + items.slice(0, state.listLimit).map(liveItem).join('') + moreButton(state.listLimit, items.length)
-        + (away.length ? `<div class="list-section">Went over you · still flying</div>${away.map(awayItem).join('')}` : '')
+        + (away.length ? `<div class="list-section">${icon('plane')}Went over you · still flying</div>${away.map(awayItem).join('')}` : '')
         + extra;
     } else {
       updateHistoryView();
@@ -493,7 +548,8 @@ if (window.PlanespotterAndroid) {
       if (!items.length) {
         el.innerHTML = empty(!state.flightsLoaded ? 'Loading…'
           : state.query ? 'No spotted flights match your search.'
-            : 'No planes spotted in this time yet. Keep planespotter running and they’ll appear here.');
+            : 'No planes spotted in this time yet. Keep planespotter running and they’ll appear here.',
+        state.query ? 'search' : 'binoculars');
         render();
         return;
       }
@@ -534,6 +590,7 @@ if (window.PlanespotterAndroid) {
     }
     state.whole = null;
     if (state.selected) loadWhole();
+    if (state.selected && sheetOn() && sheetPx <= SHEET_PEEK + 20) setSheet(sheetSnaps()[1]);
     renderList();
     renderDetail();
     if (fly && state.selected) flyToSelected();
@@ -613,6 +670,12 @@ if (window.PlanespotterAndroid) {
       } else {
         const data = await getJSON(`api/trace?hex=${encodeURIComponent(sel.key)}`);
         whole = { status: 'so-far', path: data.path || [], origin: data.origin || null };
+        // Its recorded track says where it took off from: that's its route's origin, whatever a database says.
+        const plane = state.live.find((p) => p.hex === sel.key);
+        if (data.route && plane) {
+          state.traceRoutes.set(infoKey(plane), { route: data.route, at: Date.now() });
+          if (state.tab === 'live') renderListSoon();
+        }
       }
     } catch {
       whole = { status: 'error', path: [] };
@@ -645,7 +708,9 @@ if (window.PlanespotterAndroid) {
     const box = $('#map').getBoundingClientRect();
     const W = box.width, H = box.height, top = 70, edge = 40;
     const cards = ['#detail', '#heat-panel']
-      .map((sel) => $(sel).getBoundingClientRect())
+      .map((sel) => $(sel))
+      .filter((el) => el.closest('#map-wrap'))  // on a phone the details are in the sheet, not over the map
+      .map((el) => el.getBoundingClientRect())
       .filter((r) => r.height > 0);
 
     let left = edge, right = edge, bottom = edge, sidewaysOk = true;
@@ -675,27 +740,27 @@ if (window.PlanespotterAndroid) {
     const w = state.whole;
     const sel = state.selected;
     if (!sel) return '';
-    if (!w) return '<div class="note">Getting its whole flight…</div>';
+    if (!w) return note('hourglass', 'Getting its whole flight…');
     const n = w.path.length;
     if (sel.kind === 'live') {
       const from = w.origin ? `Took off from ${esc(place(w.origin.code, w.origin.city || w.origin.name))}. ` : '';
-      return n > 1 ? `<div class="note">${from}The pink line shows where it has flown so far.</div>` : '';
+      return n > 1 ? note('route', `${from}The pink line shows where it has flown so far.`) : '';
     }
     const all = state.wholeAll.byId.get(Number(sel.key));
     if (all && all.flying) {
       const pos = flyingNow(all, null, performance.now());
       return pos
-        ? `<div class="note">✈ Still in the air: ${esc(fmtAlt(pos.alt_ft))}, ${esc(fromHome(pos.lat, pos.lon))} of home. The pink line runs from takeoff to where it is now.</div>`
-        : '<div class="note">✈ Still in the air. The pink line shows its flight so far.</div>';
+        ? note('plane', `Still in the air: ${esc(fmtAlt(pos.alt_ft))}, ${esc(fromHome(pos.lat, pos.lon))} of home. The pink line runs from takeoff to where it is now.`)
+        : note('plane', 'Still in the air. The pink line shows its flight so far.');
     }
     if (w.status === 'done' && n > 1) {
       return w.path[n - 1][2] === 0
-        ? '<div class="note">Landed. The pink line is its whole flight, takeoff to landing.</div>'
-        : '<div class="note">The pink line is its whole flight, as far as adsb.lol could follow it.</div>';
+        ? note('landing', 'Landed. The pink line is its whole flight, takeoff to landing.')
+        : note('route', 'The pink line is its whole flight, as far as adsb.lol could follow it.');
     }
-    if (w.status === 'waiting' && n > 1) return '<div class="note">The pink line shows its flight so far; the rest is added automatically.</div>';
-    if (w.status === 'waiting') return '<div class="note">Its whole flight is looked up from adsb.lol shortly after it lands.</div>';
-    if (w.status === 'unavailable') return '<div class="note">adsb.lol has no record of the rest of this flight.</div>';
+    if (w.status === 'waiting' && n > 1) return note('route', 'The pink line shows its flight so far; the rest is added automatically.');
+    if (w.status === 'waiting') return note('hourglass', 'Its whole flight is looked up from adsb.lol shortly after it lands.');
+    if (w.status === 'unavailable') return note('info', 'adsb.lol has no record of the rest of this flight.');
     return '';
   }
 
@@ -704,18 +769,49 @@ if (window.PlanespotterAndroid) {
     if (!w || w.path.length < 2) return '';
     const text = state.selected.kind === 'live' ? 'Show where it’s come from'
       : w.status === 'done' ? 'Show its whole flight' : 'Show its flight so far';
-    return `<button class="linkbtn" data-action="fit-whole">${text}</button>`;
+    return `<button class="linkbtn" data-action="fit-whole">${icon('route')}${text}</button>`;
   }
 
   function stat(k, v) {
     return `<div><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
   }
 
+  /** "NE, 16° up": which way to face and how high to look for a plane, from home. */
+  function whereToLook(p) {
+    const { home, home_elevation_ft: groundFt = 0 } = state.config;
+    const [lon, lat] = livePos(p, performance.now());
+    const miles = milesBetween(home.lat, home.lon, lat, lon);
+    const height = Math.max(0, ((p.alt_ft || 0) - groundFt) * FT);
+    const up = Math.atan2(height, Math.max(1, miles * MI)) * 180 / Math.PI;
+    return up >= 80 ? 'Straight up' : `${compass(bearingTo(home.lat, home.lon, lat, lon))}, ${Math.round(up)}° up`;
+  }
+
+  /** A line of small print with an icon in front (html is trusted: escape what goes in). */
+  const note = (ic, html, cls = '') => `<div class="note${cls ? ` ${cls}` : ''}">${ic ? icon(ic) : ''}<span>${html}</span></div>`;
+
+  // How we came by a route, said plainly: the plane itself is the best witness, a lone database the worst.
+  const BASIS = {
+    track: ['circle-check', 'Confirmed by its recorded track', true],
+    shows: ['circle-check', 'Confirmed by what the plane is doing', true],
+    agree: ['check', 'Two route lists agree', true],
+    fits: ['info', 'From a route list; its position fits', false],
+  };
+
+  /** From → to, laid out like a boarding pass, with how sure we are underneath. */
+  function routeCard(i) {
+    if (!hasRoute(i)) return '';
+    const end = (code, city, cls) => `<div class="rc-end ${cls}"><div class="rc-code${code ? '' : ' unknown'}">${esc(code || '—')}</div>
+      <div class="rc-city">${esc(code ? city || '' : 'Not known')}</div></div>`;
+    const basis = BASIS[i.route_checked && !BASIS[i.route_basis] ? 'track' : i.route_basis];
+    return `<div class="rc"><div class="rc-row">${end(i.origin, i.origin_city, 'from')}<div class="rc-line">${icon('plane')}</div>${end(i.destination, i.destination_city, 'to')}</div>
+      ${basis ? `<div class="rc-basis${basis[2] ? ' sure' : ''}">${icon(basis[0])}${basis[1]}</div>` : ''}</div>`;
+  }
+
   /** Your own photo if you've added one (tap it to see it big), otherwise one from the aircraft database. */
   function photoHtml(thing, fallbackUrl) {
     const mine = photosOf(thing);
     if (!mine.length) return fallbackUrl ? `<img class="photo" src="${esc(fallbackUrl)}" alt="">` : '';
-    const more = mine.length > 1 ? `<span class="photo-count">📸 ${mine.length}</span>` : '<span class="photo-count">📸 yours</span>';
+    const more = `<span class="photo-count">${icon('camera')}${mine.length > 1 ? mine.length : 'Yours'}</span>`;
     return `<button class="photo-btn" data-view-photo="${mine[0].id}"><img class="photo" src="photo/${mine[0].id}-thumb.jpg" alt="Your photo">${more}</button>`;
   }
 
@@ -727,12 +823,12 @@ if (window.PlanespotterAndroid) {
     const flying = thing.plane ? !thing.lost : isFlying(thing.flight.id);
     const known = thing.flight || state.flights.some((f) => f.hex === hex);
     return `<div class="actions">
-      ${recent ? `<button class="act${seen ? ' done' : ''}" data-action="saw" data-at="${at}">${seen ? '✓ You saw it' : '👀 I saw it'}</button>` : ''}
-      ${flying ? `<button class="act${isFollowing(hex) ? ' done' : ''}" data-action="follow" title="A notification on your phone when it lands">${isFollowing(hex) ? '🔔 Following' : '🔔 Follow'}</button>` : ''}
-      ${thing.plane && thing.plane.callsign && gatesOn() ? '<button class="act" data-action="gate">🚪 Gate</button>' : ''}
-      <button class="act" data-action="add-photo">📷 Add photo</button>
-      <button class="act" data-action="share">↗ Share</button>
-      ${known ? '<button class="act" data-action="profile">✈ This plane</button>' : ''}</div>`;
+      ${recent ? `<button class="act${seen ? ' done' : ''}" data-action="saw" data-at="${at}">${icon(seen ? 'check' : 'eye')}${seen ? 'You saw it' : 'I saw it'}</button>` : ''}
+      ${flying ? `<button class="act${isFollowing(hex) ? ' done' : ''}" data-action="follow" title="A notification on your phone when it lands">${icon(isFollowing(hex) ? 'bell-ring' : 'bell')}${isFollowing(hex) ? 'Following' : 'Follow'}</button>` : ''}
+      ${thing.plane && thing.plane.callsign && gatesOn() ? `<button class="act" data-action="gate">${icon('gate')}Gate</button>` : ''}
+      <button class="act" data-action="add-photo">${icon('camera')}Add photo</button>
+      <button class="act" data-action="share">${icon('share')}Share</button>
+      ${known ? `<button class="act" data-action="profile">${icon('history')}This plane</button>` : ''}</div>`;
   }
 
   let lastDetailHtml = '';
@@ -744,46 +840,47 @@ if (window.PlanespotterAndroid) {
     let html;
     if (thing.plane) {
       const p = thing.plane;
-      const info = infoFor(p) || {};
-      html = `${photoHtml(thing, info.photo_url)}<button class="close" aria-label="Close">×</button><div class="body">
+      const info = planeInfo(p);
+      const climb = p.vr == null || Math.abs(p.vr) < 300 ? 'Level' : `${p.vr > 0 ? 'Climbing' : 'Descending'} ${Math.abs(Math.round(p.vr / 100) * 100).toLocaleString()} ft/min`;
+      html = `${photoHtml(thing, info.photo_url)}<button class="close" aria-label="Close">${icon('x')}</button><div class="body">
         <div class="title-row">${logo(p.callsign, true)}<div><h2>${esc(label(p))}</h2>
         <div class="airline">${esc(info.airline || info.owner || '')}</div></div></div>
-        ${routeLong({ ...info, ...(checkedRoute(p.hex) || {}) }) ? `<div class="route-big">${esc(routeLong({ ...info, ...(checkedRoute(p.hex) || {}) }))}</div>` : ''}
+        ${routeCard(info)}
         <div class="plane">${esc([info.aircraft_desc || p.type, p.registration].filter(Boolean).join(' · '))}</div>
         <div class="stats">
           ${stat('Altitude', fmtAlt(p.alt_ft))}${stat('Speed', fmtSpeed(p.speed_kt))}${stat('Heading', p.heading == null ? '—' : `${compass(p.heading)} ${Math.round(p.heading)}°`)}
-          ${stat('From home', `${fmtDist(p.distance_miles)} ${compass(p.bearing)}`)}${stat('Type', p.type || '—')}${stat('Squawk', p.squawk || '—')}
+          ${stat('From home', `${fmtDist(p.distance_miles)} ${compass(p.bearing)}`)}${stat('Vertical', climb)}${stat('Where to look', whereToLook(p))}
         </div>
-        ${(p.special || []).map((x) => `<div class="note"><strong>${x.emergency ? '🚨' : '✨'} ${esc(x.text)}</strong></div>`).join('')}
-        ${thing.lost ? '<div class="note">Out of range now, showing its last position.</div>'
-          : p.in_zone ? '<div class="note"><span class="badge">Overhead</span> inside your zone right now</div>' : ''}
+        ${(p.special || []).map((x) => note(x.emergency ? 'siren' : 'sparkles', `<strong>${esc(x.text)}</strong>`, 'warn')).join('')}
+        ${thing.lost ? note('info', 'Out of range now, showing its last position.')
+          : p.in_zone ? note('', '<span class="badge">Overhead</span> inside your zone right now') : ''}
         ${wholeNote()}
         ${p.callsign ? gateLines(p.callsign) : ''}
         ${actionsHtml(thing)}
-        <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(p.hex)}" target="_blank" rel="noopener">Follow it on adsb.lol ↗</a></div>
+        <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(p.hex)}" target="_blank" rel="noopener">Follow it on adsb.lol${icon('external')}</a></div>
       </div>`;
     } else {
       const f = thing.flight;
       const when = new Date(f.first_seen * 1000);
       const utcDay = when.toISOString().slice(0, 10);
-      const why = f.alerted ? 'You got an email about this one.'
-        : f.quiet ? '🌙 Came over during quiet hours, so it went in the morning report.'
-          : 'No alert was emailed for this one.';
-      html = `${photoHtml(thing, f.photo_url)}<button class="close" aria-label="Close">×</button><div class="body">
+      const why = f.alerted ? note('mail', 'You got an alert about this one.')
+        : f.quiet ? note('moon', 'Came over during quiet hours, so it went in the morning report.')
+          : note('bell-off', 'No alert was sent for this one.');
+      html = `${photoHtml(thing, f.photo_url)}<button class="close" aria-label="Close">${icon('x')}</button><div class="body">
         <div class="title-row">${logo(f.callsign, true)}<div><h2>${esc(label(f))}</h2>
         <div class="airline">${esc(f.airline || f.owner || '')}</div></div></div>
-        ${routeLong(f) ? `<div class="route-big">${esc(routeLong(f))}${f.route_checked ? ' <span class="checked" title="Checked against its actual flight path">✓</span>' : ''}</div>` : ''}
+        ${routeCard(f)}
         <div class="plane">${esc([f.aircraft || f.type, f.registration].filter(Boolean).join(' · '))}</div>
         <div class="stats">
           ${stat(`Seen ${['Today', 'Yesterday'].includes(dayLabel(f.first_seen)) ? dayLabel(f.first_seen).toLowerCase() : dayLabel(f.first_seen)}`, fmtTime(f.first_seen))}${stat('Closest', `${fmtDist(f.closest_miles)} ${compass(f.bearing)}`)}${stat('Altitude', fmtAlt(f.closest_alt_ft))}
         </div>
-        <div class="note">${esc(why)}</div>
-        ${f.offline ? '<div class="note">📴 Found afterwards: planespotter wasn’t running when it came over, so it was looked up in adsb.lol’s records.</div>' : ''}
-        ${f.delay != null ? `<div class="note">⏱️ A regular: ${esc(Math.abs(f.delay) <= 10 ? 'on time' : `${Math.abs(f.delay)} min ${f.delay > 0 ? 'late' : 'early'}`)} compared with its usual time.</div>` : ''}
-        ${f.noise_db != null ? `<div class="note">🎙️ ${esc(`+${f.noise_db} dB louder than the background`)}</div>` : ''}
+        ${why}
+        ${f.offline ? note('offline', 'Found afterwards: planespotter wasn’t running when it came over, so it was looked up in adsb.lol’s records.') : ''}
+        ${f.delay != null ? note('timer', `A regular: ${esc(Math.abs(f.delay) <= 10 ? 'on time' : `${Math.abs(f.delay)} min ${f.delay > 0 ? 'late' : 'early'}`)} compared with its usual time.`) : ''}
+        ${f.noise_db != null ? note('mic', esc(`+${f.noise_db} dB louder than the background`)) : ''}
         ${wholeNote()}
         ${actionsHtml(thing)}
-        <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(f.hex)}&showTrace=${utcDay}" target="_blank" rel="noopener">Replay on adsb.lol ↗</a></div>
+        <div class="links">${wholeButton()}<a href="https://globe.adsb.lol/?icao=${esc(f.hex)}&showTrace=${utcDay}" target="_blank" rel="noopener">Replay on adsb.lol${icon('external')}</a></div>
       </div>`;
     }
     if (html !== lastDetailHtml) {
@@ -836,14 +933,14 @@ if (window.PlanespotterAndroid) {
         + (since ? ` Recording since ${since}.` : '');
     }
     $('#heat-actions').innerHTML = (data.route_cells || []).length
-      ? '<button class="linkbtn" data-action="fit-routes">See the whole routes ↗</button>'
-        + '<button class="linkbtn" data-action="fit-home">Back to home</button>'
+      ? `<button class="linkbtn" data-action="fit-routes">${icon('route')}See the whole routes</button>`
+        + `<button class="linkbtn" data-action="fit-home">${icon('locate')}Back to home</button>`
       : '';
     const routes = data.routes || [];
     $('#heat-routes').innerHTML = routes.length
       ? '<h3>Most common routes over your zone</h3>' + routes.map((r) => `
           <button data-route="${esc(`${r.origin} ${r.destination}`)}" title="Show these flights">
-            <span class="r">${esc(r.origin)} → ${esc(r.destination)}</span>
+            <span class="r">${esc(r.origin)}${icon('arrow-right')}${esc(r.destination)}</span>
             <span class="c">${esc([r.origin_city, r.destination_city].filter(Boolean).join(' → '))}</span>
             <span class="n">${r.flights}</span>
           </button>`).join('')
@@ -878,20 +975,24 @@ if (window.PlanespotterAndroid) {
     else {
       const n = state.live.length;
       const over = state.live.filter((p) => p.in_zone).length;
-      text = `${state.liveMeta && state.liveMeta.receiver ? 'Live from your receiver' : 'Live'} · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
+      const from = !state.liveMeta ? 'Live' : state.liveMeta.receiver ? 'Live from your receiver'
+        : state.liveMeta.backup ? 'Live from adsb.fi' : 'Live';
+      text = `${from} · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
       const every = state.liveMeta ? state.liveMeta.interval : 0;
       if (every > 45) text += ` · updates every ${every >= 90 ? `${Math.round(every / 60)} min` : `${every} s`}`;
-      if (state.quietNow) { text += ' · 🌙 quiet hours'; cls = 'quiet'; }
-      if (meter.on) text += ' · 🎙️ listening';
+      if (state.quietNow) { text += ' · quiet hours'; cls = 'quiet'; }
+      if (meter.on) text += ' · listening';
     }
     el.className = `status ${cls}`;
+    el.title = state.liveMeta && state.liveMeta.backup && !state.liveError
+      ? 'adsb.lol isn’t answering right now, so the planes are coming from adsb.fi until it’s back' : '';
     $('#status-text').textContent = text;
   }
 
   // ---------- the map ----------
   let map, overlay;
-  const PLANE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 64 64">'
-    + '<path fill="#fff" d="M32 3c2.1 0 3.5 2.4 3.5 5.6v14.7l21.7 12.9v5.9L35.5 35.3v12.6l7.3 5.6v4.9L32 55.6l-10.8 2.8v-4.9l7.3-5.6V35.3L6.8 42.1v-5.9l21.7-12.9V8.6C28.5 5.4 29.9 3 32 3z"/></svg>';
+  const PLANE_PATH = 'M32 3c2.1 0 3.5 2.4 3.5 5.6v14.7l21.7 12.9v5.9L35.5 35.3v12.6l7.3 5.6v4.9L32 55.6l-10.8 2.8v-4.9l7.3-5.6V35.3L6.8 42.1v-5.9l21.7-12.9V8.6C28.5 5.4 29.9 3 32 3z';
+  const PLANE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 64 64"><path fill="#fff" d="${PLANE_PATH}"/></svg>`;
   const PLANE_ICON = {
     iconAtlas: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(PLANE_SVG)}`,
     iconMapping: { plane: { x: 0, y: 0, width: 128, height: 128, mask: true } },
@@ -1000,7 +1101,7 @@ if (window.PlanespotterAndroid) {
       const left = tr.at - Date.now() / 1000;
       const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
         + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(tr.az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
-        <div class="what"><div class="head">${tr.body === 'Moon' ? '🌕' : '☀️'} ${esc(tr.label)} crosses the ${tr.body} · <strong>${left > 1 ? countdown(left) : 'now'}</strong></div>
+        <div class="what"><div class="head">${icon(tr.body === 'Moon' ? 'moon' : 'sun')}<span>${esc(tr.label)} crosses the ${tr.body}</span> <strong>${left > 1 ? countdown(left) : 'now'}</strong></div>
         <div class="sub"><span>Look <strong>${compass(tr.az)}, ${Math.round(tr.el)}° up</strong> at the ${tr.body}. It’s over in a split second${tr.body === 'Sun' ? '. Only ever through a solar filter!' : ': start filming early'}.</span></div></div>`;
       if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
       el.hidden = false;
@@ -1012,8 +1113,8 @@ if (window.PlanespotterAndroid) {
       // The space station (or another bright satellite) is crossing your sky right now.
       const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
         + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(sat.az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
-        <div class="what"><div class="head">Look up · <strong>${compass(sat.az)}, ${Math.round(sat.el)}° up</strong></div>
-        <div class="sub"><span>🛰️ <strong>${esc(sat.name)}</strong> is crossing your sky now: a bright, steady star moving fast</span></div></div>`;
+        <div class="what"><div class="head">Look up <strong>${compass(sat.az)}, ${Math.round(sat.el)}° up</strong></div>
+        <div class="sub">${icon('satellite')}<span><strong>${esc(sat.name)}</strong> is crossing your sky now: a bright, steady star moving fast</span></div></div>`;
       if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
       el.hidden = false;
       el.onclick = null;
@@ -1022,24 +1123,24 @@ if (window.PlanespotterAndroid) {
     const target = state.replay.on ? null : lookUpTarget(now);
     if (!target) { el.hidden = true; lastLookUpHtml = ''; return; }
     const { p, miles, az, up, eta } = target;
-    const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+    const info = planeInfo(p);
     const when = eta === 0 ? 'overhead now' : eta < 60 ? `in ${Math.round(eta / 5) * 5 || 5} seconds` : `in ${Math.round(eta / 60)} min`;
-    const note = skyNote(p, miles, az, up);
+    const sky = skyNote(p, miles, az, up);
     const seen = sawIt(p.hex);
     const html = `<div class="dial" aria-hidden="true"><span class="n">N</span>`
       + `<svg class="arrow" viewBox="0 0 24 24" style="transform: rotate(${Math.round(az)}deg)"><path d="M12 2.5 18 20l-6-3.6L6 20z"/></svg></div>
-      <div class="what"><div class="head">Look up · <strong>${compass(az)}, ${Math.round(up)}° up</strong></div>
-      <div class="sub">${logo(p.callsign)}<span><strong>${esc(label(p))}</strong> ${esc(routeShort(info))} · ${when} · ${esc(fists(up))}</span></div>
-      ${note ? `<div class="sky-note">${esc(note)}</div>` : ''}</div>
-      <div class="lookup-buttons"><button class="saw${seen ? ' done' : ''}" data-saw="${esc(p.hex)}" data-callsign="${esc(p.callsign || '')}" title="Tap when you've spotted it in the sky">${seen ? '✓ Seen' : '👀 I saw it'}</button>
-      ${p.type ? `<button class="saw guess" data-guess="${esc(p.hex)}" title="Guess what kind of plane it is">🎯 Guess</button>` : ''}</div>`;
+      <div class="what"><div class="head">Look up <strong>${compass(az)}, ${Math.round(up)}° up</strong></div>
+      <div class="sub">${logo(p.callsign)}<span><strong>${esc(label(p))}</strong> ${esc(routeShort(info))}${hasRoute(info) ? ' · ' : ''}${when} · ${esc(fists(up))}</span></div>
+      ${sky ? `<div class="sky-note">${icon(sky.icon)}<span>${esc(sky.text)}</span></div>` : ''}</div>
+      <div class="lookup-buttons"><button class="saw${seen ? ' done' : ''}" data-saw="${esc(p.hex)}" data-callsign="${esc(p.callsign || '')}" title="Tap when you've spotted it in the sky" aria-label="I saw it">${icon(seen ? 'check' : 'eye')}<span>${seen ? 'Seen' : 'I saw it'}</span></button>
+      ${p.type ? `<button class="saw guess" data-guess="${esc(p.hex)}" title="Guess what kind of plane it is" aria-label="Guess the plane">${icon('target')}<span>Guess</span></button>` : ''}</div>`;
     if (html !== lastLookUpHtml) { el.innerHTML = html; lastLookUpHtml = html; }
     el.hidden = false;
     el.onclick = (e) => { if (!e.target.closest('.saw')) select('live', p.hex); };
     // Speak once per plane, as it's about to come over (after its airline and route have loaded, if they're coming).
     if (state.voice && eta <= 45 && !state.quietNow && (infoFor(p) !== null || eta < 15)) {
       const last = state.spoken.get(p.hex) || 0;
-      if (Date.now() - last > 20 * 60000) { state.spoken.set(p.hex, Date.now()); say(announcement(target, info, note)); }
+      if (Date.now() - last > 20 * 60000) { state.spoken.set(p.hex, Date.now()); say(announcement(target, info, sky)); }
     }
     // A chime when a plane is about to come over (once per plane).
     if (state.chime && eta <= 60) {
@@ -1074,7 +1175,7 @@ if (window.PlanespotterAndroid) {
     saved.set('chime', on);
     const b = $('#btn-chime');
     b.setAttribute('aria-pressed', String(on));
-    b.textContent = on ? '🔔 Chime on' : '🔕 Chime';
+    b.innerHTML = `${icon(on ? 'bell-ring' : 'bell-off')}<span class="tool-label">Chime</span>`;
     if (on) chime();  // also unlocks sound in the browser, which needs a click first
   }
 
@@ -1094,28 +1195,28 @@ if (window.PlanespotterAndroid) {
     return Math.acos(Math.max(-1, Math.min(1, c))) / r;
   }
 
-  /** "Above the overcast at 1,800 ft: listen for it", "After dark: look for its lights"... or '' if it's easy to see. */
+  /** {icon, text}: "Above the overcast at 1,800 ft: listen for it", "After dark: look for its lights"... or null if it's easy to see. */
   function skyNote(p, miles, az, up) {
     const s = state.sky;
-    if (!s) return '';
+    if (!s) return null;
     const w = s.weather, sun = s.sun || {};
     if (w && p.alt_ft != null) {
       const height = p.alt_ft - (state.config.home_elevation_ft || 0);
       if (w.ceiling_ft != null && height > w.ceiling_ft + 200) {
         const layer = w.layers.find((l) => l.base_ft === w.ceiling_ft && SOLID.includes(l.cover)) || { cover: 'OVC' };
         const at = `${w.ceiling_ft.toLocaleString()} ft`;
-        return layer.cover === 'BKN' ? `⛅ Above broken cloud at ${at}: you might catch it through a gap`
-          : `☁️ Above the ${COVER[layer.cover]} at ${at}: listen for it`;
+        return layer.cover === 'BKN' ? { icon: 'cloud-sun', text: `Above broken cloud at ${at}: you might catch it through a gap` }
+          : { icon: 'cloud', text: `Above the ${COVER[layer.cover]} at ${at}: listen for it` };
       }
       const slant = Math.hypot(miles, Math.max(0, height) / 5280);
-      if (w.visibility_miles != null && w.visibility_miles < slant) return `🌫️ Visibility is only ${w.visibility_miles} mi, so it may be hard to see`;
+      if (w.visibility_miles != null && w.visibility_miles < slant) return { icon: 'fog', text: `Visibility is only ${w.visibility_miles} mi, so it may be hard to see` };
     }
     if (sun.daylight === 'day' && sun.altitude > 0 && angleBetween(az, up, sun.azimuth, sun.altitude) < 20) {
-      return '😎 It’s near the sun: don’t look straight at it';
+      return { icon: 'sun', text: 'It’s near the sun: don’t look straight at it' };
     }
-    if (sun.daylight === 'night') return '🌙 After dark: look for its flashing lights';
-    if (sun.daylight === 'twilight') return '🌆 Getting dark: look for its lights';
-    return '';
+    if (sun.daylight === 'night') return { icon: 'moon', text: 'After dark: look for its flashing lights' };
+    if (sun.daylight === 'twilight') return { icon: 'sunset', text: 'Getting dark: look for its lights' };
+    return null;
   }
 
   function renderSkyLine() {
@@ -1123,18 +1224,22 @@ if (window.PlanespotterAndroid) {
     const s = state.sky;
     if (!s) { el.hidden = true; return; }
     const w = s.weather, dark = s.sun && s.sun.daylight !== 'day';
-    let text;
-    if (!w) text = dark ? '🌙 Dark out' : '☀️ Daylight';
+    let text, ic;
+    if (!w) { text = dark ? 'Dark out' : 'Daylight'; ic = dark ? 'moon' : 'sun'; }
     else {
       const solid = w.layers.find((l) => SOLID.includes(l.cover));
       const top = w.layers[0];
-      if (solid) text = `${solid.cover === 'BKN' ? '🌥️ Broken cloud' : solid.cover === 'OVX' ? '🌫️ Fog' : '☁️ Overcast'} at ${solid.base_ft.toLocaleString()} ft`;
-      else if (top) text = `${top.cover === 'SCT' ? '⛅' : '🌤️'} ${COVER[top.cover][0].toUpperCase()}${COVER[top.cover].slice(1)} at ${top.base_ft.toLocaleString()} ft`;
-      else text = dark ? '🌙 Clear night' : '☀️ Clear skies';
-      if (w.visibility_miles != null && w.visibility_miles < 5) text += ` · 🌫️ ${w.visibility_miles} mi visibility`;
-      if (dark && !text.startsWith('🌙')) text += ' · 🌙 dark';
+      if (solid) {
+        text = `${solid.cover === 'BKN' ? 'Broken cloud' : solid.cover === 'OVX' ? 'Fog' : 'Overcast'} at ${solid.base_ft.toLocaleString()} ft`;
+        ic = solid.cover === 'BKN' ? 'cloudy' : solid.cover === 'OVX' ? 'fog' : 'cloud';
+      } else if (top) {
+        text = `${COVER[top.cover][0].toUpperCase()}${COVER[top.cover].slice(1)} at ${top.base_ft.toLocaleString()} ft`;
+        ic = dark ? 'cloud-moon' : 'cloud-sun';
+      } else { text = dark ? 'Clear night' : 'Clear skies'; ic = dark ? 'moon' : 'sun'; }
+      if (w.visibility_miles != null && w.visibility_miles < 5) text += ` · ${w.visibility_miles} mi visibility`;
+      if (dark && ic !== 'moon' && ic !== 'cloud-moon') text += ' · dark';
     }
-    el.textContent = text;
+    el.innerHTML = `${icon(ic)}<span>${esc(text)}</span>`;
     el.title = w ? `${w.station} ${w.name} (${w.distance_miles} mi away), ${new Date(w.observed * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}:\n${w.raw}` : '';
     el.hidden = false;
   }
@@ -1153,7 +1258,7 @@ if (window.PlanespotterAndroid) {
   const DIRECTION_WORDS = { N: 'north', NE: 'north-east', E: 'east', SE: 'south-east', S: 'south', SW: 'south-west', W: 'west', NW: 'north-west' };
 
   /** "Delta flight 573 from Fort Lauderdale, coming over in about 30 seconds. Look north-east, 25 degrees up." */
-  function announcement({ p, az, up, eta }, info, note) {
+  function announcement({ p, az, up, eta }, info, sky) {
     const number = /^[A-Z]{3}(\d+[A-Z]?)$/.exec(p.callsign || '');
     const airline = (info.airline || '').replace(/\s+(Air ?Lines|Airways|Airlines)$/i, '');
     const name = airline && number ? `${airline} flight ${number[1]}` : airline ? `${airline}, ${label(p)}` : label(p);
@@ -1161,8 +1266,8 @@ if (window.PlanespotterAndroid) {
     const when = eta === 0 ? ' is overhead now' : `, coming over in about ${eta < 60 ? `${Math.max(5, Math.round(eta / 5) * 5)} seconds` : 'a minute'}`;
     const where = up >= 70 ? 'Look straight up.' : `Look ${DIRECTION_WORDS[compass(az)]}, ${Math.round(up)} degrees up.`;
     const alt = p.alt_ft ? ` It's at ${(Math.round(p.alt_ft / 100) * 100).toLocaleString()} feet.` : '';
-    const sky = note ? ` ${note.replace(/^\S+\s/, '').replace(/:\s*/, ', ')}.` : '';  // "After dark, look for its flashing lights."
-    return `${name}${from}${when}. ${where}${alt}${sky}`;
+    const seeing = sky ? ` ${sky.text.replace(/:\s*/, ', ')}.` : '';  // "After dark, look for its flashing lights."
+    return `${name}${from}${when}. ${where}${alt}${seeing}`;
   }
 
   function setVoice(on, announce = true) {
@@ -1170,7 +1275,7 @@ if (window.PlanespotterAndroid) {
     saved.set('voice', state.voice);
     const b = $('#btn-voice');
     b.setAttribute('aria-pressed', String(state.voice));
-    b.textContent = state.voice ? '🗣️ Voice on' : '🔇 Voice';
+    b.innerHTML = `${icon(state.voice ? 'volume' : 'mute')}<span class="tool-label">Voice</span>`;
     if (!canSpeak) { b.disabled = true; b.title = 'This browser can’t speak'; }
     if (announce && state.voice) say('Voice announcements are on.');  // also unlocks speech, which needs a tap first
   }
@@ -1183,10 +1288,10 @@ if (window.PlanespotterAndroid) {
     const el = $('#upnext');
     const next = state.tab === 'live' && state.config && !state.replay.on ? predictions(now, 600).slice(0, 4) : [];
     if (!next.length) { el.hidden = true; lastUpNext = ''; return; }
-    const html = '<div class="upnext-head">Coming over next <span>if they fly straight on</span></div>' + next.map(({ p, az, eta }) => {
-      const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+    const html = `<div class="upnext-head">${icon('timer')}Coming over next <span>if they fly straight on</span></div>` + next.map(({ p, az, eta }) => {
+      const info = planeInfo(p);
       return `<button class="up" data-hex="${esc(p.hex)}">${logo(p.callsign)}
-        <span class="who"><strong>${esc(label(p))}</strong> <span class="r">${esc(routeShort(info))}</span></span>
+        <span class="who"><strong>${esc(label(p))}</strong>${routeHtml(info)}</span>
         <span class="from">${eta === 0 ? 'overhead' : compass(az)}</span>
         <span class="t${eta === 0 ? ' now' : ''}">${eta === 0 ? 'now' : countdown(eta)}</span></button>`;
     }).join('');
@@ -1220,7 +1325,7 @@ if (window.PlanespotterAndroid) {
     renderDetail();
     renderLookUp(performance.now());
     const s = state.yours.streak;
-    if (!undo && s) toast(s.current > 1 ? `👀 Nice spot! ${s.current}-day streak 🔥` : '👀 Nice spot! Spot one tomorrow to start a streak.');
+    if (!undo && s) toast(s.current > 1 ? `Nice spot! ${s.current}-day streak` : 'Nice spot! Spot one tomorrow to start a streak.');
     if (state.tab === 'collection') loadCollection();
   }
 
@@ -1276,7 +1381,7 @@ if (window.PlanespotterAndroid) {
       const full = await shrink(file, 1600, 0.85);
       const thumb = await shrink(file, 480, 0.8);
       state.yours = await postJSON('api/photo', { ...photoTarget, full: full.data, thumb: thumb.data, width: full.width, height: full.height });
-      toast('📸 Photo added');
+      toast('Photo added');
     } catch (err) {
       toast(err.message);
     }
@@ -1403,7 +1508,7 @@ if (window.PlanespotterAndroid) {
     g.fillStyle = bg; g.fillRect(0, 0, W, H);
 
     const f = thing.flight, p = thing.plane;
-    const info = p ? { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) } : f;
+    const info = p ? planeInfo(p) : f;
     const callsign = label(f || p);
     const mine = photosOf(thing)[0];
     const photo = mine ? await loadImage(`photo/${mine.id}.jpg`) : null;
@@ -1426,7 +1531,9 @@ if (window.PlanespotterAndroid) {
         tag(info.origin, ends[0]);
         tag(p ? '' : info.destination, ends[ends.length - 1]);
       } else {
-        g.font = `200px ${CARD_FONT}`; g.fillStyle = ACC; g.fillText('✈', W / 2 - 100, 440);
+        // No path to draw: a big plane instead.
+        g.save(); g.translate(W / 2, 370); g.rotate(Math.PI / 4); g.scale(5.2, 5.2); g.translate(-32, -32);
+        g.fillStyle = ACC; g.fill(new Path2D(PLANE_PATH)); g.restore();
       }
     }
 
@@ -1482,7 +1589,7 @@ if (window.PlanespotterAndroid) {
     const name = `${label(thing.flight || thing.plane)}.png`;
     const file = new File([blob], name, { type: 'image/png' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], title: name }); toast('Shared ✈'); return; }
+      try { await navigator.share({ files: [file], title: name }); toast('Shared'); return; }
       catch (err) { if (err.name === 'AbortError') return; }
     }
     const url = URL.createObjectURL(blob);
@@ -1508,14 +1615,14 @@ if (window.PlanespotterAndroid) {
     const n = state.noise;
     const secure = window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
     const meterCard = `<div class="meter-card">
-      <div class="meter-head"><strong>🎙️ Noise meter</strong>
+      <div class="meter-head"><strong>${icon('mic')}Noise meter</strong>
         <button class="chip" data-action="meter" aria-pressed="${meter.on}" ${secure ? '' : 'disabled'}>${meter.on ? 'Stop listening' : 'Start listening'}</button></div>
       <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
       <div class="meter-note" id="meter-note">${secure
         ? (meter.on ? 'Listening…' : 'Uses this device’s microphone to measure how loud each plane over your zone is. Leave this page open (it can be in the background). Nothing is recorded; only the loudness level, once a second, is kept for a few days.')
         : `The microphone only works on the computer running planespotter (<a href="http://localhost:${location.port || 8765}/">localhost</a>)${state.config && state.config.secure_url ? ` or on the <a href="${esc(state.config.secure_url)}/">secure address</a>` : ''}.`}</div>
     </div>`;
-    if (!n) return `<div class="collection">${meterCard}${empty('Loading the noise log…')}</div>`;
+    if (!n) return `<div class="collection">${meterCard}${empty('Loading the noise log…', 'noise')}</div>`;
     const tile = (k, v, note) => `<div class="ctile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>${note ? `<div class="note">${esc(note)}</div>` : ''}</div>`;
     const range = [7, 30, 90].map((d) => `<button class="chip" data-noise-days="${d}" aria-pressed="${d === n.days}">${d} days</button>`).join('');
     const nights = n.nights.map((e) => e.count);
@@ -1540,8 +1647,8 @@ if (window.PlanespotterAndroid) {
       ${n.latest_night.length ? n.latest_night.map((f) => noiseRow(f, fmtAlt(f.alt_ft))).join('') : '<p class="csub">No planes at night in this time.</p>'}
       <h3>Spreadsheet</h3>
       <p class="csub">Every plane over your zone with its time, height, aircraft and (if measured) loudness. Opens in Numbers, Excel or Google Sheets: handy for a complaint to the airport or your council.</p>
-      <div class="downloads"><a class="btn" href="api/noise.csv?days=${n.days}" download>⬇ Last ${n.days} days</a>
-        <a class="btn ghost" href="api/noise.csv?days=0" download>⬇ Everything</a></div>
+      <div class="downloads"><a class="btn" href="api/noise.csv?days=${n.days}" download>${icon('download')}Last ${n.days} days</a>
+        <a class="btn ghost" href="api/noise.csv?days=0" download>${icon('download')}Everything</a></div>
     </div>`;
   }
 
@@ -1630,35 +1737,35 @@ if (window.PlanespotterAndroid) {
     const star = c.star;
     const s = c.streak || { current: 0, best: 0, total: 0 };
     const starHtml = star ? `<button class="star" data-open-flight="${star.id}">${logo(star.callsign, true)}
-        <div><div class="k">⭐ Plane of the ${star.yesterday ? 'day (yesterday)' : 'day'}</div>
+        <div><div class="k">${icon('star')}Plane of the ${star.yesterday ? 'day (yesterday)' : 'day'}</div>
         <div class="v">${esc(star.label)} <span class="muted">${esc([star.airline, star.route].filter(Boolean).join(' · '))}</span></div>
         <div class="why">${esc(star.why)}</div></div></button>` : '';
     const streak = `<div class="ctiles">
-      <div class="ctile"><div class="k">🔥 Streak</div><div class="v">${s.current} day${s.current === 1 ? '' : 's'}</div>
+      <div class="ctile"><div class="k">${icon('flame')}Streak</div><div class="v">${s.current} day${s.current === 1 ? '' : 's'}</div>
         <div class="note">${s.current && !s.alive_today ? 'spot one today to keep it going' : `best ${s.best} day${s.best === 1 ? '' : 's'}`}</div></div>
-      <div class="ctile"><div class="k">👀 Seen with your own eyes</div><div class="v">${s.total.toLocaleString()}</div>
+      <div class="ctile"><div class="k">${icon('eye')}Seen with your own eyes</div><div class="v">${s.total.toLocaleString()}</div>
         <div class="note">tap “I saw it” when you spot one</div></div></div>`;
-    const recs = (c.records || []).map((r) => `<button class="crow flight" data-open-flight="${r.id}"><span class="cflag">${r.emoji}</span>
+    const recs = (c.records || []).map((r) => `<button class="crow flight" data-open-flight="${r.id}"><span class="cflag">${icon(RECORD_ICONS[r.key] || 'award')}</span>
         <span class="cname"><strong>${esc(r.name)}</strong> <span class="muted">${esc(r.label)}${r.route ? ` · ${esc(r.route)}` : ''} · ${esc(new Date(r.when * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }))}</span></span>
         <span class="cnum">${esc(r.value)}</span></button>`).join('');
     const b = c.busiest || {};
-    const busy = [b.day ? `<div class="crow"><span class="cflag">📅</span><span class="cname"><strong>Busiest day</strong> <span class="muted">${esc(new Date(`${b.day.date}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }))}</span></span><span class="cnum">${b.day.count} planes</span></div>` : '',
-      b.hour ? `<div class="crow"><span class="cflag">⏱️</span><span class="cname"><strong>Busiest hour</strong> <span class="muted">${esc(shortWhen(b.hour.start))}</span></span><span class="cnum">${b.hour.count} planes</span></div>` : ''].join('');
+    const busy = [b.day ? `<div class="crow"><span class="cflag">${icon('calendar')}</span><span class="cname"><strong>Busiest day</strong> <span class="muted">${esc(new Date(`${b.day.date}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }))}</span></span><span class="cnum">${b.day.count} planes</span></div>` : '',
+      b.hour ? `<div class="crow"><span class="cflag">${icon('timer')}</span><span class="cname"><strong>Busiest hour</strong> <span class="muted">${esc(shortWhen(b.hour.start))}</span></span><span class="cnum">${b.hour.count} planes</span></div>` : ''].join('');
     const photos = state.yours.photos;
     const gallery = photos.length
       ? `<div class="gallery">${photos.slice(0, 60).map((ph) => `<button data-view-photo="${ph.id}" title="${esc(ph.callsign || ph.hex)}"><img src="photo/${ph.id}-thumb.jpg" alt="${esc(ph.callsign || '')}" loading="lazy"></button>`).join('')}</div>`
-      : '<p class="csub">Select a plane and tap “📷 Add photo” to keep your own pictures of it here.</p>';
+      : '<p class="csub">Select a plane and tap “Add photo” to keep your own pictures of it here.</p>';
     return {
       top: starHtml + streak + `<div class="wrapped-links">
-          <button class="btn ghost" data-wrapped="${esc(c.year)}">✨ Your ${esc(c.year)} in planes</button>
+          <button class="btn ghost" data-wrapped="${esc(c.year)}">${icon('sparkles')}Your ${esc(c.year)} in planes</button>
           <button class="btn ghost" data-wrapped="${esc(c.month)}">${esc(new Date(`${c.month}-15T12:00:00`).toLocaleDateString([], { month: 'long' }))} in planes</button></div>`
         + bingoHtml(c.bingo)
-        + (c.quiz && c.quiz.answered ? `<div class="ctiles"><div class="ctile"><div class="k">🎯 Guess the plane</div><div class="v">${c.quiz.right} / ${c.quiz.answered}</div>
+        + (c.quiz && c.quiz.answered ? `<div class="ctiles"><div class="ctile"><div class="k">${icon('target')}Guess the plane</div><div class="v">${c.quiz.right} / ${c.quiz.answered}</div>
             <div class="note">${c.quiz.percent}% right · best run ${c.quiz.best_run}</div></div></div>` : ''),
       records: recs || busy ? `<h3>Records</h3>${recs}${busy}` : '',
       photos: `<h3>Your photos <span>${photos.length}</span></h3>${gallery}
-        <div class="wrapped-links"><button class="btn ghost" data-action="add-photos">📷 Add photos from a spotting session</button>
-        <a class="btn ghost" href="${esc(location.origin.replace(/^https?:/, 'webcal:'))}/calendar.ics" title="Space station passes and the best times to look up, in your calendar">📅 Add to my calendar</a></div>
+        <div class="wrapped-links"><button class="btn ghost" data-action="add-photos">${icon('images')}Add photos from a spotting session</button>
+        <a class="btn ghost" href="${esc(location.origin.replace(/^https?:/, 'webcal:'))}/calendar.ics" title="Space station passes and the best times to look up, in your calendar">${icon('calendar-plus')}Add to my calendar</a></div>
         <p class="hint">Pick several photos at once: each one is matched to the plane that was over your zone when you took it.</p>`
         + friendsHtml()
         + ((c.friends || []).length ? `<h3>Old friends <span>planes you see again and again</span></h3>` + c.friends.map((f) => `
@@ -1673,7 +1780,7 @@ if (window.PlanespotterAndroid) {
     const el = $('#flow-line');
     const text = state.flow && state.flow.text;
     el.hidden = !text;
-    if (text) { el.textContent = `🛬 ${text}`; el.title = 'Worked out from planes landing and taking off near the airport'; }
+    if (text) { el.innerHTML = `${icon('landing')}<span>${esc(text)}</span>`; el.title = 'Worked out from planes landing and taking off near the airport'; }
   }
 
   async function loadToday() {
@@ -1706,18 +1813,18 @@ if (window.PlanespotterAndroid) {
     let html = '';
     const b = state.today;
     if (b && b.flights && b.flights.length) {
-      const icon = { seen: '✓', due: '🕒', late: '⏳', missing: '—' };
-      html += `<div class="list-section">Your regular flights today</div>` + b.flights.map((f) => `
+      const mark = { seen: 'check', due: 'clock', late: 'hourglass' };
+      html += `<div class="list-section">${icon('calendar')}Your regular flights today</div>` + b.flights.map((f) => `
         <div class="reg ${f.state}"${f.id ? ` data-open-flight="${f.id}"` : ''}><span class="t">${esc(f.usual)}</span>
           ${logo(f.callsign)}<span class="who"><strong>${esc(f.callsign)}</strong> <span class="muted">${esc(f.origin && f.destination ? `${f.origin} → ${f.destination}` : f.airline || '')}</span></span>
-          <span class="st">${icon[f.state] || ''} ${esc(f.text)}</span></div>`).join('');
+          <span class="st">${mark[f.state] ? icon(mark[f.state]) : ''}${esc(f.text)}</span></div>`).join('');
     }
     const passes = ((state.space && state.space.passes) || []).filter((p) => p.visible && p.max_el >= 15).slice(0, 3);
     if (passes.length) {
-      html += '<div class="list-section">🛰️ Space station and friends: when to look</div>' + passes.map((p) => `
+      html += `<div class="list-section">${icon('satellite')}Space station and friends: when to look</div>` + passes.map((p) => `
         <div class="reg sat"><span class="t">${esc(clockTime(p.visible_from || p.start))}</span>
           <span class="who"><strong>${esc(p.name)}</strong> <span class="muted">${esc(dayWord(p.visible_from || p.start))}</span></span>
-          <span class="st">${esc(p.start_dir)} → ${esc(p.end_dir)}, up to ${p.max_el}°</span></div>`).join('')
+          <span class="st">${esc(p.start_dir)}${icon('arrow-right')}${esc(p.end_dir)}, up to ${p.max_el}°</span></div>`).join('')
         + '<p class="hint">A bright, steady star moving fast across the sky, with no blinking lights.</p>';
     }
     return html;
@@ -1751,7 +1858,7 @@ if (window.PlanespotterAndroid) {
     catch (err) { toast(`Couldn’t do that: ${err.message}`); return; }
     lastDetailHtml = '';
     renderDetail();
-    toast(undo ? 'Stopped following' : '🔔 Following: you’ll get a notification on your phone when it lands');
+    toast(undo ? 'Stopped following' : 'Following: you’ll get a notification on your phone when it lands');
   }
 
   // ---------- guess the plane ----------
@@ -1762,7 +1869,7 @@ if (window.PlanespotterAndroid) {
     state.quiz = { ...q, hex };
     const p = state.live.find((x) => x.hex === hex);
     const where = p ? `${compass(p.bearing)} of you, ${fmtAlt(p.alt_ft)}` : '';
-    openOverlay(`<div class="quiz"><div class="k">🎯 Guess the plane</div>
+    openOverlay(`<div class="quiz"><div class="k">${icon('target')}Guess the plane</div>
       <h2>What kind of plane is ${esc(p ? label(p) : 'it')}?</h2>
       <p class="muted">Look up (${esc(where)}) and pick one. Score so far: ${q.score.right} of ${q.score.answered}.</p>
       <div class="quiz-options">${q.options.map((o) => `<button class="btn ghost" data-quiz-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>
@@ -1781,7 +1888,7 @@ if (window.PlanespotterAndroid) {
     }
     const p = state.live.find((x) => x.hex === q.hex);
     const info = p ? infoFor(p) || {} : {};
-    $('#quiz-result').innerHTML = `<p class="quiz-verdict">${r.correct ? '✓ Right!' : '✗ Not quite.'} It's ${esc(info.aircraft_desc || r.answer)}${info.airline ? ` (${esc(info.airline)})` : ''}.</p>
+    $('#quiz-result').innerHTML = `<p class="quiz-verdict ${r.correct ? 'right' : 'wrong'}">${icon(r.correct ? 'circle-check' : 'x')}<span>${r.correct ? 'Right!' : 'Not quite.'} It's ${esc(info.aircraft_desc || r.answer)}${info.airline ? ` (${esc(info.airline)})` : ''}.</span></p>
       <p class="muted">Score: ${r.score.right} of ${r.score.answered}${r.score.run > 1 ? ` · ${r.score.run} right in a row` : ''}</p>`;
     state.quiz = null;
   }
@@ -1793,8 +1900,8 @@ if (window.PlanespotterAndroid) {
     return `<h3>Spotting bingo <span>${b.filled} of 9${b.lines ? ` · ${b.lines} line${b.lines === 1 ? '' : 's'}` : ''}</span></h3>
       <div class="bingo">${b.squares.map((sq, i) => `<div class="sq${sq.by ? ' hit' : ''}${lit.has(i) ? ' line' : ''}"
         ${sq.by ? `data-open-flight="${sq.by.id}" title="${esc(sq.by.label)}, ${esc(shortWhen(sq.by.when))}"` : ''}>
-        <div class="e">${sq.emoji}</div><div class="x">${esc(sq.text)}</div>${sq.by ? `<div class="by">${esc(sq.by.label)}</div>` : ''}</div>`).join('')}</div>
-      <p class="hint">A new card every Monday. Squares fill in by themselves as planes come over.${b.full_house ? ' 🎉 Full house!' : ''}</p>`;
+        <div class="e">${icon(BINGO_ICONS[sq.key] || 'plane')}</div><div class="x">${esc(sq.text)}</div>${sq.by ? `<div class="by">${esc(sq.by.label)}</div>` : ''}</div>`).join('')}</div>
+      <p class="hint">A new card every Monday. Squares fill in by themselves as planes come over.${b.full_house ? ' <strong>Full house!</strong>' : ''}</p>`;
   }
 
   async function openWrapped(period) {
@@ -1807,7 +1914,7 @@ if (window.PlanespotterAndroid) {
     const ticks = w.year ? w.ticks.map((t, i) => [i, t]).filter(([i]) => i % 2 === 0)
       : w.ticks.map((t, i) => [i, t]).filter(([i]) => i % 7 === 0);
     openOverlay(`<div class="wrapped">
-      <div class="k">✈ planespotter</div><h2>${esc(w.name)} in planes</h2>
+      <div class="k">${icon('sparkles')}planespotter</div><h2>${esc(w.name)} in planes</h2>
       <div class="wgrid">
         ${big('Planes over you', w.planes.toLocaleString())}
         ${big('Airlines', w.airlines, w.new_airlines ? `${w.new_airlines} new` : '')}
@@ -1828,8 +1935,8 @@ if (window.PlanespotterAndroid) {
       </div>
       <h3>${w.year ? 'Planes by month' : 'Planes by day'}</h3>
       ${columnChart(w.chart, tips, ticks)}
-      ${w.offline ? `<p class="muted">Includes ${w.offline} found while planespotter was off 📴</p>` : ''}
-      <div class="overlay-actions" style="margin-top:12px"><button class="btn" data-action="share-wrapped">↗ Share</button></div>
+      ${w.offline ? `<p class="muted">Includes ${w.offline} found while planespotter was off.</p>` : ''}
+      <div class="overlay-actions" style="margin-top:12px"><button class="btn" data-action="share-wrapped">${icon('share')}Share</button></div>
     </div>`, true);
   }
 
@@ -1878,11 +1985,11 @@ if (window.PlanespotterAndroid) {
     openOverlay(`<div class="profile">
       ${p.photo_url ? `<img class="big-photo" src="${esc(p.photo_url)}" alt="">` : ''}
       <div class="title-row" style="margin-top:10px">${logo(p.callsign, true)}<div><h2>${esc(p.registration || p.hex.toUpperCase())}</h2>
-        <div class="muted">${esc([p.aircraft, p.airline || p.owner].filter(Boolean).join(' · '))}${p.country ? ` · ${p.country.flag} ${esc(p.country.name)}` : ''}</div></div></div>
+        <div class="muted">${esc([p.aircraft, p.airline || p.owner].filter(Boolean).join(' · '))}${p.country ? ` · ${flagImg(p.country.code, 'flag-inline')} ${esc(p.country.name)}` : ''}</div></div></div>
       <div class="stats">${stat('Seen', `${p.times} time${p.times === 1 ? '' : 's'}`)}${stat('First', new Date(p.first_seen * 1000).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }))}${stat('Usually', `${String(p.usual_hour).padStart(2, '0')}:00`)}</div>
       ${p.routes.length ? `<h3>Routes</h3>${p.routes.map(([r, n]) => `<div class="crow"><span class="cname">${esc(r)}</span><span class="cnum">${n}</span></div>`).join('')}` : ''}
       <h3>Every visit</h3>${p.visits.map((v) => `<button class="crow flight" data-open-flight="${v.id}"><span class="cname"><strong>${esc(shortWhen(v.when))}</strong>
-        <span class="muted">${esc([v.callsign, v.route].filter(Boolean).join(' · '))}${v.offline ? ' · 📴' : ''}</span></span><span class="cnum">${esc(v.alt)}</span></button>`).join('')}
+        <span class="muted">${esc([v.callsign, v.route].filter(Boolean).join(' · '))}${v.offline ? ' · found afterwards' : ''}</span></span><span class="cnum">${esc(v.alt)}</span></button>`).join('')}
     </div>`, true);
   }
 
@@ -1895,14 +2002,14 @@ if (window.PlanespotterAndroid) {
     const next = predictions(now, 900).slice(0, 4);
     const el = $('#kiosk-next');
     const sat = satTarget();
-    let html = sat ? `<div class="kn sat"><span class="who">🛰️ ${esc(sat.name)}</span><span class="t">look ${compass(sat.az)}, ${Math.round(sat.el)}° up</span></div>` : '';
+    let html = sat ? `<div class="kn sat"><span class="who">${icon('satellite')}${esc(sat.name)}</span><span class="t">look ${compass(sat.az)}, ${Math.round(sat.el)}° up</span></div>` : '';
     html += next.length ? next.map(({ p, eta, az }) => {
-      const info = { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) };
+      const info = planeInfo(p);
       return `<div class="kn">${logo(p.callsign, true)}<span class="who"><strong>${esc(label(p))}</strong>
         <span class="r">${esc([routeShort(info), info.airline].filter(Boolean).join(' · '))}</span></span>
         <span class="t${eta === 0 ? ' now' : ''}">${eta === 0 ? 'overhead' : countdown(eta)}<small>${compass(az)}</small></span></div>`;
     }).join('') : '<div class="kn quiet">No planes due in the next 15 minutes</div>';
-    if (state.flow && state.flow.text) html += `<div class="kflow">🛬 ${esc(state.flow.text)}</div>`;
+    if (state.flow && state.flow.text) html += `<div class="kflow">${icon('landing')}${esc(state.flow.text)}</div>`;
     if (html !== el.dataset.html) { el.innerHTML = html; el.dataset.html = html; }
   }
 
@@ -1948,7 +2055,7 @@ if (window.PlanespotterAndroid) {
     recorder.onstop = () => {
       map.off('render', draw);
       recorder = null;
-      $('#replay-record').textContent = '🎬 Save video';
+      $('#replay-record').innerHTML = `${icon('video')}Save video`;
       state.replay.playing = false;
       updateReplayBar();
       const blob = new Blob(chunks, { type: type.split(';')[0] });
@@ -1959,7 +2066,7 @@ if (window.PlanespotterAndroid) {
         <div class="overlay-actions"><a class="btn" href="${url}" download="${name}">Download</a></div></div>`, true);
     };
     recorder.start(1000);
-    $('#replay-record').textContent = '⏹ Stop';
+    $('#replay-record').innerHTML = `${icon('stop', 'fill')}Stop`;
     // Record from the first plane of the day to the end, at the chosen speed.
     const r = state.replay;
     const firsts = r.flights.map((f) => f.ts[0]);
@@ -1978,10 +2085,10 @@ if (window.PlanespotterAndroid) {
     let o = null;
     try { o = await getJSON('api/outlook'); } catch { /* keep the last one */ }
     if (!o) return;
-    const lines = [o.best, o.contrails, o.not_a_plane].filter(Boolean);
+    const lines = [['eye', o.best], ['wind', o.contrails], ['sparkles', o.not_a_plane]].filter(([, text]) => text);
     const el = $('#outlook-line');
     el.hidden = !lines.length;
-    el.innerHTML = lines.map((x) => `<div>${esc(x)}</div>`).join('');
+    el.innerHTML = lines.map(([ic, text]) => `<div class="sky-line" title="${esc(text)}">${icon(ic)}<span>${esc(text)}</span></div>`).join('');
   }
 
   // ---------- travel mode ----------
@@ -1991,20 +2098,22 @@ if (window.PlanespotterAndroid) {
     $('#btn-travel').hidden = !(state.config && state.config.can_travel);
     if (t && t.on) {
       const proto = location.protocol === 'https:' ? 'http:' : location.protocol;
-      line.innerHTML = `🧳 Travel mode: watching <a href="${proto}//${location.hostname}:${t.port}/">${esc(t.name)}</a> until ${esc(t.until_text)}
-        <button class="linkbtn" data-action="travel-stop">Stop</button>`;
+      line.innerHTML = `${icon('luggage')}<span>Travel mode: watching <a href="${proto}//${location.hostname}:${t.port}/">${esc(t.name)}</a> until ${esc(t.until_text)}
+        <button class="linkbtn" data-action="travel-stop">Stop</button></span>`;
       line.hidden = false;
-      $('#btn-travel').textContent = '🧳 Travelling';
+      $('#btn-travel').innerHTML = `${icon('luggage')}<span class="tool-label">Travelling</span>`;
+      $('#btn-travel').setAttribute('aria-pressed', 'true');
     } else {
       line.hidden = true;
-      $('#btn-travel').textContent = '📍 Travel';
+      $('#btn-travel').innerHTML = `${icon('pin')}<span class="tool-label">Travel</span>`;
+      $('#btn-travel').setAttribute('aria-pressed', 'false');
     }
   }
 
   function openTravel() {
     const t = state.config.travel;
     if (t && t.on) { stopTravel(); return; }
-    openOverlay(`<div class="quiz"><div class="k">📍 Travel mode</div>
+    openOverlay(`<div class="quiz"><div class="k">${icon('pin')}Travel mode</div>
       <h2>Watch where you are</h2>
       <p class="muted">For the next two days, planespotter also watches here: its own zone, alerts and map. Home carries on as usual.
         From your phone, anywhere, you can send <strong>travel</strong> with your location to your commands topic instead (see <code>python3 -m planespotter phone</code>).</p>
@@ -2022,7 +2131,7 @@ if (window.PlanespotterAndroid) {
       state.config.travel = t;
       closeOverlay();
       renderTravel();
-      toast(`🧳 Watching ${t.name} until ${t.until_text}`);
+      toast(`Watching ${t.name} until ${t.until_text}`);
     } catch (err) { $('#travel-msg').textContent = `Couldn’t start: ${err.message}`; }
   }
 
@@ -2038,7 +2147,7 @@ if (window.PlanespotterAndroid) {
   async function stopTravel() {
     try { state.config.travel = await postJSON('api/travel', { stop: true }); } catch (err) { toast(err.message); return; }
     renderTravel();
-    toast('🏠 Travel mode is off');
+    toast('Travel mode is off');
   }
 
   // ---------- your flights ----------
@@ -2050,20 +2159,20 @@ if (window.PlanespotterAndroid) {
   function myFlightsHtml() {
     const flights = state.myFlights || [];
     const words = { waiting: 'waiting to take off', airborne: 'in the air', landed: 'landed' };
-    return `<div class="myflights"><div class="upnext-head">Your flights
-        <button class="linkbtn" data-action="add-flight">＋ Follow a flight</button></div>
+    return `<div class="myflights"><div class="upnext-head">${icon('ticket')}Your flights
+        <button class="linkbtn" data-action="add-flight">${icon('plus')}Follow a flight</button></div>
       ${flights.map((f) => `<div class="mf ${f.state}">${logo(f.callsign)}<span class="who"><strong>${esc(f.label)}</strong>
         <span class="muted">${esc(words[f.state] || f.state)}${f.state === 'landed' && f.destination ? ` in ${esc(f.destination)}` : ''}
         ${f.state === 'waiting' ? ` · ${esc(new Date(`${f.day}T12:00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }))}` : ''}</span></span>
         ${f.hex ? `<button class="linkbtn" data-show-flight="${esc(f.callsign)}">Show</button>` : ''}
-        <button class="linkbtn danger" data-remove-flight="${esc(f.callsign)}" aria-label="Stop following">×</button></div>`).join('')
-        || '<p class="hint">Follow a flight you or family are taking: you’ll get a notification when it takes off, if it flies over home, and when it lands.</p>'}
+        <button class="linkbtn danger" data-remove-flight="${esc(f.callsign)}" aria-label="Stop following" title="Stop following">${icon('x')}</button></div>`).join('')}
     </div>`;
   }
 
   function openAddFlight() {
-    openOverlay(`<div class="quiz"><div class="k">✈ Follow a flight</div><h2>Which flight?</h2>
-      <p class="muted">The flight number from the ticket or booking, like <strong>UA 1234</strong> or <strong>DL573</strong>.</p>
+    openOverlay(`<div class="quiz"><div class="k">${icon('ticket')}Follow a flight</div><h2>Which flight?</h2>
+      <p class="muted">The flight number from the ticket or booking, like <strong>UA 1234</strong> or <strong>DL573</strong>.
+        You’ll get a notification when it takes off, if it flies over home, and when it lands.</p>
       <div class="travel-form"><input id="flight-number" placeholder="UA 1234" autocapitalize="characters">
       <select id="flight-day"><option value="today">Today</option><option value="tomorrow">Tomorrow</option></select>
       <button class="btn" data-action="flight-go">Follow</button></div><div id="flight-msg" class="muted"></div></div>`);
@@ -2076,7 +2185,7 @@ if (window.PlanespotterAndroid) {
     try {
       state.myFlights = (await postJSON('api/myflights', { flight, day: $('#flight-day').value })).flights;
       closeOverlay();
-      toast(`✈ Following ${flight.toUpperCase()}`);
+      toast(`Following ${flight.toUpperCase()}`);
       renderList();
     } catch (err) { $('#flight-msg').textContent = err.message; }
   }
@@ -2112,7 +2221,7 @@ if (window.PlanespotterAndroid) {
     }
     if (t.now) {
       out.push(new deck.TextLayer({ id: 'my-flight-label', data: [t.now], getPosition: (d) => [d.lon, d.lat, is3d ? (d.alt_ft || 0) * FT : 0],
-        getText: () => `✈ ${t.callsign}`, getPixelOffset: [0, -18], getSize: 13, getColor: a(C.ink, 255), fontWeight: 700,
+        getText: () => t.callsign, getPixelOffset: [0, -18], getSize: 13, getColor: a(C.ink, 255), fontWeight: 700,
         background: true, getBackgroundColor: a(C.select, 120), backgroundPadding: [6, 3],
         fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }));
       out.push(new deck.ScatterplotLayer({ id: 'my-flight-now', data: [t.now], getPosition: (d) => [d.lon, d.lat, is3d ? (d.alt_ft || 0) * FT : 0],
@@ -2122,7 +2231,7 @@ if (window.PlanespotterAndroid) {
     return out;
   }
 
-  // ---------- ✈︎ Track a flight, 🚪 Gate and 🔭 Point: the phone's features, here too ----------
+  // ---------- Track a flight, Gate and Point: the phone's features, here too ----------
   function hms(s) {
     s = Math.max(0, Math.round(s));
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
@@ -2133,7 +2242,7 @@ if (window.PlanespotterAndroid) {
 
   function openTrackSearch() {
     const s = state.trackSearch;
-    openOverlay(`<div class="quiz track-search"><div class="k">✈︎ Track a flight</div><h2>Which flight?</h2>
+    openOverlay(`<div class="quiz track-search"><div class="k">${icon('route')}Track a flight</div><h2>Which flight?</h2>
       <p class="muted">A flight number (<strong>AS 1349</strong>), an airline (<strong>Alaska</strong>), an airport
       (<strong>PDX</strong>, <strong>Portland</strong>), both (<strong>Alaska PDX</strong>), or a registration
       (<strong>N12345</strong>). Anywhere in the world.</p>
@@ -2265,7 +2374,7 @@ if (window.PlanespotterAndroid) {
     if (at) {
       out.push(new deck.ScatterplotLayer({ id: 'tracked-now', data: [at], getPosition: (d) => d, getRadius: 8, radiusUnits: 'pixels',
         getFillColor: a(C.select, 255), stroked: true, getLineColor: a(C.panel, 255), lineWidthUnits: 'pixels', getLineWidth: 2 }));
-      out.push(new deck.TextLayer({ id: 'tracked-label', data: [at], getPosition: (d) => d, getText: () => `✈︎ ${state.tracking.label}`,
+      out.push(new deck.TextLayer({ id: 'tracked-label', data: [at], getPosition: (d) => d, getText: () => state.tracking.label,
         getPixelOffset: [0, -20], getSize: 13, getColor: a(C.ink, 255), fontWeight: 700, background: true,
         getBackgroundColor: a(C.select, 120), backgroundPadding: [6, 3],
         fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }));
@@ -2274,23 +2383,23 @@ if (window.PlanespotterAndroid) {
   }
 
   function gateLines(cs) {
-    // The 🚪 Gate answer for a flight, the same wording as on the phone.
+    // The gate answer for a flight, the same wording as on the phone.
     const g = state.gates.get(cs);
     if (!g) return '';
-    if (g === 'asking') return '<div class="note">Looking up the gate…</div>';
+    if (g === 'asking') return note('hourglass', 'Looking up the gate…');
     if (g.off) return '';
     if (g.error) {
-      return `<div class="note">${g.error === 'limit' ? 'Gate lookups for this month are used up'
-        : g.error === 'key' ? 'The gate service didn’t accept your key' : 'Couldn’t look up the gate'}</div>`;
+      return note('alert', g.error === 'limit' ? 'Gate lookups for this month are used up'
+        : g.error === 'key' ? 'The gate service didn’t accept your key' : 'Couldn’t look up the gate');
     }
-    if (g.none) return '<div class="note">No known gate: the service doesn’t list this trip</div>';
+    if (g.none) return note('gate', 'No known gate: the service doesn’t list this trip');
     const from = `<div class="note small">From ${esc(g.source || 'the gate service')}${g.asOf ? `, ${Math.max(0, Math.round((Date.now() / 1000 - g.asOf) / 60))} min ago` : ''}</div>`;
-    if (g.note) return `<div class="note">⚠︎ ${esc(g.note)} The gates listed are for its scheduled airports.</div>${from}`;
-    const side = (s, verb) => (s && s.gate ? `🚪 ${esc(s.code ? `${s.code}: ` : '')}${verb} gate ${esc(s.gate)}${s.terminal ? ` (terminal ${esc(s.terminal)})` : ''}` : '');
+    if (g.note) return `${note('alert', `${esc(g.note)} The gates listed are for its scheduled airports.`, 'warn')}${from}`;
+    const side = (s, verb) => (s && s.gate ? ['gate', `${esc(s.code ? `${s.code}: ` : '')}${verb} gate ${esc(s.gate)}${s.terminal ? ` (terminal ${esc(s.terminal)})` : ''}`] : null);
     const bits = [side(g.dep, 'leaves from'), side(g.arr, 'arrives at')].filter(Boolean);
-    if (g.arr && g.arr.baggage) bits.push(`🧳 Bags: carousel ${esc(g.arr.baggage)}`);
-    const other = g.other ? `<div class="note">⚠︎ ${esc(g.source || 'The service')} doesn’t show it flying: this may be another of its trips${g.dep.code && g.arr.code ? ` (${esc(g.dep.code)} → ${esc(g.arr.code)})` : ''}</div>` : '';
-    return other + (bits.length ? bits.map((b) => `<div class="note gate">${b}</div>`).join('') : '<div class="note">No gate listed yet</div>') + from;
+    if (g.arr && g.arr.baggage) bits.push(['luggage', `Bags: carousel ${esc(g.arr.baggage)}`]);
+    const other = g.other ? note('alert', `${esc(g.source || 'The service')} doesn’t show it flying: this may be another of its trips${g.dep.code && g.arr.code ? ` (${esc(g.dep.code)} → ${esc(g.arr.code)})` : ''}`, 'warn') : '';
+    return other + (bits.length ? bits.map(([ic, text]) => note(ic, text, 'gate')).join('') : note('gate', 'No gate listed yet')) + from;
   }
 
   async function askGate(cs, plane, force = false) {
@@ -2314,22 +2423,22 @@ if (window.PlanespotterAndroid) {
     if (!t) return '';
     const d = state.trackData;
     const now = Date.now() / 1000;
-    const head = `<div class="upnext-head">✈︎ Tracking <span>${esc(t.label)}</span>
+    const head = `<div class="upnext-head">${icon('route')}Tracking <span>${esc(t.label)}</span>
       <button class="linkbtn danger" data-action="track-stop">Stop</button></div>`;
     if (!d) return `<div class="myflights tracked">${head}<p class="muted">${esc(state.trackError || 'Looking for it…')}</p></div>`;
     const lines = [];
     const buttons = [];
     if (state.trackError) lines.push(`<span class="small">${esc(state.trackError)}</span>`);
-    if (d.paused) lines.push('<span class="small">⏸ Paused for now: your Mac has asked adsb.lol as often as it should (your plane alerts come first). It carries on by itself later.</span>');
+    if (d.paused) lines.push('<span class="small">Paused for now: planespotter has asked adsb.lol as often as it should (your plane alerts come first). It carries on by itself later.</span>');
     if (d.plane) {
       const p = d.plane, r = d.route || {};
       lines.push(`<strong>${esc(label(p))}</strong> <span class="muted">${esc(r.airline || '')}</span>`);
       if (hasRoute(r)) lines.push(esc(routeLong(r)));
       lines.push(esc([fmtAlt(p.alt_ft), fmtSpeed(p.speed_kt), `${fmtDist(p.distance_miles)} ${compass(p.bearing)} of home`].join(' · ')));
       lines.push(gateLines(t.cs));
-      buttons.push('<button class="act" data-action="track-show">📍 Show</button>');
-      if (gatesOn()) buttons.push('<button class="act" data-action="track-gate">🚪 Gate</button>');
-      buttons.push(`<button class="act${isFollowing(p.hex) ? ' done' : ''}" data-action="track-follow">${isFollowing(p.hex) ? '🔔 Following' : '🔔 Tell me when it lands'}</button>`);
+      buttons.push(`<button class="act" data-action="track-show">${icon('pin')}Show</button>`);
+      if (gatesOn()) buttons.push(`<button class="act" data-action="track-gate">${icon('gate')}Gate</button>`);
+      buttons.push(`<button class="act${isFollowing(p.hex) ? ' done' : ''}" data-action="track-follow">${icon(isFollowing(p.hex) ? 'bell-ring' : 'bell')}${isFollowing(p.hex) ? 'Following' : 'Tell me when it lands'}</button>`);
     } else {
       const i = d.info && d.info.dep ? d.info : null;
       const g = d.ground;
@@ -2339,7 +2448,7 @@ if (window.PlanespotterAndroid) {
       lines.push(phase || (d.paused && !g ? 'Can’t check where it is right now'
         : t.flew ? (g ? 'Landed' : 'Not showing right now: it has landed, or it’s out of range of the receivers')
           : 'Not in the air yet'));
-      if (i && i.note) lines.push(`⚠︎ ${esc(i.note)}`);
+      if (i && i.note) lines.push(`${icon('alert')}<span>${esc(i.note)}</span>`);
       if (g) lines.push(esc(`On the ground ${g.airport ? `at ${g.airport.city} (${g.airport.code})` : ''}${g.gs > 5 ? ', taxiing' : ''}`));
       else if (d.waits_at) lines.push(esc(`At ${d.waits_at.city} (${d.waits_at.code})`));
       else if (i && !i.note && !['air', 'landed'].includes(i.phase) && i.dep.code) lines.push(esc(`At ${i.dep.code}`));
@@ -2347,18 +2456,18 @@ if (window.PlanespotterAndroid) {
         if (i.dep.code) lines.push(esc(`Took off from ${i.dep.code}`));
         const due = (i.landing && (i.landing.estimated || i.landing.scheduled)) || i.arr.estimated || i.arr.scheduled;
         if (i.arr.code) lines.push(`Due in ${esc(i.arr.code)}${due ? ` at about ${esc(clockAt(due))}${due > now ? ` · <span data-countdown="${due}">${hms(due - now)}</span>` : ''}` : ''}`);
-        if (i.arr.gate) lines.push(`🚪 Arrives at gate ${esc(i.arr.gate)}`);
+        if (i.arr.gate) lines.push(`${icon('gate')}<span>Arrives at gate ${esc(i.arr.gate)}</span>`);
       } else if (i && i.phase === 'landed') {
-        lines.push(`In ${esc(i.arr.code || '?')}${i.arr.gate ? ` · 🚪 gate ${esc(i.arr.gate)}` : ''}`);
+        lines.push(`In ${esc(i.arr.code || '?')}${i.arr.gate ? ` · gate ${esc(i.arr.gate)}` : ''}`);
       } else if (i) {
-        if (i.dep.gate && !i.note) lines.push(`🚪 Gate ${esc(i.dep.gate)}${i.dep.terminal ? `, terminal ${esc(i.dep.terminal)}` : ''}`);
+        if (i.dep.gate && !i.note) lines.push(`${icon('gate')}<span>Gate ${esc(i.dep.gate)}${i.dep.terminal ? `, terminal ${esc(i.dep.terminal)}` : ''}</span>`);
         else if (!i.note) lines.push(i.takeoff_at && i.takeoff_at - now > 2 * 3600 ? 'No gate listed yet (usually an hour or two before)' : 'No gate listed');
         if (i.takeoff_at && i.phase !== 'cancelled') {
           lines.push(i.takeoff_at > now + 30
             ? `<strong>Takes off in <span data-countdown="${i.takeoff_at}">${hms(i.takeoff_at - now)}</span></strong> (about ${esc(clockAt(i.takeoff_at))})`
             : 'Should be taking off about now');
         }
-        if (typeof i.dep.delay === 'number') lines.push(i.dep.delay >= 5 ? `⏱ Delayed ${i.dep.delay} min` : i.dep.delay <= -5 ? `⏱ ${-i.dep.delay} min early` : '⏱ On time');
+        if (typeof i.dep.delay === 'number') lines.push(`${icon('timer')}<span>${i.dep.delay >= 5 ? `Delayed ${i.dep.delay} min` : i.dep.delay <= -5 ? `${-i.dep.delay} min early` : 'On time'}</span>`);
       }
       if (i && i.asOf) lines.push(`<span class="small">Times from ${esc(i.source || '')}, updated ${Math.max(0, Math.round((now - i.asOf) / 60))} min ago</span>`);
       if (!d.gates_on) lines.push('<span class="small">Where it leaves from, its gate, take-off time and delays: set up gate numbers (see the README)</span>');
@@ -2366,17 +2475,17 @@ if (window.PlanespotterAndroid) {
       else if (d.info && d.info.error === 'key') lines.push('The gate service didn’t accept your key: check it with  python3 -m planespotter gates test UAL1');
       else if (d.info && d.info.error) lines.push('Couldn’t reach the gate service just now');
       else if (d.info && d.info.none) lines.push('The gate service doesn’t list a trip for it around now');
-      if (g || d.waits_at) buttons.push('<button class="act" data-action="track-show">📍 Show</button>');
-      if (d.gates_on) buttons.push('<button class="act" data-action="track-times">↻ Times</button>');
+      if (g || d.waits_at) buttons.push(`<button class="act" data-action="track-show">${icon('pin')}Show</button>`);
+      if (d.gates_on) buttons.push(`<button class="act" data-action="track-times">${icon('refresh')}Times</button>`);
       const mine = (state.myFlights || []).some((f) => f.callsign === t.cs);
-      if (!t.flew) buttons.push(`<button class="act${mine ? ' done' : ''}" data-action="track-notify">${mine ? '🔔 You’ll hear when it flies' : '🔔 Tell me when it flies'}</button>`);
+      if (!t.flew) buttons.push(`<button class="act${mine ? ' done' : ''}" data-action="track-notify">${icon(mine ? 'bell-ring' : 'bell')}${mine ? 'You’ll hear when it flies' : 'Tell me when it flies'}</button>`);
     }
     return `<div class="myflights tracked">${head}${lines.filter(Boolean).map((l) => `<div class="tline">${l}</div>`).join('')}
       <div class="actions">${buttons.join('')}</div></div>`;
   }
 
   function pointLink(wide) {
-    // 🔭 Point opens in Safari (which gives web pages the compass), with the planes around home in the link
+    // Point opens in Safari (which gives web pages the compass), with the planes around home in the link
     // (``wide``: every plane within 45 miles, wider than the map shows; already moved on to now).
     const c = state.config, t = performance.now();
     const r4 = (x) => Math.round(x * 1e4) / 1e4;
@@ -2404,13 +2513,13 @@ if (window.PlanespotterAndroid) {
 
   // ---------- "What's that plane?" / "Where's my plane?" out loud (the installed app's shortcuts) ----------
   // On Android there's no Siri: long-press planespotter's icon and pick one. The answer shows big and is read
-  // out (phones only let a page speak after a tap, so there's a 🔊 button if it couldn't start by itself).
+  // out (phones only let a page speak after a tap, so there's a button if it couldn't start by itself).
   function speakText(text, button) {
     if (!('speechSynthesis' in window)) return;
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
-      u.onerror = (e) => { if (button && e.error === 'not-allowed') button.textContent = '🔊 Tap to hear it'; };
+      u.onerror = (e) => { if (button && e.error === 'not-allowed') button.innerHTML = `${icon('volume')}Tap to hear it`; };
       speechSynthesis.speak(u);
     } catch { /* no voice: the words are on the screen */ }
   }
@@ -2446,9 +2555,9 @@ if (window.PlanespotterAndroid) {
   }
 
   async function sayNow(kind) {
-    openOverlay(`<div class="quiz say-card"><div class="k">${kind === 'mine' ? '✈︎ Where’s my plane?' : '✈︎ What’s that plane?'}</div>
+    openOverlay(`<div class="quiz say-card"><div class="k">${icon('plane')}${kind === 'mine' ? 'Where’s my plane?' : 'What’s that plane?'}</div>
       <h2 id="say-text">Looking…</h2><div class="overlay-actions" style="margin-top:14px">
-      <button class="btn" id="say-again">🔊 Say it again</button></div></div>`);
+      <button class="btn" id="say-again">${icon('volume')}Say it again</button></div></div>`);
     let text;
     try {
       if (kind === 'mine') {
@@ -2465,7 +2574,7 @@ if (window.PlanespotterAndroid) {
     if (!box) return;
     box.textContent = text;
     const again = $('#say-again');
-    again.onclick = () => { again.textContent = '🔊 Say it again'; speakText(text, again); };
+    again.onclick = () => { again.innerHTML = `${icon('volume')}Say it again`; speakText(text, again); };
     speakText(text, again);
   }
 
@@ -2549,7 +2658,7 @@ if (window.PlanespotterAndroid) {
         if (r.matched) names.add(r.matched);
       } catch { unmatched++; }
     }
-    const bits = [`📸 ${matched} matched${names.size ? ` (${[...names].slice(0, 3).join(', ')}${names.size > 3 ? '…' : ''})` : ''}`];
+    const bits = [`${matched} matched${names.size ? ` (${[...names].slice(0, 3).join(', ')}${names.size > 3 ? '…' : ''})` : ''}`];
     if (unmatched) bits.push(`${unmatched} taken when no plane was over your zone`);
     if (unread) bits.push(`${unread} couldn’t be read`);
     toast(bits.join(' · '));
@@ -2567,7 +2676,7 @@ if (window.PlanespotterAndroid) {
     daySelect.innerHTML = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - i);
       return `<option value="${isoDay(d)}">${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</option>`;
-    }).join('') + '<option value="pick">📅 Any day…</option>';
+    }).join('') + '<option value="pick">Any day…</option>';
     $('#replay-date').hidden = true;
     $('#replay-date').max = isoDay(new Date());
     $('#replay').hidden = false;
@@ -2628,7 +2737,7 @@ if (window.PlanespotterAndroid) {
     const r = state.replay;
     $('#replay-slider').value = String(Math.round(r.t));
     $('#replay-clock').textContent = clockOf(r.t);
-    $('#replay-play').textContent = r.playing ? '❚❚' : '▶';
+    $('#replay-play').innerHTML = icon(r.playing ? 'pause' : 'play');
     $('#replay-play').setAttribute('aria-label', r.playing ? 'Pause' : 'Play');
     const flying = replayPlanes(r.t, false).length;
     const total = r.flights.length;
@@ -2932,6 +3041,68 @@ if (window.PlanespotterAndroid) {
     else if (id === 'whole-flying' || id.startsWith('flying-')) select('history', hit.object.w.id, { fly: false, scroll: true });
   }
 
+  // ---------- phones: the list is a sheet under the map that you can drag taller or shorter ----------
+  const phone = window.matchMedia('(max-width: 820px)');
+  const sideways = window.matchMedia('(max-width: 820px) and (orientation: landscape) and (max-height: 520px)');
+  const SHEET_PEEK = 150;  // just the name and the tabs
+  let sheetPx = 0;
+  const sheetOn = () => phone.matches && !sideways.matches;
+  const sheetSnaps = () => [SHEET_PEEK, Math.round(window.innerHeight * 0.52), Math.round(window.innerHeight * 0.88)];
+  let resizeQueued = false;
+  function mapResizeSoon() {
+    if (resizeQueued) return;
+    resizeQueued = true;
+    requestAnimationFrame(() => { resizeQueued = false; if (map) map.resize(); });
+  }
+
+  function setSheet(px, remember = true) {
+    const [peek, , full] = sheetSnaps();
+    sheetPx = Math.max(peek, Math.min(full, Math.round(px)));
+    $('#app').style.setProperty('--sheet', `${sheetPx}px`);
+    $('#panel').classList.toggle('sheet-peek', sheetPx <= peek + 20);
+    if (remember) saved.set('sheet', sheetPx / window.innerHeight);
+    mapResizeSoon();
+  }
+
+  /** Put things where this screen wants them: on a phone a flight's details open in the sheet, not over the map. */
+  function layOut() {
+    const home = phone.matches ? $('#panel') : $('#map-wrap');
+    if ($('#detail').parentElement !== home) home.appendChild($('#detail'));
+    if (sheetOn()) setSheet(saved.get('sheet', 0.52) * window.innerHeight, false);
+    else {
+      $('#app').style.removeProperty('--sheet');
+      $('#panel').classList.remove('sheet-peek');
+      mapResizeSoon();
+    }
+  }
+
+  function wireSheet() {
+    const grab = $('#grab');
+    let drag = null;
+    grab.addEventListener('pointerdown', (e) => {
+      if (!sheetOn()) return;
+      drag = { y: e.clientY, from: sheetPx, moved: false };
+      grab.setPointerCapture(e.pointerId);
+    });
+    grab.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      if (Math.abs(e.clientY - drag.y) > 5) drag.moved = true;
+      if (drag.moved) setSheet(drag.from + (drag.y - e.clientY), false);
+    });
+    const end = () => {
+      if (!drag) return;
+      const [peek, half, full] = sheetSnaps();
+      if (!drag.moved) setSheet(sheetPx <= peek + 20 ? half : sheetPx >= full - 20 ? half : full);  // a tap: bigger, then back
+      else setSheet([peek, half, full].reduce((best, s) => (Math.abs(s - sheetPx) < Math.abs(best - sheetPx) ? s : best)));
+      drag = null;
+    };
+    grab.addEventListener('pointerup', end);
+    grab.addEventListener('pointercancel', end);
+    phone.addEventListener('change', layOut);
+    sideways.addEventListener('change', layOut);
+    window.addEventListener('resize', () => { if (sheetOn()) setSheet(sheetPx, false); });
+  }
+
   // ---------- wiring ----------
   function setTab(tab) {
     state.tab = tab;
@@ -2950,7 +3121,15 @@ if (window.PlanespotterAndroid) {
   }
 
   function wireUp() {
-    for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => setTab(b.dataset.tab));
+    wireSheet();
+    for (const b of document.querySelectorAll('.tabs button')) {
+      b.addEventListener('click', () => {
+        // Tapping a tab while only the tabs are showing opens the list again.
+        if (sheetOn() && sheetPx <= SHEET_PEEK + 20) setSheet(sheetSnaps()[1]);
+        if (state.selected && phone.matches) select(null);
+        setTab(b.dataset.tab);
+      });
+    }
     $('#search').addEventListener('input', (e) => {
       state.query = e.target.value.trim().toLowerCase();
       state.listLimit = LIST_PAGE;
@@ -2996,7 +3175,7 @@ if (window.PlanespotterAndroid) {
       }
       if (e.target.closest('[data-action="track-notify"]')) {
         postJSON('api/myflights', { flight: state.tracking.cs, day: 'today' })
-          .then((r) => { state.myFlights = r.flights; toast(`🔔 You’ll get a notification when ${state.tracking.label} takes off`); renderList(); })
+          .then((r) => { state.myFlights = r.flights; toast(`You’ll get a notification when ${state.tracking.label} takes off`); renderList(); })
           .catch((err) => toast(err.message));
         return;
       }
@@ -3141,7 +3320,9 @@ if (window.PlanespotterAndroid) {
       const open = e.target.closest('[data-open-flight]');
       if (open) openFlight(open.dataset.openFlight);
     });
-    if (state.chime) { $('#btn-chime').setAttribute('aria-pressed', 'true'); $('#btn-chime').textContent = '🔔 Chime on'; }
+    $('#btn-chime').setAttribute('aria-pressed', String(state.chime));
+    $('#btn-chime').innerHTML = `${icon(state.chime ? 'bell-ring' : 'bell-off')}<span class="tool-label">Chime</span>`;
+    $('#replay-record').innerHTML = `${icon('video')}Save video`;
     $('#btn-replay').addEventListener('click', () => (state.replay.on ? closeReplay() : openReplay()));
     $('#replay-close').addEventListener('click', () => { if (recorder) recorder.stop(); closeReplay(); });
     $('#replay-record').addEventListener('click', recordReplay);
@@ -3198,6 +3379,7 @@ if (window.PlanespotterAndroid) {
       return;
     }
     wireUp();
+    layOut();
     try {
       state.config = await getJSON('api/config');
     } catch {
@@ -3211,9 +3393,9 @@ if (window.PlanespotterAndroid) {
     document.title = `planespotter · ${home.name}`;
     if (state.config.account) {  // accounts are on: whose this is, and the way to your account page
       const who = document.createElement('a');
-      who.className = 'chime';
+      who.className = 'tool';
       who.href = 'account';
-      who.textContent = `👤 ${state.config.account.name}`;
+      who.innerHTML = `${icon('user')}<span class="tool-label">${esc(state.config.account.name)}</span>`;
       who.title = 'Your account: your home, notifications, phone script, password';
       document.querySelector('.sounds').appendChild(who);
     }
@@ -3227,7 +3409,8 @@ if (window.PlanespotterAndroid) {
       antialias: true, attributionControl: false,
     });
     map.addControl(new maplibregl.AttributionControl({
-      compact: true, customAttribution: 'Flights: <a href="https://adsb.lol" target="_blank">adsb.lol</a> (ODbL)',
+      compact: true, customAttribution: 'Flights: <a href="https://adsb.lol" target="_blank">adsb.lol</a> (ODbL), '
+        + 'and <a href="https://adsb.fi" target="_blank">adsb.fi</a> when it can’t be reached',
     }), 'bottom-right');
     overlay = new deck.MapboxOverlay({ interleaved: true, layers: [] });
     map.addControl(overlay);
@@ -3235,7 +3418,12 @@ if (window.PlanespotterAndroid) {
     map.on('styleimagemissing', (e) => {
       if (!map.hasImage(e.id)) map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
     });
-    map.on('load', () => { addBuildings(); setMode(state.mode, false); });
+    map.on('load', () => {
+      addBuildings();
+      setMode(state.mode, false);
+      const credit = document.querySelector('.maplibregl-ctrl-attrib');
+      if (credit && phone.matches) credit.classList.remove('maplibregl-compact-show');  // folded away: the (i) opens it
+    });
     map.on('click', onMapClick);
 
     // Opened from a phone notification: ?flight=<id> (a spotted flight) or ?plane=<hex> (live).
@@ -3256,7 +3444,7 @@ if (window.PlanespotterAndroid) {
     setInterval(() => { if (!document.hidden) loadOutlook(); }, 10 * 60000);
     loadMyFlights();
     setInterval(() => { if (!document.hidden) loadMyFlights(); }, 2 * 60000);
-    // 🔭 Point needs a compass: phones and tablets. Its ↻ Fresh planes comes back here (#point) for new ones.
+    // Point needs a compass: phones and tablets. Its "Fresh planes" comes back here (#point) for new ones.
     $('#btn-point').hidden = !(window.matchMedia('(pointer: coarse)').matches && state.config.point_url);
     if (location.hash === '#point') {
       history.replaceState(null, '', location.pathname + location.search);
@@ -3279,7 +3467,7 @@ if (window.PlanespotterAndroid) {
     const places = (state.config.places || []).slice();
     if (state.config.travel && state.config.travel.on) {
       if (!places.length) places.push({ name: home.name, port: Number(location.port || 80) });
-      places.push({ name: `🧳 ${state.config.travel.name}`, port: state.config.travel.port });
+      places.push({ name: `${state.config.travel.name} (travelling)`, port: state.config.travel.port });
     }
     state.config.places = places;
     if (places.length) {

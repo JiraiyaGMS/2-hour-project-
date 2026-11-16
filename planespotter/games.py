@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 
 from .airports import airports
-from .countries import country_of, flag
+from .countries import country_of
 from .emails import fmt_alt, fmt_dist, label
 from .geo import distance_miles
 from .logos import airline_code
@@ -93,37 +93,37 @@ def _hour(p, ctx) -> int:
     return ctx.cfg.local(p["first_seen"]).hour
 
 
-# key, emoji, text, test(pass, context)
+# key, text, test(pass, context) (the map page draws an icon for each key)
 SQUARES = [
-    ("b787", "✈️", "A Boeing 787", lambda p, c: family(p["type_code"]) == "Boeing 787"),
-    ("b777", "✈️", "A Boeing 777", lambda p, c: family(p["type_code"]) == "Boeing 777"),
-    ("b737", "✈️", "A Boeing 737", lambda p, c: family(p["type_code"]) == "Boeing 737"),
-    ("a320", "✈️", "An Airbus A320 family", lambda p, c: family(p["type_code"]) == "Airbus A320 family"),
-    ("a350", "✈️", "An Airbus A350", lambda p, c: family(p["type_code"]) == "Airbus A350"),
-    ("a220", "✈️", "An Airbus A220", lambda p, c: family(p["type_code"]) == "Airbus A220"),
-    ("wide", "🛫", "A widebody (twin-aisle) jet", lambda p, c: p["type_code"] in WIDEBODIES),
-    ("four", "🪶", "A four-engine plane", lambda p, c: p["type_code"] in FOUR_ENGINES),
-    ("regional", "🛩️", "A regional jet (CRJ or E-Jet)",
+    ("b787", "A Boeing 787", lambda p, c: family(p["type_code"]) == "Boeing 787"),
+    ("b777", "A Boeing 777", lambda p, c: family(p["type_code"]) == "Boeing 777"),
+    ("b737", "A Boeing 737", lambda p, c: family(p["type_code"]) == "Boeing 737"),
+    ("a320", "An Airbus A320 family", lambda p, c: family(p["type_code"]) == "Airbus A320 family"),
+    ("a350", "An Airbus A350", lambda p, c: family(p["type_code"]) == "Airbus A350"),
+    ("a220", "An Airbus A220", lambda p, c: family(p["type_code"]) == "Airbus A220"),
+    ("wide", "A widebody (twin-aisle) jet", lambda p, c: p["type_code"] in WIDEBODIES),
+    ("four", "A four-engine plane", lambda p, c: p["type_code"] in FOUR_ENGINES),
+    ("regional", "A regional jet (CRJ or E-Jet)",
      lambda p, c: family(p["type_code"]) in ("Embraer E-Jet", "Bombardier CRJ")),
-    ("prop", "🌀", "A turboprop", lambda p, c: p["type_code"] in TURBOPROPS),
-    ("heli", "🚁", "A helicopter", lambda p, c: family(p["type_code"]) == "Helicopter"),
-    ("bizjet", "💼", "A private jet",
+    ("prop", "A turboprop", lambda p, c: p["type_code"] in TURBOPROPS),
+    ("heli", "A helicopter", lambda p, c: family(p["type_code"]) == "Helicopter"),
+    ("bizjet", "A private jet",
      lambda p, c: family(p["type_code"]) == "Business jet" or (airline_code(p["callsign"]) or "") in PRIVATE_OPERATORS),
-    ("small", "🐝", "A small prop plane", lambda p, c: family(p["type_code"]) == "Small prop plane"),
-    ("cargo", "📦", "A cargo plane", lambda p, c: (airline_code(p["callsign"]) or "") in CARGO_AIRLINES),
-    ("abroad", "🌍", "A plane registered in another country", _abroad),
-    ("intl", "🛂", "A flight to or from another country", _from_abroad),
-    ("long", "🧭", "A flight of 2,000+ miles", lambda p, c: _far(p, 2000)),
-    ("early", "🌅", "A plane before 7 am", lambda p, c: _hour(p, c) < 7),
-    ("late", "🌙", "A plane after 10 pm", lambda p, c: _hour(p, c) >= 22),
-    ("low", "🔊", "A plane under 2,000 ft above you",
+    ("small", "A small prop plane", lambda p, c: family(p["type_code"]) == "Small prop plane"),
+    ("cargo", "A cargo plane", lambda p, c: (airline_code(p["callsign"]) or "") in CARGO_AIRLINES),
+    ("abroad", "A plane registered in another country", _abroad),
+    ("intl", "A flight to or from another country", _from_abroad),
+    ("long", "A flight of 2,000+ miles", lambda p, c: _far(p, 2000)),
+    ("early", "A plane before 7 am", lambda p, c: _hour(p, c) < 7),
+    ("late", "A plane after 10 pm", lambda p, c: _hour(p, c) >= 22),
+    ("low", "A plane under 2,000 ft above you",
      lambda p, c: p["closest_alt_ft"] is not None and 0 < p["closest_alt_ft"] - c.ground_ft < 2000),
-    ("close", "🎯", "A plane within half a mile", lambda p, c: p["closest_miles"] <= 0.5),
-    ("rare", "💎", "A type you'd seen fewer than 3 times",
+    ("close", "A plane within half a mile", lambda p, c: p["closest_miles"] <= 0.5),
+    ("rare", "A type you'd seen fewer than 3 times",
      lambda p, c: bool(p["type_code"]) and c.type_counts.get(p["type_code"], 0) <= 3),
-    ("first", "✨", "A first (new airline or type)", lambda p, c: json.loads(p["firsts"] or "[]") != []),
+    ("first", "A first (new airline or type)", lambda p, c: json.loads(p["firsts"] or "[]") != []),
 ]
-SQUARE = {key: (key, emoji, text, test) for key, emoji, text, test in SQUARES}
+SQUARE = {key: (key, text, test) for key, text, test in SQUARES}
 LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
 FREE = 4  # the middle square
 
@@ -145,7 +145,7 @@ def choose_squares(store, cfg, monday: date, ground_ft: int = 0) -> list[str]:
                                (since, cfg.day_start(monday))).fetchall()
     days = {k: set() for k in SQUARE}
     for p in history:
-        for k, (_, _, _, test) in SQUARE.items():
+        for k, (_, _, test) in SQUARE.items():
             if test(p, ctx):
                 days[k].add(cfg.local(p["first_seen"]).date())
     rng = random.Random(f"{monday.isoformat()}:{cfg.home_lat:.2f}:{cfg.home_lon:.2f}")
@@ -171,11 +171,11 @@ def bingo(store, cfg, now: float, ground_ft: int = 0) -> dict:
     passes = store.passes_between(cfg.day_start(monday), cfg.day_start(monday + timedelta(days=7)))
     squares = []
     for k in keys:
-        _, emoji, text, test = SQUARE[k]
+        _, text, test = SQUARE[k]
         hit = next((p for p in passes if test(p, ctx)), None)
-        squares.append({"key": k, "emoji": emoji, "text": text,
+        squares.append({"key": k, "text": text,
                         "by": {"id": hit["id"], "label": label(hit), "when": hit["first_seen"]} if hit else None})
-    squares.insert(FREE, {"key": "free", "emoji": "⭐", "text": "Free: any plane",
+    squares.insert(FREE, {"key": "free", "text": "Free: any plane",
                           "by": {"id": passes[0]["id"], "label": label(passes[0]), "when": passes[0]["first_seen"]}
                           if passes else None})
     lines = [line for line in LINES if all(squares[i]["by"] for i in line)]
@@ -306,7 +306,7 @@ def wrapped(store, cfg, period: str, ground_ft: int = 0) -> dict:
         "offline": sum(1 for r in rows if r["offline"]),
         "eyes": eyes, "photos": photos, "quiz": quiz_score(store, start),
         "chart": chart, "ticks": ticks,
-        "top_countries": [[flag(iso), n, name] for (iso, name), n in countries.most_common(3)],
+        "top_countries": [[iso, n, name] for (iso, name), n in countries.most_common(3)],
     })
     return out
 
@@ -330,7 +330,7 @@ def profile(store, cfg, hex_code: str) -> dict:
         "aircraft": next((r["aircraft_desc"] for r in rows if r["aircraft_desc"]), latest["type_code"]),
         "family": family(latest["type_code"]), "owner": next((r["owner"] for r in rows if r["owner"]), ""),
         "airline": airlines.most_common(1)[0][0] if airlines else "",
-        "callsign": latest["callsign"], "country": {"name": country[1], "flag": flag(country[0])} if country else None,
+        "callsign": latest["callsign"], "country": {"name": country[1], "code": country[0]} if country else None,
         "photo_url": next((r["photo_url"] for r in rows if r["photo_url"]), ""),
         "times": len(rows), "first_seen": rows[-1]["first_seen"], "last_seen": latest["first_seen"],
         "usual_hour": hours.most_common(1)[0][0],

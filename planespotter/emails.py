@@ -106,9 +106,9 @@ def field(p, name: str, default=None):
 
 
 def highlights(p) -> list[str]:
-    """Lines like "✨ First Qantas flight you've spotted" or "🚨 Emergency (7700)"."""
+    """Lines like "First Qantas flight you've spotted" or "Emergency (7700)"."""
     notes = list(field(p, "highlights", None) or [])
-    notes += [f"✨ {f}" for f in json.loads(field(p, "firsts", "[]") or "[]")]
+    notes += [f"{f}" for f in json.loads(field(p, "firsts", "[]") or "[]")]
     return notes
 
 
@@ -163,7 +163,7 @@ def special_email(items: list[dict], cfg: Config) -> Email:
             "aircraft_desc": info.aircraft_desc, "type_code": ac.type_code, "photo_url": info.photo_url,
             "closest_miles": it["distance"], "closest_bearing": it["bearing"], "closest_alt_ft": ac.alt_ft,
             "speed_kt": ac.speed_kt, "track": ac.track,
-            "highlights": [f"{'🚨' if emergency else '✨'} {text}" for _, text, emergency in it["reasons"]],
+            "highlights": [text for _, text, emergency in it["reasons"]],
         }
         cards.append(_plane_card(p, cfg))
         text_lines += [label(p) + (f" — {p['airline']}" if p["airline"] else ""), *[f"  {h}" for h in p["highlights"]],
@@ -173,11 +173,11 @@ def special_email(items: list[dict], cfg: Config) -> Email:
     first = items[0]
     if len(items) == 1:
         reason = first["reasons"][0][1]
-        subject = (f"{'🚨' if emergency else '✨'} {reason}: {first['ac'].label}, "
+        subject = (f"{reason}: {first['ac'].label}, "
                    f"{fmt_dist(first['distance'])} {compass(first['bearing'])} of {cfg.home_name}")
     else:
         kinds = ", ".join(dict.fromkeys(r[1] for it in items for r in it["reasons"]))
-        subject = f"{'🚨' if emergency else '✨'} {len(items)} special planes near {cfg.home_name}: {kinds}"
+        subject = f"{len(items)} special planes near {cfg.home_name}: {kinds}"
     intro = "Something worth looking up for, within the live map's range"
     body = f'<p style="font-size:14px;color:{MUTED};margin:0 0 14px">{escape(intro)}</p>' + "".join(cards)
     return Email(subject=subject, text="\n".join([intro, ""] + text_lines), html=_page(subject, body))
@@ -188,13 +188,13 @@ def alert_email(passes: list[sqlite3.Row], cfg: Config) -> Email:
     when = cfg.local(min(p["first_seen"] for p in passes)).strftime("%H:%M")
     if len(passes) == 1:
         subject = (
-            f"✈ {label(first)} over {cfg.home_name} — "
+            f"{label(first)} over {cfg.home_name} — "
             f"{fmt_dist(first['closest_miles'])} {compass(first['closest_bearing'])}, {fmt_alt(first['closest_alt_ft'])}"
         )
         intro = f"A plane is flying over {cfg.home_name}"
     else:
         names = ", ".join(label(p) for p in passes[:4]) + ("…" if len(passes) > 4 else "")
-        subject = f"✈ {len(passes)} planes over {cfg.home_name}: {names}"
+        subject = f"{len(passes)} planes over {cfg.home_name}: {names}"
         intro = f"{len(passes)} planes are flying over {cfg.home_name}"
 
     body = (
@@ -374,7 +374,7 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
                 f'style="border-collapse:separate;margin:0 0 12px;background:{TINT};border-radius:8px">'
                 f'<tr><td style="padding:12px 14px">'
                 f'<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:{MUTED}">'
-                f'⭐ Plane of the day</div>'
+                f'Plane of the day</div>'
                 f'<div style="font-size:17px;font-weight:700;margin-top:2px">{escape(star["label"])}</div>'
                 f'<div style="font-size:13px;color:{MUTED}">{escape(what)}</div>'
                 f'<div style="font-size:14px;margin-top:4px">{escape(star["why"])}</div></td></tr></table>'
@@ -387,7 +387,7 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
 
         if recap.quiet_count:
             note = (
-                f"🌙 {recap.quiet_count} plane{'s' if recap.quiet_count != 1 else ''} came over during "
+                f"{recap.quiet_count} plane{'s' if recap.quiet_count != 1 else ''} came over during "
                 f"quiet hours ({fmt_clock_range(cfg.quiet_hours)}), so no alert was sent for "
                 f"{'them' if recap.quiet_count != 1 else 'it'}."
             )
@@ -396,7 +396,7 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
 
         offline = sum(1 for p in recap.passes if field(p, "offline", 0))
         if offline:
-            note = (f"📴 {offline} plane{'s were' if offline != 1 else ' was'} found afterwards: planespotter "
+            note = (f"{offline} plane{'s were' if offline != 1 else ' was'} found afterwards: planespotter "
                     "wasn't running when they came over, so they were looked up in adsb.lol's records.")
             html.append(f'<p style="font-size:14px;margin:0 0 12px">{escape(note)}</p>')
             text.append(note)
@@ -409,11 +409,12 @@ def digest_email(recap: Recap, forecast: Forecast, cfg: Config) -> Email:
                 current_day = seen.date()
                 rows.append(_day(seen))  # a divider row at midnight
                 text.append(f"  -- {_day(seen)} --")
-            moon = " 🌙" if cfg.in_quiet_hours(p["first_seen"]) else ""
-            if field(p, "offline", 0):
-                moon += " 📴"  # found afterwards by the offline log
+            # Small labels after the time: came over during quiet hours; found afterwards by the offline log.
+            marks = (["quiet"] if cfg.in_quiet_hours(p["first_seen"]) else []) + (["found later"] if field(p, "offline", 0) else [])
+            moon = "".join(f" ({m})" for m in marks)
+            tags = "".join(f'<br><span style="font-size:11px;color:{MUTED}">{m}</span>' for m in marks)
             rows.append([
-                f'<span style="white-space:nowrap">{seen:%H:%M}{moon}</span>',
+                f'<span style="white-space:nowrap">{seen:%H:%M}</span>{tags}',
                 _flight_cell(label(p), short_route(p), p["airline"], aircraft(p), track_url(p["hex"])),
                 _two_line(fmt_alt(p["closest_alt_ft"]), fmt_dist(p["closest_miles"])),
             ])
@@ -439,5 +440,5 @@ def test_email(cfg: Config) -> Email:
         + (f" No alerts during quiet hours ({fmt_clock_range(cfg.quiet_hours)})."
            if cfg.quiet_hours else "")
     )
-    body = f'<h1 style="font-size:22px;margin:0 0 8px">It works ✈</h1><p style="font-size:15px">{escape(msg)}</p>'
+    body = f'<h1 style="font-size:22px;margin:0 0 8px">It works</h1><p style="font-size:15px">{escape(msg)}</p>'
     return Email(subject=subject, text=msg, html=_page(subject, body))

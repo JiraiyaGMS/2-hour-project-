@@ -170,8 +170,8 @@ def diagnose(cfg, probe=probe, facts: dict | None = None) -> list[tuple[str, str
     else:
         add(MIGHT, "Phone notifications: not set up", "Run  python3 -m planespotter setup  and answer y at question 5.")
     if urls["gates"]:
-        reach("gates", "Gate numbers", "🚪 Gate and take-off times won't work on this network.")
-    reach("point", "🔭 Point page", "Point won't open on this network (your phone on the same Wi-Fi sees the same; "
+        reach("gates", "Gate numbers", "Gate and take-off times won't work on this network.")
+    reach("point", "Point page", "Point won't open on this network (your phone on the same Wi-Fi sees the same; "
           "mobile data will work).")
     parts = [k for k in ("parts", "tiles") if "error" in got[k] or got[k]["status"] >= 400 or (k == "parts" and is_page(got[k]))]
     if parts:

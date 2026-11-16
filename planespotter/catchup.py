@@ -13,7 +13,7 @@ day, but you can only ask about one aircraft at a time, so planespotter:
    request budget) and keeps every crossing of your zone in the gap.
 
 These "found while offline" planes go in the daily and weekly emails, the map
-and your collection, marked 📴. No alert is sent for them (it's too late), just
+and your collection, marked "found afterwards". No alert is sent for them (it's too late), just
 one summary notification. Planes that have since landed far away or left the
 area can't be found this way, and nothing older than about 20 hours.
 """
@@ -280,7 +280,7 @@ def summary_message(store, ids: list[int], gap: float) -> tuple[str, str]:
     """The phone notification after a catch-up: title, message."""
     rows = store.get_passes(ids)
     rows = sorted(rows, key=lambda r: r["first_seen"])
-    title = f"📴 {len(rows)} plane{'s' if len(rows) != 1 else ''} came over while planespotter was off"
+    title = f"{len(rows)} plane{'s' if len(rows) != 1 else ''} came over while planespotter was off"
     lines = []
     from .emails import label  # avoid a circular import
     for r in rows[:5]:
@@ -288,7 +288,7 @@ def summary_message(store, ids: list[int], gap: float) -> tuple[str, str]:
         lines.append(" · ".join(x for x in (label(r), r["airline"], route) if x))
     if len(rows) > 5:
         lines.append(f"…and {len(rows) - 5} more")
-    lines.append(f"(off for {_duration(gap)}; they're in your reports, marked 📴)")
+    lines.append(f"(off for {_duration(gap)}; they're in your reports, marked as found afterwards)")
     return title, "\n".join(lines)
 
 
@@ -311,7 +311,7 @@ def start_catchup(cfg, budget, gap: tuple[float, float], notifier=None) -> threa
     def run():
         store = Store(cfg.db_path)
         try:
-            summary = CatchUp(cfg, store, Lookup(store, cfg.adsbdb_api), budget=budget).run(*gap)
+            summary = CatchUp(cfg, store, Lookup.for_config(store, cfg), budget=budget).run(*gap)
             ids = summary["found"]
             log.info("offline log: found %d plane(s) that came over while planespotter was off", len(ids))
             if ids and notifier is not None and notifier.enabled:

@@ -41,7 +41,7 @@ def build(cfg: Config, budget=None, share: int = 1, quota=None, feed=None) -> Wa
     budget = budget or make_budget(cfg)
     flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
                if cfg.whole_flights else None)
-    watcher = Watcher(cfg, store, feed or shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
+    watcher = Watcher(cfg, store, feed or shared_feed(cfg, budget), Lookup.for_config(store, cfg), Mailer(cfg),
                       budget=budget, flights=flights, notifier=PushNotifier(cfg, quota=quota),
                       sky=SkyWatch(cfg) if cfg.weather else None,
                       ground_ft=home_elevation_ft(cfg),
@@ -185,13 +185,13 @@ def cmd_check(cfg: Config, args) -> int:
           f"(your zone is {cfg.radius_miles:g} mi{ceiling}):\n")
     for d, ac in rows:
         too_high = cfg.max_altitude_ft is not None and ac.alt_ft is not None and ac.alt_ft > cfg.max_altitude_ft
-        mark = "✈ IN ZONE" if d <= cfg.radius_miles and not too_high else ""
+        mark = "IN ZONE" if d <= cfg.radius_miles and not too_high else ""
         direction = compass(bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon))
         print(f"  {ac.label:<9} {ac.type_code:<5} {d:5.1f} mi {direction:<2}  {fmt_alt(ac.alt_ft):>10}  {mark}")
     if not rows:
         print("  (nothing right now. Try again in a few minutes, or check your coordinates.)")
     if cfg.quiet_hours and cfg.in_quiet_hours(time.time()):
-        print(f"\n  🌙 It's quiet hours ({fmt_clock_range(cfg.quiet_hours)}), so `watch` won't email alerts right now.")
+        print(f"\n  It's quiet hours ({fmt_clock_range(cfg.quiet_hours)}), so `watch` won't email alerts right now.")
     return 0
 
 
@@ -329,7 +329,7 @@ def cmd_accounts(env_path: Path, args) -> int:
         # The accounts moved with planespotter: changes made here wouldn't reach them.
         where = cfg.public_url or "your planespotter's address"
         print(f"Your accounts live on your server now ({cfg.server}). Manage them on the website: sign in at {where},")
-        print("then use 👤 (your account) and Invite people. Or on the server itself:")
+        print("then open your account (the person button, top of the list) and Invite people. Or on the server itself:")
         print(f"  ssh {cfg.server}")
         print(f"  cd planespotter && python3 -m planespotter accounts {what}{' ' + args.value if args.value else ''}")
         return 0 if what == "list" else 1
@@ -759,7 +759,7 @@ def cmd_test_special(cfg: Config, args) -> int:
         path = None
     print(f"Saved: {path}" if path else f"✔ Sent a test special-plane email to {cfg.email_to}.")
     if cfg.ntfy_topic:
-        ok = PushNotifier(cfg).special("✨ TEST · Airbus A380: QFA11", "Qantas · Airbus A380-842\n6.4 mi NE, 4,200 ft",
+        ok = PushNotifier(cfg).special("TEST · Airbus A380: QFA11", "Qantas · Airbus A380-842\n6.4 mi NE, 4,200 ft",
                                        ac.hex, ac.callsign)
         print("✔ Sent a test phone notification." if ok else "Phone notification failed (see above).")
     return 0
@@ -821,7 +821,7 @@ def cmd_phone(cfg: Config, args) -> int:
     accounts = None if cfg.server else open_accounts(cfg)  # (on a server, the accounts are there)
     if cfg.server and (Path(cfg.db_path).parent / "accounts.db").exists():
         print("Accounts are on, on your server: get your phone script from the website, where it comes with your")
-        print(f"own pass. Sign in at {cfg.public_url or 'your planespotter'}, tap 👤 (your account), then Get my script.")
+        print(f"own pass. Sign in at {cfg.public_url or 'your planespotter'}, open your account (the person button), then Get my script.")
         return 0
     if accounts:  # accounts are on: your script gets your own pass (a new one: the old script stops working)
         owner = next(u for u in accounts.users() if u["owner"])
@@ -851,7 +851,7 @@ def cmd_phone(cfg: Config, args) -> int:
         print(f"✔ {'Added' if done['added'] and not done['updated'] else 'Updated'} the planespotter script in Scriptable's "
               f"iCloud Drive folder: {', '.join(names)}.")
         print("  On your iPhone, open Scriptable: iCloud brings the new version over in a minute or so.")
-        print("  To check: tap the widget; the map's Point button should read  🔭 Point ↗")
+        print("  To check: tap the widget; the map should have a Point button with a telescope on it")
         print("  Nothing changed on the phone after a few minutes? Close Scriptable (swipe it away) and open it again,")
         print("  or copy and paste it instead:  python3 -m planespotter phone --copy widget")
         return 0
@@ -864,7 +864,7 @@ def cmd_phone(cfg: Config, args) -> int:
             print("  in Scriptable for the widget script (Siri uses the same script), or wherever the link goes.")
             if args.copy == "widget":
                 print("  In Scriptable: open the planespotter script, tap in it, Select All, then Paste over everything.")
-                print("  To check it worked: tap the widget; the map's Point button should read  🔭 Point ↗")
+                print("  To check it worked: tap the widget; the map should have a Point button with a telescope on it")
                 print("  No clipboard on the phone? Put it straight into Scriptable:  python3 -m planespotter phone --install")
         else:
             print(what)

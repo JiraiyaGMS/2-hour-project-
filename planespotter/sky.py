@@ -188,36 +188,36 @@ def sky_note(report: dict | None, alt_ft: int | None, distance: float, ground_ft
             layer = next(x for x in weather["layers"] if x["base_ft"] == ceiling and x["cover"] in CEILING_COVERS)
             what = COVER_WORDS[layer["cover"]]
             if layer["cover"] == "BKN":
-                return f"⛅ Above {what} at {ceiling:,} ft: you might catch it through a gap"
-            return f"☁️ Above the {what} at {ceiling:,} ft: listen for it"
+                return f"Above {what} at {ceiling:,} ft: you might catch it through a gap"
+            return f"Above the {what} at {ceiling:,} ft: listen for it"
         vis = weather.get("visibility_miles")
         slant = math.hypot(distance, max(0, height) / 5280)
         if vis is not None and vis < slant:
-            return f"🌫️ Visibility is only {vis:g} mi, so it may be hard to see"
+            return f"Visibility is only {vis:g} mi, so it may be hard to see"
     if sun.get("daylight") == "night":
-        return "🌙 After dark: look for its flashing lights"
+        return "After dark: look for its flashing lights"
     if sun.get("daylight") == "twilight":
-        return "🌆 Getting dark: look for its lights"
+        return "Getting dark: look for its lights"
     return ""
 
 
 def sky_summary(report: dict | None) -> str:
-    """'☁️ Overcast at 1,800 ft', '🌙 Clear night'... (the same line as on the map)."""
+    """'Overcast at 1,800 ft', 'Clear night'... (the same line as on the map)."""
     if not report:
         return ""
     w, dark = report.get("weather"), (report.get("sun") or {}).get("daylight") != "day"
     if not w:
-        return "🌙 Dark out" if dark else "☀️ Daylight"
+        return "Dark out" if dark else "Daylight"
     solid = next((x for x in w["layers"] if x["cover"] in CEILING_COVERS), None)
     top = w["layers"][0] if w["layers"] else None
     if solid:
-        word = {"BKN": "🌥️ Broken cloud", "OVX": "🌫️ Fog"}.get(solid["cover"], "☁️ Overcast")
+        word = {"BKN": "Broken cloud", "OVX": "Fog"}.get(solid["cover"], "Overcast")
         text = f"{word} at {solid['base_ft']:,} ft"
     elif top:
         word = COVER_WORDS[top["cover"]]
-        text = f"{'⛅' if top['cover'] == 'SCT' else '🌤️'} {word[0].upper() + word[1:]} at {top['base_ft']:,} ft"
+        text = f"{word[0].upper() + word[1:]} at {top['base_ft']:,} ft"
     else:
-        text = "🌙 Clear night" if dark else "☀️ Clear skies"
-    if dark and not text.startswith("🌙"):
-        text += " · 🌙 dark"
+        text = "Clear night" if dark else "Clear skies"
+    if dark and "night" not in text:
+        text += " · dark"
     return text

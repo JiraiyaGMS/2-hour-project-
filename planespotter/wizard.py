@@ -71,7 +71,7 @@ class Wizard:
         cur = self.current
         values: dict[str, str] = {}
 
-        print("\n✈  planespotter setup\n")
+        print("\nplanespotter setup\n")
         if cur:
             print(f"Editing your existing settings in {self.env_path}")
             print("Press Enter to keep what's in [brackets].\n")

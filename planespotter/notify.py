@@ -227,9 +227,9 @@ class PushNotifier:
 
         first = passes[0]
         if len(passes) == 1:
-            title = f"✈ {label(first)} over {cfg.home_name}"
+            title = f"{label(first)} over {cfg.home_name}"
         else:
-            title = f"✈ {len(passes)} planes over {cfg.home_name}"
+            title = f"{len(passes)} planes over {cfg.home_name}"
         lines = []
         for p in passes[:5]:
             bits = [label(p), p["airline"], route(p)]
@@ -237,7 +237,7 @@ class PushNotifier:
             lines.append(" · ".join(b for b in bits if b) + f"\n{where}")
             lines.extend(highlights(p))
         if any(json.loads(field(p, "firsts", "[]") or "[]") for p in passes):
-            title = "✨" + title[1:]  # a first: an airline or aircraft type you've never spotted
+            title = "New: " + title  # a first: an airline or aircraft type you've never spotted
         code = airline_code(first["callsign"])
         return self.send(
             title, "\n".join(lines),

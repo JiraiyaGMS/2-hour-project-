@@ -271,7 +271,7 @@ def not_a_plane(ts: float, lat: float, lon: float) -> str:
         return ""
     b = min(bright, key=lambda o: o.mag)
     from .geo import compass
-    return f"✨ The very bright, steady light in the {compass(b.az)} is {b.name}, not a plane"
+    return f"The very bright, steady light in the {compass(b.az)} is {b.name}, not a plane"
 
 
 # --- planes crossing the Moon (or the Sun) ----------------------------------------------------

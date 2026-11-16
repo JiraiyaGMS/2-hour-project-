@@ -41,9 +41,9 @@ def following(store) -> list[dict]:
 def landed_text(row, airport) -> str:
     name = row["callsign"] or row["hex"].upper()
     if airport is None:
-        return f"🛬 {name} has landed"
+        return f"{name} has landed"
     where = airport.city or airport.name
-    return f"🛬 {name} has landed in {where} ({airport.code})"
+    return f"{name} has landed in {where} ({airport.code})"
 
 
 def check(store, positions, notifier, now: float) -> list[str]:

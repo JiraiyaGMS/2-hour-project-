@@ -1,4 +1,4 @@
-"""Track a flight on the Mac's map, the same as the phone's ✈︎ Track a flight.
+"""Track a flight on the Mac's map, the same as the phone's Track a flight.
 
 Find flights anywhere in the world by flight number ("UA 1234", "Alaska 1349"), registration (N12345),
 airline ("Southwest") or airport ("PDX", "Portland", "Alaska PDX"), straight from adsb.lol, within the

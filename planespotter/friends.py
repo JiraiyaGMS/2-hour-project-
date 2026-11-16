@@ -110,7 +110,7 @@ class Friends:
                 self.store.set_meta(f"friend_rare:{code}", str(max(r["at"] for r in fresh)))
                 if seen:  # not on the very first read (that would be old news)
                     r = fresh[0]
-                    text = f"🎉 {name} just spotted {r['what']} ({r['label']})"
+                    text = f"{name} just spotted {r['what']} ({r['label']})"
                     if self.notifier.quota is None or self.notifier.quota.allow("reply"):
                         self.notifier.send(text, "From your friends on planespotter.", tags=("tada",), kind="reply")
                     news.append(text)

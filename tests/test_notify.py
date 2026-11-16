@@ -42,7 +42,7 @@ class NotifierTests(unittest.TestCase):
         url, payload = post.sent[0]
         self.assertEqual(url, "https://ntfy.sh/")
         self.assertEqual(payload["topic"], "planespotter-test")
-        self.assertEqual(payload["title"], "✈ DAL573 over Test House")
+        self.assertEqual(payload["title"], "DAL573 over Test House")
         self.assertIn("FLL → LAX", payload["message"])
         self.assertEqual(payload["click"], f"http://192.168.1.5:8765/?flight={new[0]}")
         self.assertTrue(payload["icon"].endswith("/DAL.png"))

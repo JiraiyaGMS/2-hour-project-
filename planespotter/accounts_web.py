@@ -9,14 +9,17 @@ through without a sign-in (or, for a phone's script, that account's token).
 from __future__ import annotations
 
 import http.client
+import json
 import logging
 import os
 import sys
 import threading
 import time
 import urllib.parse
+from functools import lru_cache
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from .accounts import EDITABLE, AccountError, Accounts, check_settings
 
@@ -26,21 +29,41 @@ MAX_FORM = 20_000
 PASS_ON = ("Content-Type", "Origin", "Sec-Fetch-Site", "Accept", "User-Agent", "Range", "If-None-Match")
 PASS_BACK = ("Content-Type", "Cache-Control", "Content-Disposition", "X-Content-Type-Options", "Location", "ETag")
 
+@lru_cache(maxsize=1)
+def _icons() -> dict:
+    """The same icons as the map page (web/icons.json, built by scripts/build_icons.py)."""
+    try:
+        return json.loads((Path(__file__).resolve().parent / "web" / "icons.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def icon(name: str) -> str:
+    return f'<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">{_icons().get(name, "")}</svg>'
+
+
+MARK = ('<svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="15" fill="#f08c1a"/>'
+        '<path fill="#fff" transform="rotate(45 32 32) translate(9.6 9.6) scale(.7)" d="M32 3c2.1 0 3.5 2.4 3.5 5.6v14.7l21.7 '
+        '12.9v5.9L35.5 35.3v12.6l7.3 5.6v4.9L32 55.6l-10.8 2.8v-4.9l7.3-5.6V35.3L6.8 42.1v-5.9l21.7-12.9V8.6C28.5 5.4 29.9 3 32 3z"/></svg>')
+
 CSS = """
-:root { color-scheme: light dark; --bg: #f4f6f9; --card: #fff; --ink: #18202b; --muted: #68758a; --line: #dfe5ee; --accent: #e8860c; }
-@media (prefers-color-scheme: dark) { :root { --bg: #0b0f14; --card: #141b24; --ink: #e8eef5; --muted: #9aa7b6; --line: #263140; } }
+:root { color-scheme: light dark; --bg: #f3f5f8; --card: #fff; --ink: #131b25; --muted: #5b6878; --line: #e1e6ed; --accent: #e07b00; }
+@media (prefers-color-scheme: dark) { :root { --bg: #090d12; --card: #0f151c; --ink: #e9eef4; --muted: #8d9aab; --line: #212b38; --accent: #ffad1f; } }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
 main { max-width: 520px; margin: 0 auto; padding: 28px 16px 60px; }
-.logo { font-size: 26px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 18px; } .logo span { color: var(--accent); }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+.logo { display: flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 750; letter-spacing: -.02em; margin-bottom: 20px; } .logo span { color: var(--accent); }
+.mark { width: 36px; height: 36px; border-radius: 9px; }
+.ic { width: 1.1em; height: 1.1em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -.18em; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
 h1 { font-size: 21px; margin: 0 0 6px; } h2 { font-size: 16px; margin: 0 0 8px; }
+h1, h2 { display: flex; align-items: center; gap: 8px; letter-spacing: -.01em; } h1 .ic, h2 .ic { color: var(--accent); }
 p { color: var(--muted); margin: 6px 0 12px; font-size: 14.5px; line-height: 1.45; } p b, li b { color: var(--ink); }
 label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
 input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); font: inherit; }
 textarea { font: 11px ui-monospace, Menlo, monospace; height: 120px; }
 .row { display: flex; gap: 10px; } .row > * { flex: 1; }
-button, .btn { display: inline-block; margin-top: 14px; padding: 10px 16px; border: 0; border-radius: 10px; background: var(--ink); color: var(--card); font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; }
+button, .btn { display: inline-flex; align-items: center; gap: 7px; margin-top: 14px; padding: 10px 16px; border: 0; border-radius: 99px; background: var(--ink); color: var(--card); font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; }
 button.ghost, .btn.ghost { background: none; color: var(--ink); border: 1px solid var(--line); font-weight: 600; }
 button.danger { background: none; color: #d6453d; border: 1px solid var(--line); margin-top: 0; padding: 6px 10px; font-weight: 600; }
 .error { background: #d6453d22; border: 1px solid #d6453d66; color: var(--ink); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 14.5px; }
@@ -48,7 +71,7 @@ button.danger { background: none; color: #d6453d; border: 1px solid var(--line);
 .who { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14.5px; }
 .who:first-of-type { border-top: 0; } .muted { color: var(--muted); font-size: 13px; }
 code { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; font-size: 13px; word-break: break-all; }
-a { color: var(--accent); } nav { display: flex; gap: 14px; margin-bottom: 14px; font-size: 14.5px; flex-wrap: wrap; } ol { padding-left: 20px; color: var(--muted); font-size: 14.5px; line-height: 1.5; }
+a { color: var(--accent); } nav a { display: inline-flex; align-items: center; gap: 5px; text-decoration: none; font-weight: 600; } nav { display: flex; gap: 16px; margin-bottom: 14px; font-size: 14.5px; flex-wrap: wrap; } ol { padding-left: 20px; color: var(--muted); font-size: 14.5px; line-height: 1.5; }
 """
 
 
@@ -59,7 +82,7 @@ def page(title: str, body: str, refresh: str = "") -> bytes:
             '<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/apple-touch-icon.png">'
             '<link rel="icon" href="/icon-192.png"><meta name="theme-color" content="#0b0f14">'
             f'<title>{escape(title)} · planespotter</title><style>{CSS}</style></head><body><main>'
-            f'<div class="logo">plane<span>spotter</span></div>{body}</main></body></html>').encode()
+            f'<div class="logo">{MARK}<div>plane<span>spotter</span></div></div>{body}</main></body></html>').encode()
 
 
 def notice(text: str, kind: str = "error") -> str:
@@ -73,7 +96,7 @@ def home_fields(v: dict, first_time: bool) -> str:
       <label for="hn">What to call it</label><input id="hn" name="HOME_NAME" value="{g('HOME_NAME', 'Home')}" maxlength="40">
       <div class="row"><div><label for="lat">Latitude</label><input id="lat" name="HOME_LAT" value="{g('HOME_LAT')}" inputmode="decimal" placeholder="45.5231" required></div>
       <div><label for="lon">Longitude</label><input id="lon" name="HOME_LON" value="{g('HOME_LON')}" inputmode="decimal" placeholder="-122.6765" required></div></div>
-      <button type="button" class="ghost" id="here" style="margin-top:8px">📍 Use where I am now</button>
+      <button type="button" class="ghost" id="here" style="margin-top:8px">{icon("locate")}Use where I am now</button>
       <p class="muted" id="here-note">Or find your home in Apple or Google Maps, press and hold on it, and copy the two numbers.</p>
       <div class="row"><div><label for="r">Zone size (miles)</label><input id="r" name="RADIUS_MILES" value="{g('RADIUS_MILES', '3')}" inputmode="decimal"></div>
       <div><label for="alt">Only below (feet)</label><input id="alt" name="MAX_ALTITUDE_FT" value="{g('MAX_ALTITUDE_FT')}" inputmode="numeric" placeholder="any height"></div></div>
@@ -207,7 +230,7 @@ def make_handler(front: Front):
             if not accounts.invite_ok(code):
                 return page("Invite", '<div class="card"><h1>That invite isn\'t good any more</h1>'
                             "<p>Invites work once and run out after a week. Ask your friend for a new one.</p></div>")
-            return page("Join", f"""<div class="card"><h1>You're invited ✈︎</h1>
+            return page("Join", f"""<div class="card"><h1>You're invited</h1>
               <p>Make your own planespotter: your home, your history, your notifications. Nobody else sees them.</p>{notice(error)}
               <form method="post" action="/join"><input type="hidden" name="code" value="{escape(code)}">
               <label for="u">Pick a username</label><input id="u" name="username" value="{escape(v.get('username', ''))}" autocomplete="username" autocapitalize="none" required>
@@ -219,19 +242,19 @@ def make_handler(front: Front):
         def account_page(self, user: dict, error: str = "", ok: str = "", script: str = "") -> bytes:
             v = accounts.settings(user, front.owner_env)
             topic = v.get("NTFY_TOPIC", "")
-            nav = '<nav><a href="/">← The map</a>' + ('<a href="/admin">Invite people</a>' if user["owner"] else "") + "</nav>"
+            nav = f'<nav><a href="/">{icon("arrow-left")}The map</a>' + ('<a href="/admin">Invite people</a>' if user["owner"] else "") + "</nav>"
             phone = ""
             if script:
                 phone = f"""<div class="ok">Here's your script. It works for you only, and making a new one stops the old one.</div>
                   <textarea id="script" readonly>{escape(script)}</textarea>
-                  <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('script').value).then(function () {{ this.textContent = 'Copied ✓'; }}.bind(this))">Copy it</button>
+                  <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('script').value).then(function () {{ this.textContent = 'Copied'; }}.bind(this))">Copy it</button>
                   <ol><li>On your iPhone, install <b>Scriptable</b> (free) from the App Store.</li>
                   <li>Open it, tap <b>+</b>, paste, and name the script <b>planespotter</b>.</li>
                   <li>Add a Scriptable widget to your Home Screen and choose the script.</li></ol>"""
-            return page("Your account", f"""{nav}<div class="card"><h1>👤 {escape(user['username'])}</h1>{notice(error)}{notice(ok, 'ok')}
+            return page("Your account", f"""{nav}<div class="card"><h1>{icon("user")}{escape(user['username'])}</h1>{notice(error)}{notice(ok, 'ok')}
               <form method="post" action="/account"><h2>Your home</h2>{home_fields(v, False)}<button>Save</button>
               <p class="muted">Saving restarts planespotter for a few seconds.</p></form></div>
-              <div class="card"><h2>🔔 Notifications on your phone</h2>
+              <div class="card"><h2>{icon("bell")}Notifications on your phone</h2>
               {"<ol><li>Install the free <b>ntfy</b> app (App Store on iPhone, Google Play on Android).</li><li>Tap <b>+</b> and subscribe to this topic (it's private to you):<br><code>" + escape(topic) + "</code></li><li>Leave the server as it is (ntfy.sh).</li></ol>" if topic else "<p>Not set up for this account.</p>"}</div>
               {self.phone_cards(phone, script)}
               <div class="card"><h2>Change your password</h2><form method="post" action="/account/password">
@@ -243,13 +266,13 @@ def make_handler(front: Front):
         def phone_cards(self, phone: str, script: str) -> str:
             """How to put planespotter on a phone: iPhone (Scriptable: widget and Siri) and Android (an installed app
             with spoken shortcuts). The phone that's looking gets its own first."""
-            iphone = f"""<div class="card"><h2>📱 iPhone: widget and Siri</h2>
+            iphone = f"""<div class="card"><h2>{icon("phone")}iPhone: widget and Siri</h2>
               <p>Your own script for the free Scriptable app: a home-screen widget, Siri ("Hey Siri, what's that
               plane?"), and the planes over wherever you are.</p>{phone}
               <form method="post" action="/account/phone"><button class="ghost">{'Make a new script' if script else 'Get my script'}</button></form>
               <p class="muted">Also: in Safari, <b>Share → Add to Home Screen</b> gives the app its own icon.</p></div>"""
             site = escape(self.base_url().replace("https://", "").replace("http://", ""))
-            android = f"""<div class="card"><h2>🤖 Android: the planespotter app</h2>
+            android = f"""<div class="card"><h2>{icon("phone")}Android: the planespotter app</h2>
               <p>An app for any Android phone (any browser): planespotter with a <b>home-screen widget</b> (the next plane
               over you, with a countdown), and shortcuts that <b>answer out loud</b>.</p>
               <a class="btn" href="/planespotter.apk" download>Download the app</a>
@@ -276,8 +299,8 @@ def make_handler(front: Front):
                    f'and delete their history?\')"><input type="hidden" name="username" value="{escape(u["username"])}">'
                    '<button class="danger">Remove</button></form>') + "</div>" for u in accounts.users())
             made = f"""<div class="ok">Send this link to one friend. It works once, for a week:<br><code id="link">{escape(link)}</code></div>
-              <button type="button" class="ghost" style="margin-top:0" onclick="navigator.clipboard.writeText(document.getElementById('link').textContent).then(function () {{ this.textContent = 'Copied ✓'; }}.bind(this))">Copy the link</button>""" if link else ""
-            return page("Invite people", f"""<nav><a href="/">← The map</a><a href="/account">Your account</a></nav>
+              <button type="button" class="ghost" style="margin-top:0" onclick="navigator.clipboard.writeText(document.getElementById('link').textContent).then(function () {{ this.textContent = 'Copied'; }}.bind(this))">Copy the link</button>""" if link else ""
+            return page("Invite people", f"""<nav><a href="/">{icon("arrow-left")}The map</a><a href="/account">{icon("user")}Your account</a></nav>
               <div class="card"><h1>People</h1>{notice(error)}{rows}</div>
               <div class="card"><h2>Invite a friend</h2><p>They get their own planespotter: their own home, history and
               notifications. Everyone shares this server's adsb.lol allowance; friends who live within about 150 miles
@@ -362,7 +385,7 @@ def make_handler(front: Front):
                     self.send(400, self.join_page(form.get("code", ""), form, str(exc)))
                     return
                 front.restart()
-                self.send(200, page("Welcome", """<div class="card"><h1>Welcome aboard ✈︎</h1>
+                self.send(200, page("Welcome", """<div class="card"><h1>Welcome aboard</h1>
                   <p>Your planespotter is starting. This page moves on by itself in a few seconds.</p>
                   <p>Next: on your account page, set up <b>notifications</b> and the <b>iPhone widget</b>.</p></div>""",
                                  refresh="12; url=/account"), headers={"Set-Cookie": self.session_cookie(accounts.new_session(user))})
@@ -381,7 +404,7 @@ def make_handler(front: Front):
                     self.send(400, self.account_page(user, str(exc)))
                     return
                 front.restart()
-                self.send(200, page("Saved", '<div class="card"><h1>Saved ✓</h1><p>planespotter is restarting to use your new '
+                self.send(200, page("Saved", '<div class="card"><h1>Saved</h1><p>planespotter is restarting to use your new '
                                     "settings. This page moves on by itself in a few seconds.</p></div>", refresh="12; url=/account"))
             elif path == "/account/password":
                 try:

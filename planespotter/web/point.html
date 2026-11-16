@@ -4,11 +4,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>planespotter: what's that plane?</title>
 <!--
-  "Point" for planespotter, opened in Safari from the planespotter script in Scriptable (🔭 on its map).
+  "Point" for planespotter, opened in Safari from the planespotter script in Scriptable (Point, on its map).
   Safari gives pages the compass (Scriptable's own web view doesn't), so a beam shows which way your phone
   is facing, like Life360, and the plane inside it is picked. The planes come in the link after "#"
   (that part is never sent to any server), because adsb.lol doesn't let web pages fetch from it directly;
-  they keep moving by their speed and heading, and ↻ goes back to Scriptable for fresh ones.
+  they keep moving by their speed and heading, and "Fresh planes" goes back to Scriptable for new ones.
 -->
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
@@ -23,12 +23,18 @@
   .chip { background: var(--card); border-radius: 999px; padding: 7px 12px; font-size: 13px; color: var(--muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
   .chip b { color: var(--text); }
-  .btn { background: #1c2632; border-radius: 12px; padding: 9px 14px; font-weight: 600; font-size: 14px; }
-  .go { background: var(--amber); color: #111; }
+  .chip .ic { color: var(--amber); margin-right: 5px; }
+  .btn { background: #1a232e; border: 1px solid #263242; border-radius: 999px; padding: 9px 15px; font-weight: 600; font-size: 14px;
+    display: inline-flex; align-items: center; gap: 7px; }
+  .go { background: var(--amber); border-color: var(--amber); color: #111; }
+  .ic { width: 1.15em; height: 1.15em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+    stroke-linejoin: round; vertical-align: -.2em; }
   #card { position: absolute; left: 10px; right: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); background: var(--card);
-    border-radius: 16px; padding: 12px 14px; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+    border: 1px solid rgba(255, 255, 255, .08); border-radius: 18px; padding: 14px; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
   #card .row { display: flex; align-items: center; gap: 12px; }
-  #arrow { font-size: 40px; line-height: 1; color: var(--amber); min-width: 44px; text-align: center; }
+  #arrow { width: 52px; height: 52px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--amber);
+    background: rgba(255, 176, 32, .12); }
+  #arrow .ic { width: 26px; height: 26px; }
   #main { font-size: 20px; font-weight: 700; }
   #sub { color: var(--muted); font-size: 14px; margin-top: 3px; }
   #also { color: var(--muted); font-size: 12px; margin-top: 6px; }
@@ -39,18 +45,33 @@
 </style>
 </head><body>
 <div id="map"></div>
-<div id="top"><div class="chip" id="where">✈ planespotter</div><div class="chip" id="age"></div></div>
+<div id="top"><div class="chip" id="where">planespotter</div><div class="chip" id="age"></div></div>
 <div id="card">
-  <div class="row"><div id="arrow">🧭</div><div style="flex:1;min-width:0">
+  <div class="row"><div id="arrow"></div><div style="flex:1;min-width:0">
     <div id="main">What's that plane?</div>
     <div id="sub">Hold your phone flat in front of you, top pointing at the plane. Tap Start and allow motion &amp; orientation.</div>
   </div></div>
   <div id="also"></div>
-  <div id="actions"><button class="btn go" id="start">Start</button><button class="btn" id="voice">🔊 On</button><button class="btn" id="refresh">↻ Fresh planes</button></div>
+  <div id="actions"><button class="btn go" id="start">Start</button><button class="btn" id="voice"></button><button class="btn" id="refresh"></button></div>
 </div>
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
 "use strict";
+// Icons (Lucide, ISC licence), drawn in the page so it needs nothing else.
+var ICONS = {
+ "plane": "<path d='M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z'/>",
+ "compass": "<path d='m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z'/><circle cx='12' cy='12' r='10'/>",
+ "moon": "<path d='M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z'/>",
+ "right": "<path d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8'/><path d='M21 3v5h-5'/>",
+ "left": "<path d='M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/><path d='M3 3v5h5'/>",
+ "volume": "<path d='M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z'/><path d='M16 9a5 5 0 0 1 0 6'/><path d='M19.364 18.364a9 9 0 0 0 0-12.728'/>",
+ "mute": "<path d='M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z'/><line x1='22' x2='16' y1='9' y2='15'/><line x1='16' x2='22' y1='9' y2='15'/>",
+ "refresh": "<path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8'/><path d='M21 3v5h-5'/><path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16'/><path d='M8 16H3v5'/>",
+ "telescope": "<path d='m10.065 12.493-6.18 1.318a.934.934 0 0 1-1.108-.702l-.537-2.15a1.07 1.07 0 0 1 .691-1.265l13.504-4.44'/><path d='m13.56 11.747 4.332-.924'/><path d='m16 21-3.105-6.21'/><path d='M16.485 5.94a2 2 0 0 1 1.455-2.425l1.09-.272a1 1 0 0 1 1.212.727l1.515 6.06a1 1 0 0 1-.727 1.213l-1.09.272a2 2 0 0 1-2.425-1.455z'/><path d='m6.158 8.633 1.114 4.456'/><path d='m8 21 3.105-6.21'/><circle cx='12' cy='13' r='2'/>"
+};
+function ic(name) { return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">' + ICONS[name] + '</svg>'; }
+function arrow(name) { document.getElementById("arrow").innerHTML = ic(name); }
+arrow("compass");
 // In the Android app, the phone speaks through the app itself: Android's built-in web view has no voice
 // (or one that stays silent), so the app's own always takes over there.
 if (window.PlanespotterAndroid) {
@@ -219,8 +240,8 @@ function tick() {
   }
   if (heading === null) return;
   if (age > 180) {
-    $("arrow").textContent = "↻"; $("main").textContent = "These planes are " + Math.round(age / 60) + " minutes old";
-    $("sub").textContent = "Tap ↻ Fresh planes to get where they are now."; $("also").textContent = "";
+    arrow("refresh"); $("main").textContent = "These planes are " + Math.round(age / 60) + " minutes old";
+    $("sub").textContent = "Tap Fresh planes to get where they are now."; $("also").textContent = "";
     return;
   }
   // In the beam: the one nearest its middle (nearer planes win a tie).
@@ -233,7 +254,7 @@ function tick() {
     if (!picked || picked.p.hex !== best.p.hex) pickedAt = Date.now();
     picked = best;
     var r = routes[best.p.cs] || {};
-    $("arrow").textContent = "✈";
+    arrow("plane");
     $("main").textContent = best.p.label + (airlineOf(best.p) ? " · " + airlineOf(best.p) : "");
     $("sub").textContent = [r.route, best.p.type, best.p.alt >= 18000 ? "FL" + Math.round(best.p.alt / 100) : feet(best.p.alt) + " ft",
       Math.round(best.mi) + " mi away", "about " + Math.round(best.up) + "° up"].filter(Boolean).join(" · ");
@@ -250,9 +271,9 @@ function tick() {
     .sort(function (a, b) { return data.due[a] - data.due[b]; })[0];
   var g = all.filter(function (s) { return s.p.hex === dueHex; })[0] ||
     all.slice().sort(function (a, b) { return b.up - a.up || a.mi - b.mi; })[0];
-  if (!g) { $("arrow").textContent = "🌙"; $("main").textContent = "No planes in the sky nearby"; $("sub").textContent = ""; $("also").textContent = ""; return; }
+  if (!g) { arrow("moon"); $("main").textContent = "No planes in the sky nearby"; $("sub").textContent = ""; $("also").textContent = ""; return; }
   var turn = turnOf(g.az, heading);
-  $("arrow").textContent = turn > 0 ? "↻" : "↺";
+  arrow(turn > 0 ? "right" : "left");
   $("main").textContent = "No plane that way";
   $("sub").textContent = (turn > 0 ? "Turn right " : "Turn left ") + Math.round(Math.abs(turn)) + "° for " + g.p.label +
     " (" + Math.round(g.mi) + " mi " + WORDS[compass(g.az)] + ", about " + Math.round(g.up) + "° up)";
@@ -267,10 +288,10 @@ function tick() {
 data = readLink();
 if (!data) {
   $("main").textContent = "Open this from planespotter";
-  $("sub").textContent = "In Scriptable, open planespotter and tap 🔭 Point: it brings the planes around you here.";
+  $("sub").textContent = "In Scriptable, open planespotter and tap Point: it brings the planes around you here.";
   $("start").classList.add("hidden");
 } else {
-  $("where").innerHTML = "✈ <b>" + esc(data.home || "Near you") + "</b>";
+  $("where").innerHTML = ic("plane") + "<b>" + esc(data.home || "Near you") + "</b>";
   try {
     map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/dark", center: [data.me[1], data.me[0]],
       zoom: 9, attributionControl: false, dragRotate: false, pitchWithRotate: false });
@@ -302,7 +323,9 @@ if (!data) {
   } catch (e) { /* no map (no internet for the map tiles): the card still works */ }
 }
 $("start").onclick = start;
-$("voice").onclick = function () { voice = !voice; this.textContent = voice ? "🔊 On" : "🔇 Off"; };
+function voiceButton() { $("voice").innerHTML = ic(voice ? "volume" : "mute") + (voice ? "Voice on" : "Voice off"); }
+$("voice").onclick = function () { voice = !voice; voiceButton(); };
+voiceButton(); $("refresh").innerHTML = ic("refresh") + "Fresh planes";
 $("refresh").onclick = function () {
   var back = data && typeof data.back === "string" && /^(scriptable:\/\/\/|https?:\/\/)/i.test(data.back) ? data.back : "";
   location.href = back || "scriptable:///run/planespotter?point=1";

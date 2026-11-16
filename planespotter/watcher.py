@@ -189,7 +189,7 @@ class Watcher:
         lines = [f"{c.ac.label} {'now' if c.eta == 0 else f'in {max(1, round(c.eta / 60))} min'}, "
                  f"from the {compass(c.az)}, {fmt_alt(c.ac.alt_ft)}" for c in coming[:8]]
         log.info("rush: %d planes coming over in the next 15 minutes", len(coming))
-        return self.notifier.send(f"🛫 Rush: {len(coming)} planes coming over in the next 15 minutes",
+        return self.notifier.send(f"Rush: {len(coming)} planes coming over in the next 15 minutes",
                                   "\n".join(lines) + "\n(if they keep flying straight)",
                                   click=self.notifier.link(), tags=("airplane", "stopwatch"))
 
@@ -217,7 +217,7 @@ class Watcher:
             if self.cfg.in_quiet_hours(p["visible_from"]):
                 continue
             at = self.cfg.local(p["visible_from"]).strftime("%I:%M %p").lstrip("0").lower()
-            title = f"🛰️ {p['name']} flies over in {max(1, round(lead / 60))} min"
+            title = f"{p['name']} flies over in {max(1, round(lead / 60))} min"
             message = (f"Look {p['start_dir']} at {at}. It climbs to {p['max_el']}° up in the {p['max_dir']} and "
                        f"crosses the sky in about {round(p['minutes'])} minutes: a bright, steady star moving fast, "
                        "no blinking lights.")
@@ -283,7 +283,7 @@ class Watcher:
             for it in items:
                 ac, info = it["ac"], it["info"]
                 reason = it["reasons"][0]
-                title = f"{'🚨' if reason[2] else '✨'} {reason[1]}: {ac.label}"
+                title = f"{reason[1]}: {ac.label}"
                 where = f"{fmt_dist(it['distance'])} {compass(it['bearing'])} of {self.cfg.home_name}, {fmt_alt(ac.alt_ft)}"
                 details = " · ".join(x for x in (info.airline or info.owner, info.aircraft_desc) if x)
                 self.notifier.special(title, f"{details}\n{where}" if details else where, ac.hex, ac.callsign,
@@ -310,7 +310,20 @@ class Watcher:
             log.info("couldn't look up %s's flight: %s", ac.label, exc)
             return
         if points:
-            save_flight(self.store, self.cfg, pass_id, now, points, finished, tries=1, now=now)
+            origin, destination = save_flight(self.store, self.cfg, pass_id, now, points, finished, tries=1, now=now)
+            if origin is not None and destination is None:
+                self.route_from(pass_id, ac, origin, now)
+
+    def route_from(self, pass_id: int, ac: Aircraft, origin, now: float) -> None:
+        """Where it's going, now that we know where it really took off from: the leg of its flight number
+        that starts there (a flight with several legs a day has several to choose from)."""
+        try:
+            info = self.lookup.info(ac, now, took_off_from=origin)
+        except FETCH_ERRORS as exc:
+            log.info("couldn't look up %s's route: %s", ac.label, exc)
+            return
+        if info.destination:
+            self.store.set_destination(pass_id, info.destination, info.destination_city)
 
     # --- alerts -------------------------------------------------------------
 
@@ -338,7 +351,7 @@ class Watcher:
         return True
 
     def with_sky_notes(self, passes: list) -> list:
-        """Add a line like "☁️ Above the overcast at 1,800 ft: listen for it" when the sky's hiding it."""
+        """Add a line like "Above the overcast at 1,800 ft: listen for it" when the sky's hiding it."""
         if not self.sky:
             return passes
         try:
@@ -438,7 +451,7 @@ class Watcher:
             weather = self.sky.weather() if self.sky else None
             text = flow_report(self.store, self.cfg, now, weather).get("text")
             if text:
-                notes.append(f"🛬 {text}")
+                notes.append(f"{text}")
         except Exception as exc:  # extras: never let them stop the report
             log.info("no runway outlook: %s", exc)
         if self.sky:  # weather checks are on
@@ -456,7 +469,7 @@ class Watcher:
                 for p in self.space.upcoming(hours=30):
                     if p["visible"] and p["max_el"] >= 20 and p["start"] < now + 24 * 3600:
                         when = when_text(self.cfg, p["visible_from"] or p["start"], now)
-                        notes.append(f"🛰️ {p['name']} flies over {when}: look {p['start_dir']}, it climbs to "
+                        notes.append(f"{p['name']} flies over {when}: look {p['start_dir']}, it climbs to "
                                      f"{p['max_el']}° in the {p['max_dir']} (about {round(p['minutes'])} minutes)")
             except Exception as exc:
                 log.info("no satellite passes: %s", exc)

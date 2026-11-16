@@ -7,7 +7,7 @@ airport schedules. Two services have a free allowance:
   $0.005, so about 1,000 lookups a month for free (personal use).
 * Aviationstack, Free plan: 100 lookups a month.
 
-The phone looks a gate up only when you ask (tap 🚪 Gate, or "Where's my plane?") and keeps the
+The phone looks a gate up only when you ask (tap Gate, or "Where's my plane?") and keeps the
 answer for two hours, so asking again costs nothing; it stops just short of the free allowance each
 month. `python3 -m planespotter gates test UAL123` checks your key from the Mac.
 """

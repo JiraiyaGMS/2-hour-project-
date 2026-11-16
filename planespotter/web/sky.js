@@ -219,7 +219,7 @@
       const s = project(dirVec((az0 + daz * k + 360) % 360, el), cam, focal);
       if (!s) continue;
       g.fillStyle = '#ffffff'; g.beginPath(); g.arc(s[0], s[1], 6, 0, 7); g.fill();
-      pill(s[0], s[1], [`🛰️ ${tr.name}`, tr.visible ? 'bright, steady, moving fast' : 'in daylight: hard to see'], '#ffffff', false);
+      pill(s[0], s[1], [tr.name, tr.visible ? 'bright, steady, moving fast' : 'in daylight: hard to see'], '#ffffff', false);
     }
 
     // The planes, farthest first so near ones end up on top.
@@ -318,12 +318,12 @@
     const route = info.origin || info.destination
       ? `${info.origin_city || info.origin || '?'} → ${info.destination_city || info.destination || '?'}` : '';
     const seen = sawIt(p.hex);
-    el.innerHTML = `<button class="x" data-close aria-label="Close">×</button>
+    el.innerHTML = `<button class="x" data-close aria-label="Close"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       <h2>${esc(label(p))}</h2>
       <div class="sub">${esc([info.airline, info.aircraft_desc || p.type].filter(Boolean).join(' · '))}</div>
       ${route ? `<div>${esc(route)}</div>` : ''}
       <div class="sub">${Math.round(p.alt_ft || 0).toLocaleString()} ft · ${p.distance_miles.toFixed(1)} mi ${compass(p.bearing)} · ${Math.round(p.speed_kt || 0)} kt</div>
-      <div class="row"><button data-saw class="${seen ? 'done' : ''}">${seen ? '✓ You saw it' : '👀 I saw it'}</button>
+      <div class="row"><button data-saw class="${seen ? 'done' : ''}">${seen ? `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>You saw it` : `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>I saw it`}</button>
       <button data-map>Show on the map</button></div>`;
     el.hidden = false;
   }

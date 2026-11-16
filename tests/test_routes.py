@@ -88,6 +88,31 @@ class WatcherRouteTests(unittest.TestCase):
         self.assertEqual(len(json.loads(row["full_path"])), 3)
         self.assertEqual(row["full_tries"], 1)
 
+    def test_the_real_origin_picks_where_it_is_going(self):
+        """The route list said London to New York; its track says it left Fort Lauderdale. The lookup is asked
+        again for the leg that starts there, and that leg's destination is the one the alert shows."""
+        watcher, feed, mailer = make_watcher()
+        asked = []
+
+        class Legs:
+            def info(self, aircraft, now, took_off_from=None):
+                asked.append(took_off_from.code if took_off_from else None)
+                if took_off_from is None:
+                    return FlightInfo(airline="Delta", origin="LHR", origin_city="London", destination="JFK",
+                                      destination_city="New York")
+                return FlightInfo(airline="Delta", origin="FLL", origin_city="Fort Lauderdale", destination="LGW",
+                                  destination_city="London", route_basis="track")
+
+        watcher.lookup = Legs()
+        t = ts(2026, 11, 1, 12)
+        watcher.flights = FakeFlights([Point(t - 8 * 3600, FLL[0], FLL[1], 0, True, True),
+                                       Point(t, 51.5, -0.1, 3000, False, False)])
+        feed.planes = [plane(callsign="DAL573")]
+        row = watcher.store.get_pass(watcher.poll(t)[0])
+        self.assertEqual(asked, [None, "FLL"])
+        self.assertEqual((row["origin"], row["destination"], row["destination_city"]), ("FLL", "LGW", "London"))
+        self.assertEqual(row["route_checked"], 1)
+
     def test_finished_flight_is_counted_straight_away(self):
         watcher, feed, mailer = make_watcher()
         t = ts(2026, 11, 1, 12)

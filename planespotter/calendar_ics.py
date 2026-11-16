@@ -50,17 +50,17 @@ def build_calendar(cfg, now: float, passes: list[dict], best: list[dict], flight
             continue
         start = p["visible_from"] or p["start"]
         lines += event(f"pass-{p['number']}-{int(p['start'])}", start, p["visible_to"] or p["end"],
-                       f"🛰️ {p['name']} flies over",
+                       f"{p['name']} flies over",
                        f"Look {p['start_dir']}: it climbs to {p['max_el']}° in the {p['max_dir']} and sets in the "
                        f"{p['end_dir']}. A bright, steady star moving fast, with no blinking lights.", 10, now)
     for b in best:
-        lines += event(f"best-{int(b['start'])}", b["start"], b["end"], "👀 Best time to look up",
+        lines += event(f"best-{int(b['start'])}", b["start"], b["end"], "Best time to look up",
                        f"Usually about {b['planes']} planes over {cfg.home_name} in this hour ({b['sky']}).", None, now)
     for f in flights:
         if f["state"] in ("waiting", "airborne"):
             day = datetime.fromisoformat(f["day"])
             lines += ["BEGIN:VEVENT", f"UID:flight-{f['callsign']}-{f['day']}@planespotter", f"DTSTAMP:{_stamp(now)}",
-                      f"DTSTART;VALUE=DATE:{day:%Y%m%d}", f"SUMMARY:{_escape('✈ ' + f['label'] + ' (planespotter is following it)')}",
+                      f"DTSTART;VALUE=DATE:{day:%Y%m%d}", f"SUMMARY:{_escape('' + f['label'] + ' (planespotter is following it)')}",
                       "END:VEVENT"]
     lines.append("END:VCALENDAR")
     return ("\r\n".join(_fold(x) for x in lines) + "\r\n").encode("utf-8")

@@ -81,16 +81,16 @@ def games_lines(store, cfg, start: float, end: float) -> list[str]:
     lines = []
     if store.passes_between(start, end):
         card = bingo(store, cfg, end - 1)
-        lines.append(f"🎱 Spotting bingo: {card['filled']} of 9 squares"
+        lines.append(f"Spotting bingo: {card['filled']} of 9 squares"
                      + (f", {card['lines']} line{'s' if card['lines'] != 1 else ''}" if card["lines"] else "")
                      + (" (full house!)" if card["full_house"] else ""))
     score = quiz_score(store, start)
     if score["answered"]:
-        lines.append(f"🎯 Guess the plane: {score['right']} of {score['answered']} right ({score['percent']}%)")
+        lines.append(f"Guess the plane: {score['right']} of {score['answered']} right ({score['percent']}%)")
     p = punctuality(store, cfg, start, end)
     if p:
         best, worst = p["best"], p["worst"]
-        lines.append(f"⏱️ Your regular flights were on time {p['on_time']} of {p['flights']} times. "
+        lines.append(f"Your regular flights were on time {p['on_time']} of {p['flights']} times. "
                      f"Most punctual: {best['callsign']} (usually within {abs(best['average'])} min). "
                      + (f"Latest: {worst['callsign']} (on average {worst['average']} min late)."
                         if worst["average"] > 10 and worst["callsign"] != best["callsign"] else ""))
@@ -145,7 +145,7 @@ def weekly_email(week: Week, cfg: Config) -> Email:
 
     if week.firsts:
         html.append(_h2("New in your collection"))
-        html.append("".join(f'<p style="font-size:14px;margin:4px 0">✨ {escape(f)} <span style="color:{MUTED}">'
+        html.append("".join(f'<p style="font-size:14px;margin:4px 0">{escape(f)} <span style="color:{MUTED}">'
                             f'({escape(label(p))}, {cfg.local(p["first_seen"]):%a})</span></p>' for p, f in week.firsts[:12]))
         text += [f"New: {f} ({label(p)})" for p, f in week.firsts[:12]]
 
@@ -170,7 +170,7 @@ def weekly_email(week: Week, cfg: Config) -> Email:
             intro += f"It looked those hours up in adsb.lol's records and found {len(found)} plane{'s' if len(found) != 1 else ''} that came over:"
         else:
             intro += "It found no planes over your zone in the part it could look up."
-        html.append(_h2("📴 Found while planespotter was off", f"{len(found)} plane{'s' if len(found) != 1 else ''}"))
+        html.append(_h2("Found while planespotter was off", f"{len(found)} plane{'s' if len(found) != 1 else ''}"))
         html.append(f'<p style="font-size:14px;margin:0 0 8px">{escape(intro)}</p>')
         text += ["", f"FOUND WHILE PLANESPOTTER WAS OFF: {len(found)}", intro]
         if found:

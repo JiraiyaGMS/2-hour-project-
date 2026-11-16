@@ -1,4 +1,4 @@
-# planespotter ✈
+# planespotter
 
 Get an email whenever a plane flies over your house, plus a sky report
 every morning with the last 24 hours of planes and the flights expected
@@ -12,7 +12,7 @@ overhead today, and a live 3D/2D map of the sky around you.
   type you've never spotted before.
 - **Quiet hours:** nothing on your phone overnight; notifications start
   again with the first plane after. Night planes show up in the morning
-  report instead, marked 🌙. The widget, Siri and the phone map work all
+  report instead, marked with a moon. The widget, Siri and the phone map work all
   the time.
 - **Daily report:** the last 24 hours of planes with stats (busiest hour,
   lowest, closest, top airlines, the plane of the day), and a forecast of
@@ -43,7 +43,7 @@ overhead today, and a live 3D/2D map of the sky around you.
   unlimited, real-time data.
 - **Offline log:** when planespotter wasn't running (Mac asleep, switched
   off), it looks up the planes that came over meanwhile, up to about 20
-  hours back, and puts them in your reports marked 📴.
+  hours back, and puts them in your reports, marked as found afterwards.
 - **Games:** a weekly **spotting bingo** card, **guess the plane**, **your
   year (or month) in planes**, and a **profile** of every aircraft you've seen.
 - **Smarter predictions:** which way your airport is **landing today** and
@@ -218,7 +218,7 @@ browser on your Mac.
   are over the map. To tilt and spin it, hold **Control** and drag (on a
   phone, drag up or down with two fingers, or twist). 2D is a flat view from
   straight above.
-- **⌂** flies back to your house.
+- **The target button** (top right) flies back to your house.
 - **Your zone** is the orange circle. Planes inside it are orange, and the
   others nearby are blue. Planes glide between updates and leave a short
   trail.
@@ -234,11 +234,11 @@ browser on your Mac.
   the ones that *went over you and are still flying* elsewhere.
   **Spotted** lists every plane that came through your zone, with
   *In the air* on the ones still flying. You can filter by 24 hours,
-  7 days, 30 days or all, and sort by newest, closest or lowest. 🌙 marks
+  7 days, 30 days or all, and sort by newest, closest or lowest. A moon marks
   the ones that came during quiet hours.
 - **Search** works on both lists and the map: try a flight number, an
   airline (*delta*), an airport code (*JFK*), a city, or an aircraft (*A380*).
-- **✈︎ Track a flight** (under the search box) finds a flight anywhere in
+- **Track** (beside the search box) finds a flight anywhere in
   the world, the same as on your phone. Search by:
   - a flight number (*AS 1349*);
   - an airline (*Alaska*);
@@ -248,15 +248,15 @@ browser on your Mac.
   You get the 10 best matches, and **Load more** adds 10 more. Tap **Track**
   and a card at the top of *In the air* follows it:
   - **Flying:** where it is, its height, speed and route, with its trail on
-    the map. **🚪 Gate** shows its gates; **🔔 Tell me when it lands** sends
+    the map. **Gate** shows its gates; **Tell me when it lands** sends
     a notification.
   - **Not flying yet:** where it waits (pinned on the map), its gate, a
     countdown to take-off and any delay. **↻ Times** checks again;
-    **🔔 Tell me when it flies** adds it to *Your flights*.
-- **🚪 Gate** in any plane's details looks up its gates (with gate numbers
+    **Tell me when it flies** adds it to *Your flights*.
+- **Gate** in any plane's details looks up its gates (with gate numbers
   set up). It also shows which service the answer came from and how old it
   is, and warns if the plane looks diverted.
-- **🔭 Point ↗** (phones and tablets) opens the beam page in Safari with the
+- **Point** (phones and tablets) opens the beam page in Safari with the
   planes around home: point your phone at a plane to find out what it is.
   Its **↻ Fresh planes** comes back here and straight into Point again.
 
@@ -265,7 +265,7 @@ browser on your Mac.
   flight in pink. It also says whether the plane is still in the air (and
   where) or has landed. *Show its whole flight* zooms out to fit it. For
   any plane nearby, *Show where it's come from* shows its flight so far.
-- **🔥 Heat map** (top right) shows the busiest flight paths, from blue
+- **Heat map** (top right) shows the busiest flight paths, from blue
   (quiet) to red (busy). Choose today, 7 days, 30 days or all time.
   - Within about 15 miles it counts every plane, so approach and departure
     routes near you stand out.
@@ -280,34 +280,38 @@ browser on your Mac.
   at the top of the map says which way to face and how high to look
   (*NE, 35° up*, or "about 3½ fists above the horizon": a fist at arm's
   length is about 10°), and how long until it's overhead. Tap it to select
-  the plane. Turn on **🔔 Chime** (under the planespotter name) to hear a soft chime about a
+  the plane. Turn on **Chime** (the bell, beside the planespotter name) to hear a soft chime about a
   minute before each plane comes over. It works while the map is open.
-- **✨ and 🚨 badges** mark special planes in the list: an A380, a military
+- **Purple and red badges** mark special planes in the list: an A380, a military
   aircraft, a helicopter overhead, or an emergency.
 - **Collection** (third tab) is everything you've ever spotted: totals,
   airlines with their logos, aircraft types, countries (from the planes'
   registrations), the times of day and days of the week planes come over,
   and 20 badges to earn (*Superjumbo*, *Night owl*, *Thousand club*...).
-- **🕒 Replay** (top right) plays back a whole day of spotted flights as a
+- **Replay** (top right) plays back a whole day of spotted flights as a
   time-lapse: pick the day and speed, drag the slider to any time.
-- **Routes with a ✓** have been checked against the plane's real flight:
-  the airport it actually took off from (and landed at), not just what a
-  route database guessed from the flight number.
+- **Routes with a green tick** have been checked against the plane itself:
+  the airport its recorded track took off from, or the one it's plainly
+  landing at. A flight's card says how each route was arrived at:
+  *Confirmed by its recorded track*, *Confirmed by what the plane is doing*,
+  *Two route lists agree*, or *From a route list; its position fits*. When
+  nothing fits, the route is left blank rather than guessed (see *How it
+  works*).
 - **The weather line** under your house's name says what the sky is doing
-  (*☁️ Overcast at 1,800 ft*, *🌙 Clear night*), from the nearest airport's
+  (*Overcast at 1,800 ft*, *Clear night*), from the nearest airport's
   weather report. When a plane will be above the clouds, the Look up! card
   (and the alert) says *Above the overcast at 1,800 ft: listen for it*.
   After dark it says to look for its lights, and it warns you if the plane
   is near the sun.
 - **Coming over next** (top of *In the air*) lists the next few planes
   heading for your zone with a countdown, if they keep flying straight.
-- **🗣️ Voice** (next to Chime) reads out each plane about 45 seconds before
+- **Voice** (the speaker, next to the bell) reads out each plane about 45 seconds before
   it comes over: *"Delta flight 573 from Fort Lauderdale, coming over in
   about 30 seconds. Look north-east, 25 degrees up."* It stays quiet during
   quiet hours.
-- **👀 I saw it:** tap it on the Look up! card (or a flight's card) when you
+- **I saw it:** tap it on the Look up! card (or a flight's card) when you
   actually spot the plane in the sky. Do it every day to build a **streak**.
-- **📷 Add photo** on any flight's card keeps your own picture with it (taken
+- **Add photo** on any flight's card keeps your own picture with it (taken
   on your phone, or picked from your photos). It's shrunk to a sensible
   size, saved on your Mac in the `photos` folder, and shown in the flight's
   card and in *Collection → Your photos*. Tap a photo to see it big,
@@ -323,7 +327,7 @@ browser on your Mac.
   lowest, closest, fastest, highest, longest flight, the plane you see most
   (your *old friend*), and the busiest day and hour. Tap one to see it.
 - **Noise** (fourth tab): see *Noise log* below.
-- **🛬 The runway line** under the weather says which way your nearest big
+- **The runway line** under the weather says which way your nearest big
   airport is landing (*LAX is landing towards the west, into a 12 kt west
   wind*). After a few days of watching it adds what that means for you:
   *about 6 planes an hour over you (1 an hour when it lands towards the east)*.
@@ -332,27 +336,27 @@ browser on your Mac.
   come over most days, with their usual time and whether today's was on
   time, late, early, still due, or hasn't shown up. Spotted flights by
   regulars get an *on time* / *12 min late* badge too.
-- **🛰️ Space station and friends** (bottom of *In the air*): the next times
+- **Space station and friends** (bottom of *In the air*): the next times
   the space station (and China's Tiangong and Hubble) cross your sky where
   you can see them. While one is overhead, the Look up! card points to it.
-- **🎯 Guess** on the Look up! card: before you look it up, guess what kind
+- **Guess** on the Look up! card: before you look it up, guess what kind
   of plane it is (Boeing 737, Airbus A320 family, E-Jet...) from four
   choices. Your score is in Collection.
-- **🔔 Follow** on a plane that's flying: your phone gets a notification
+- **Follow** on a plane that's flying: your phone gets a notification
   when it lands, wherever that is (*DAL573 has landed in Atlanta (ATL)*).
   Needs phone notifications set up.
-- **✈ This plane** on any flight's card: its profile. Every time you've
+- **This plane** on any flight's card: its profile. Every time you've
   seen that aircraft, its routes, and the time it usually comes over.
   *Collection → Old friends* lists the aircraft you see most.
-- **🎱 Spotting bingo** (Collection): a new card every Monday with 8 things to
+- **Spotting bingo** (Collection): a new card every Monday with 8 things to
   spot (a 787, a cargo plane, a plane before 7 am...) picked from what flies
   near you, plus a free square. Squares fill in by themselves; your score
   is in the weekly email.
-- **✨ Your year in planes** and **this month in planes** (Collection): your
+- **Your year in planes** and **this month in planes** (Collection): your
   totals, top airline and aircraft, the farthest-away airport, the rarest
   plane, busiest day, and a chart, with **↗ Share** for a picture.
-- **📴** marks planes the offline log found (see *The offline log* below).
-- **🎬 Save video** (in Replay): plays the day from the first plane to the
+- **A crossed-out cloud** marks planes the offline log found (see *The offline log* below).
+- **Save video** (in Replay): plays the day from the first plane to the
   last and saves it as a video to share.
 - **Other places** (if you set some up): a picker next to your house's name
   switches to that place's map.
@@ -362,6 +366,12 @@ like `http://192.168.1.23:8765`. Open that on your phone while it's on
 the same Wi-Fi. Add it to your home screen to use it like an app. It also
 prints a secure address like `https://192.168.1.23:8766` for the sky view,
 the share sheet and the microphone (see below).
+
+On a phone the map fills the top of the screen and the list sits in a sheet
+underneath. Drag the sheet's handle up for more list or down for more map
+(tap it to switch between the two), and tap a plane to open its details in
+the sheet while the map follows it. The four tabs are along the bottom, and
+the map's buttons run down its right-hand edge.
 
 A plane's whole flight is first looked up while it's over your zone,
 which shows where it came from. It's checked again 20 minutes, 1 hour, 3
@@ -446,12 +456,12 @@ is as it flies over, and ranks the loudest.
    asks too, allow it, or turn the browser on under **System Settings →
    Privacy & Security → Microphone**.
 4. Leave that tab open. It can be behind other windows, but the Mac needs
-   to stay awake. The status line says *🎙️ listening*.
+   to stay awake. The status line says *listening*.
 
 About 3 minutes after a plane goes over your zone, it gets a loudness
 reading: how many decibels louder it was than the usual background noise
 just before and after. It appears in *Loudest planes*, in the flight's
-card (*🎙️ +18 dB louder than the background*) and in the spreadsheet.
+card (*+18 dB louder than the background*) and in the spreadsheet.
 Microphones aren't calibrated, so this is a fair comparison between
 planes, not an official noise level. A barking dog at the same moment
 counts too.
@@ -476,8 +486,8 @@ adsb.lol's records:
    your zone while planespotter was off.
 
 These planes go in the daily and weekly emails, the map, the heat map and
-your collection, marked **📴 found while offline**. They don't get an alert
-each (they're long gone), but your phone gets one summary: *📴 23 planes
+your collection, marked **found afterwards**. They don't get an alert
+each (they're long gone), but your phone gets one summary: *23 planes
 came over while planespotter was off*. The weekly email has a section
 listing them and where they came from.
 
@@ -683,9 +693,9 @@ and saves the old one in the `phone-setup` folder. Or copy and paste:
 `python3 -m planespotter phone --copy widget` on your Mac, then in Scriptable
 open **planespotter**, select all, paste over it, and tap **Done**.
 
-**Did it update?** Tap the widget: on the map, the Point button reads
-**🔭 Point ↗**. If it says just **🔭 Point** (and Point says *The compass
-wasn't allowed*), your phone still has the old script.
+**Did it update?** Tap the widget: on the map, the Track and Point buttons
+have drawn icons (a route and a telescope). If they still show emoji, your
+phone has the old script.
 
 ### Live map on your phone
 
@@ -693,8 +703,8 @@ wasn't allowed*), your phone still has the old script.
 running **planespotter** in Scriptable) opens your Mac's full app in Safari.
 That's everything in *The live map* above:
 - *Spotted*, *Collection*, *Noise*, the replay, the heat map and sky view;
-- the phone's own extras: ✈︎ Track a flight with gates and take-off
-  countdowns, 🚪 Gate and 🔭 Point.
+- the phone's own extras: Track a flight with gates and take-off
+  countdowns, Gate and Point.
 
 It finds the Mac at its Wi-Fi address, or by its name (like
 `Your-Mac.local`) if the address changed. The first time, your iPhone may ask
@@ -718,7 +728,7 @@ then every minute, and pauses for the day if the phone has asked about 400
 times (adsb.lol allows about 500 a day per connection; the widget, Siri and
 searches share that). It doesn't need your Mac or the server.
 
-**✈︎ Track a flight.** Tap it and type a flight number, an airline, an
+**Track a flight.** Tap it and type a flight number, an airline, an
 airport, or a mix, then **Search**:
 
 | You type | You get |
@@ -729,7 +739,7 @@ airport, or a mix, then **Search**:
 | `LAX`, `Los Angeles`, `Heathrow`, `John Wayne` | Planes near that airport: ones flying to or from it first |
 | `Southwest LAX`, `Delta JFK` | That airline's planes near that airport |
 
-A flight that isn't in the air yet shows **📍 Track**: it's pinned at its
+A flight that isn't in the air yet shows **Track**: it's pinned at its
 airport (or where it is on the ground, if it's taxiing), with its gate, a
 countdown to take-off and how late it's running (those three need gate
 numbers set up; **↻ Times** checks again), and the map switches to following
@@ -737,21 +747,21 @@ it as soon as it takes off.
 
 The best 10 show first; **Load more** shows 10 more. Tap one to track it: the
 map follows it (green, with its trail) wherever it goes, and a card shows its
-route, height, speed and how far it is from you. **🔔 Notify me when it lands**
+route, height, speed and how far it is from you. **Notify me when it lands**
 asks planespotter on your Mac (or server) to follow it too, so you get
 notifications when it takes off, flies over home and lands. A flight that
-isn't in the air yet shows **🔔 Tell me when it flies**. Airlines and airports
+isn't in the air yet shows **Tell me when it flies**. Airlines and airports
 are found by searching the sky around you or the airport (adsb.lol has no
 worldwide list), and flight numbers worldwide. The first time you search for
 a small airport, the phone downloads the full airport list once (about 0.8
 MB) and keeps it.
 
-**🔭 Point.** Tap **Point**: Safari opens with a map of the planes around
+**Point.** Tap **Point**: Safari opens with a map of the planes around
 you and a blue dot for you. Tap **Start**, and the first time tap **Allow**
 when Safari asks about motion and orientation. A blue beam, like the one in
 Life360, shows which way your phone is facing. Hold the phone flat in front of
 you and point its top at a plane: the plane inside the beam is picked (it
-turns orange) and you're told which plane it is, out loud too (tap **🔊** to
+turns orange) and you're told which plane it is, out loud too (tap **Voice on** to
 mute), with its route, height and distance. If there's no plane in the beam,
 it tells you which way to turn, and how many degrees, to the next plane coming
 over you (or the one highest in the sky).
@@ -798,7 +808,7 @@ by. Switch to the steps above.
 
 ### Siri: "Hey Siri, where's my plane?"
 
-Tells you where **your** flight is: the one you last picked in **✈︎ Track a
+Tells you where **your** flight is: the one you last picked in **Track a
 flight** on the phone map (or, if you haven't picked one, the one
 planespotter on your Mac is following).
 
@@ -852,9 +862,10 @@ Alaska flight 1349 is in the air: it took off from Portland about 2 hours
 ago … Its last reported position was over Montana …"*. A flight number flies
 every day, often on a different aircraft, so planespotter only trusts what
 it saw of a flight in the last 12 hours (or since you picked it), never
-yesterday's trip. Route databases (adsbdb) are often out of date, so they're
-only used for planes that are flying and only when the route fits where the
-plane actually is.
+yesterday's trip. Route lists are often out of date, so they're only used
+for planes that are flying, and only the leg that fits where the plane is,
+which way it's heading, how high it is and whether it's climbing or coming
+down.
 
 To set it up:
 
@@ -887,7 +898,7 @@ python3 -m planespotter gates aeroapi YOUR_KEY
 `python3 -m planespotter gates test UAL1`, and copy the script to your phone
 again (`python3 -m planespotter phone --copy widget`).
 
-Gates are looked up only when you ask: tap **🚪 Gate** on a plane or on the
+Gates are looked up only when you ask: tap **Gate** on a plane or on the
 flight you're tracking, or ask *"Hey Siri, where's my plane?"*. Answers are
 kept on your phone, so asking again usually costs nothing. They're looked up
 again sooner when they're likely to change: every 20 minutes or so in the
@@ -921,9 +932,11 @@ Mac's map serves on your Wi-Fi. `gates off` turns it off.
   diverted. Examples: on the ground at Portland when it's scheduled Seattle →
   Anchorage, or coming down near Portland when it's due in Seattle. The listed
   gates are then not given as if they were where the plane is.
-- **Routes.** A route from the route database (adsbdb) is only used if the
-  plane is between its two airports and, mid-trip, pointing roughly at where
-  it's going. A schedule from the gate service, when there is one, wins.
+- **Routes.** Two route lists are asked (adsb.lol's, rebuilt daily, and
+  adsbdb), and a leg is only used if the plane is between its two airports,
+  pointing roughly at where it's going, and at a height that fits (not
+  cruising right over one end, not climbing near the far one). A schedule
+  from the gate service, when there is one, wins.
 - **Horizon.** Alaska's 2000-numbered flights are flown by Horizon, whose
   planes broadcast QXE plus the same number. Searching, tracking and
   "where's my plane" look for both.
@@ -957,7 +970,7 @@ Watch wherever you are (a hotel, a friend's house, an airport) as well as
 home: its own zone, alerts and map (on port 8774). **It starts by itself**
 when your phone is more than 5 miles from home (see *Always on*), follows
 you, and switches back when you're home. You can also start it by hand with
-the `travel` command above, or on the map with **📍 Travel → Use this
+the `travel` command above, or on the map with **Travel → Use this
 computer's location**; a hand-started trip lasts two days, or send `home`. It
 shares adsb.lol's daily allowance, so home is checked a little less often
 meanwhile.
@@ -991,7 +1004,7 @@ SHARE_NAME=Henry
 
 *Collection → Friends* then shows who's spotted the most this week, their
 totals and bingo, and your phone gets a ping when a friend spots something
-rare (*🎉 Sam just spotted an Airbus A380*). Nothing about where anyone
+rare (*Sam just spotted an Airbus A380*). Nothing about where anyone
 lives is shared.
 
 **ntfy's daily limit.** ntfy.sh's free service accepts 250 messages a day
@@ -1013,7 +1026,7 @@ the Look up! card and the next planes with countdowns. Nothing to tap.
 
 ## Look up for: the Moon, planets, contrails, the best time
 
-- **🌕 Planes crossing the Moon.** When a plane is about to fly in front of the
+- **Planes crossing the Moon.** When a plane is about to fly in front of the
   Moon as seen from your house, your phone gets a heads-up a few minutes
   before: *"DAL573 may fly right across the Moon at 6:42:15 pm. Look ESE,
   32° up."* The Look up! card counts down to it on the map. It's over in a
@@ -1033,14 +1046,14 @@ the Look up! card and the next planes with countdowns. Nothing to tap.
 - **Calendar:** space station passes (with a reminder 10 minutes before), the
   best time to look up each day, and your flights. The weekly email has the
   calendar file attached (tap it to add the events), or subscribe with
-  **Collection → 📅 Add to my calendar** on your home Wi-Fi to keep it up to date.
+  **Collection → Add to my calendar** on your home Wi-Fi to keep it up to date.
 
 ## History: any day, and photos that match themselves
 
-- **Time machine:** in **🕒 Replay**, choose **📅 Any day…** and pick a date to
+- **Time machine:** in **Replay**, choose **Any day…** and pick a date to
   replay everything that flew over then (any day planespotter was watching).
 - **Photos from a spotting session:** in **Collection → Your photos**, tap
-  **📷 Add photos from a spotting session** and pick several at once. Each is
+  **Add photos from a spotting session** and pick several at once. Each is
   matched to the plane that was over your zone when you took it, from the
   time the camera saved in the photo.
 
@@ -1110,26 +1123,26 @@ long and random. Keep it to yourself; the alerts never say where you live.
 
 Besides the plane alerts, your phone also gets:
 
-- **🛫 Rush alerts** when 5 or more planes are about to come over in the next
+- **Rush alerts** when 5 or more planes are about to come over in the next
   15 minutes (at most one an hour; not in quiet hours). Change the number
   with `RUSH_COUNT` in `.env`, or turn them off with `RUSH_ALERTS=false`.
-- **🛬 Landed** for flights you follow.
-- **🛰️ Space station** 10 minutes before a visible pass.
-- **📴 Found while offline**: a summary after planespotter has been off.
+- **Landed** for flights you follow.
+- **Space station** 10 minutes before a visible pass.
+- **Found while offline**: a summary after planespotter has been off.
 
 ## Special planes
 
 Special-plane alerts go out by email and phone, at most once every 6 hours
 per plane, and not during quiet hours:
 
-- **🚨 Emergencies:** a plane squawking 7700 (emergency), 7600 (radio
+- **Emergencies:** a plane squawking 7700 (emergency), 7600 (radio
   failure) or 7500 (hijack), anywhere on the map (about 15 miles).
 - **Military aircraft** anywhere on the map.
 - **Rare and huge types** anywhere on the map: A380, 747, An-124,
   Dreamlifter, Beluga, C-5 Galaxy, B-52 and more. Change the list with
   `SPECIAL_TYPES` in `.env`.
 - **Helicopters** right over your zone.
-- **✨ Firsts:** the first time an airline or aircraft type comes over your
+- **Firsts:** the first time an airline or aircraft type comes over your
   zone, its normal alert says so. These start after a few days of
   watching, otherwise everything would be a first.
 
@@ -1217,7 +1230,7 @@ alerts never run dry:
   until 60% of the day's allowance is used.
 - **Whole flights** get a quarter of the allowance, and live positions
   for the map get a little.
-- **✈︎ Track a flight** on the Mac's app gets at most a fifth for following a
+- **Track a flight** on the Mac's app gets at most a fifth for following a
   flight and a tenth for searches. A flying plane is asked about every
   minute at first, then every three (the map moves it along in between). A
   waiting one is asked about every ten minutes, more often around take-off.
@@ -1262,18 +1275,18 @@ python3 -m planespotter accounts on
 It asks for a username and password for you (the owner). Your home, history
 and settings stay as they are. From then on, everyone signs in first (on
 your Wi-Fi, or on your own web address: see below). Then invite a friend
-from the website (**👤 your name → Invite people**), or:
+from the website (**your name → Invite people**), or:
 
 ```bash
 python3 -m planespotter accounts invite
 ```
 
 Each invite link works **once, for a week**. Your friend opens it, picks a
-username and password, and sets their home (*📍 Use where I am now*, or the
+username and password, and sets their home (*Use where I am now*, or the
 two numbers from Apple or Google Maps). planespotter restarts by itself to
 start theirs. On their account page they find:
-- **🔔 Notifications:** a private topic for the free ntfy app.
-- **📱 Get my script:** their own Scriptable script, with a pass that only
+- **Notifications:** a private topic for the free ntfy app.
+- **Get my script:** their own Scriptable script, with a pass that only
   works for them.
 - **Their home's settings**, and a password change.
 
@@ -1363,7 +1376,7 @@ python3 -m planespotter server web yourdomain.com
 ```
 
 Then open `https://yourdomain.com`, sign in, and invite your friends from
-**👤 → Invite people**. Get your own phone script from **👤 → Get my
+**→ Invite people**. Get your own phone script from **→ Get my
 script**. From now on, manage accounts on the website.
 
 **Updating by itself every night.** From your Mac:
@@ -1399,7 +1412,7 @@ What to expect on different networks:
 | **Guest network, or Wi-Fi that keeps devices apart** (most hotel, airport and school Wi-Fi) | ⚠ Your phone can't reach your Mac, even on the same Wi-Fi. It uses its own map, widget and Siri instead, which need no Mac. |
 | **Hotel or airport Wi-Fi before you've signed in** | ✘ Nothing gets through until you open Safari and accept the Wi-Fi's page (often every day). The widget and Siri say *the Wi-Fi wants you to sign in*, and nothing is counted or saved from the sign-in page. |
 | **Shared Wi-Fi** (hotel, airport, school, a big office) | ⚠ adsb.lol allows about 500 requests a day *per internet connection*, and everyone there counts together. If it's used up, planespotter says so and waits as long as adsb.lol asks. Mobile data usually works, and a free adsb.lol key gives you your own allowance. |
-| **School or work Wi-Fi with a filter** | ⚠ It may block adsb.lol (no planes), ntfy (no notifications), raw.githack.com (no 🔭 Point) or unpkg.com (the map doesn't draw; the lists still work). `doctor` shows which. |
+| **School or work Wi-Fi with a filter** | ⚠ It may block adsb.lol (no planes), ntfy (no notifications), raw.githack.com (no Point) or unpkg.com (the map doesn't draw; the lists still work). `doctor` shows which. |
 | **A VPN on the Mac** | ⚠ Your phone may not reach the Mac's full app while it's on. |
 | **A VPN on the phone** | ⚠ The phone can't see your home Wi-Fi's devices, so it uses its own map. |
 | **Mobile data** | ✔ The phone's map, widget, Siri, Track a flight, gates and Point all work. The Mac's full app doesn't (it's only on your home Wi-Fi). |
@@ -1417,7 +1430,7 @@ it on in **Settings → Privacy & Security → Local Network → Scriptable**.
 | Something doesn't work and you're not sure why | Run `python3 -m planespotter doctor`: it checks this computer and this network and says what to fix. |
 | The widget or Siri says *the Wi-Fi wants you to sign in* | Open Safari on the phone and accept the Wi-Fi's page. Or turn Wi-Fi off: mobile data works. |
 | The widget or Siri says *this connection has asked too often* | You're on shared Wi-Fi and adsb.lol's daily limit for that connection is used up. It tries again by itself in a few minutes. Mobile data works. |
-| The tracking card says *⏸ Paused for now* | Following a flight on the Mac's app uses at most a fifth of the Mac's daily adsb.lol allowance, so your plane alerts always have theirs. It carries on later. Your phone's map has its own allowance. |
+| The tracking card says *Paused for now* | Following a flight on the Mac's app uses at most a fifth of the Mac's daily adsb.lol allowance, so your plane alerts always have theirs. It carries on later. Your phone's map has its own allowance. |
 | `No such file or directory` or `No module named planespotter` | You're not in the folder. Run `cd ~/planespotter`, then try again. If that also fails, redo step 3. |
 | `Settings problem: No home location set` | Run `python3 -m planespotter setup`. |
 | `CERTIFICATE_VERIFY_FAILED` | Open **Finder → Applications → Python 3.x** and double-click **Install Certificates.command**. Then try again. |
@@ -1425,11 +1438,11 @@ it on in **Settings → Privacy & Security → Local Network → Scriptable**.
 | No emails arriving | Look in your spam folder, and run `python3 -m planespotter test-email`. |
 | No phone notifications | Run `python3 -m planespotter test-push`. Check the topic in the ntfy app matches `NTFY_TOPIC` in `.env` exactly, and that notifications are allowed for ntfy in your phone's settings. |
 | Tapping a notification doesn't open the map | It opens the map's home-Wi-Fi address, so your phone must be on your home Wi-Fi and planespotter running. |
-| No chime | Click **🔔 Chime** on the map first (browsers only play sound after a click), and keep the map open; check your volume. |
-| No voice | Turn on **🗣️ Voice**, then click anywhere on the map once (browsers only speak after a click). It's silent during quiet hours. On an iPhone, turn off silent mode. |
+| No chime | Click **Chime** on the map first (browsers only play sound after a click), and keep the map open; check your volume. |
+| No voice | Turn on **Voice**, then click anywhere on the map once (browsers only speak after a click). It's silent during quiet hours. On an iPhone, turn off silent mode. |
 | *This Connection Is Not Private* on the sky view | Expected the first time: see *Sky view* above (Show Details → visit this website). |
 | Sky view says *drag to look around* on a phone | It didn't get the compass. Open it from the **https** address, tap **Start** and allow motion and orientation. On an iPhone, if you tapped Don't Allow, close the tab and open the address again. |
-| Point says *The compass wasn't allowed* | You tapped Don't Allow. Close that Safari tab, then tap 🔭 Point again and tap **Allow**. If it says *The compass isn't coming through*: Settings → Apps → Safari → turn on **Motion & Orientation Access** (if it's there), and Settings → Privacy & Security → Location Services → System Services → **Compass Calibration** on. |
+| Point says *The compass wasn't allowed* | You tapped Don't Allow. Close that Safari tab, then tap Point again and tap **Allow**. If it says *The compass isn't coming through*: Settings → Apps → Safari → turn on **Motion & Orientation Access** (if it's there), and Settings → Privacy & Security → Location Services → System Services → **Compass Calibration** on. |
 | The secure address isn't printed | planespotter makes its certificate with `openssl`, which comes with macOS. If port 8766 is busy, set `MAP_HTTPS_PORT` in `.env`. |
 | The noise meter's button is greyed out | Open the map at **http://localhost:8765** on the Mac running planespotter (not the 192.168… address). |
 | *Can't open that kind of picture* when adding a photo | Some browsers can't read iPhone HEIC photos. Add it from Safari, or use a JPEG. |
@@ -1561,7 +1574,15 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
   to draw planes in 3D. It's served only from your computer. It never
   serves your settings file or anything else from disk.
-  **Routes and aircraft details** come from [adsbdb.com](https://www.adsbdb.com).
+  When adsb.lol can't be reached, is having trouble or says you've asked
+  too often, the planes come from [adsb.fi](https://adsb.fi)'s open data
+  instead (another community network, free for personal use, same format)
+  until adsb.lol answers again; the status line on the map says so.
+  `BACKUP_FEED=off` in your settings turns that off.
+  **Routes** come from [adsb.lol's standing data](https://github.com/adsblol/vrs-standing-data)
+  (rebuilt every day) and [adsbdb.com](https://www.adsbdb.com), and are
+  checked against the plane itself (below). **Aircraft details** and photos
+  come from adsbdb.com.
   Lookups are cached in a local database file (`planespotter.db`).
 - **Catching fast planes.** A jet can cross a 3-mile zone in under a
   minute, so the watcher looks a few miles past the edge of your zone. It
@@ -1579,14 +1600,33 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   come.) Nothing is saved up either: when quiet hours end, notifications
   start again with the next plane that flies through your zone. The morning
   report covers the 24 hours since the previous one, so night planes appear
-  there, marked 🌙; if its time falls inside quiet hours, it waits until they
+  there, marked with a moon; if its time falls inside quiet hours, it waits until they
   end. The widget, Siri and the phone map aren't notifications: they work
   all night.
-- **Routes are checked against the real flight.** Route databases map a
-  flight number to a single leg, and are often wrong. So planespotter looks
-  up the plane's actual flight as soon as it comes over (before the alert
-  goes out, when the daily budget allows) and uses the airport nearest
-  where it took off, and later where it landed or is about to. The
+- **Routes are checked against the plane.** A flight number isn't a route:
+  the same number flies there and back, different legs on different days,
+  and route lists age. Measured on 284 recorded flights with known take-off
+  and landing airports, one list alone (how planespotter used to do it)
+  showed the whole route right 17% of the time and something wrong 19% of
+  the time. So now:
+  - two lists are asked, and a route with stops is split into its legs;
+  - a leg only counts if the plane can be flying it: near the line between
+    its airports, pointing at where it's going, at a height that fits
+    (planes come down about 1,000 ft every 3 miles, so one cruising right
+    over an airport isn't landing there), and climbing near its start or
+    coming down near its end, not the other way round;
+  - the leg that fits best wins, two lists agreeing beats one, and when
+    nothing fits the route is left blank;
+  - the plane overrules the lists: a plane low, coming down and lined up
+    with an airport is landing there, and one climbing away from an airport
+    took off from it (4,600 right and 1 wrong on the recorded flights);
+  - and its recorded track overrules everything. planespotter looks up the
+    plane's actual flight as soon as it comes over (before the alert goes
+    out, when the daily budget allows), uses the airport where it left the
+    ground, then asks the lists again for the leg that starts there.
+
+  On the same flights that gets the whole route right 83% of the time (87%
+  once the track is known) and shows something wrong 2% (1%) of the time. The
   airport list (about 12,000 airports, from the public-domain
   [OurAirports](https://ourairports.com/data/)) comes with planespotter;
   `python3 scripts/update_airports.py` refreshes it.
