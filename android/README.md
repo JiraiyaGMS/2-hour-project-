@@ -6,7 +6,7 @@ The Android app: your planespotter's website in an app (any Android phone, whate
   and the last one over (it reads your planespotter about every half hour, and whenever you open the app);
 - **long-press shortcuts** on its icon: *What's that plane?* and *Where's my plane?* (read out loud with the
   phone's own voice), *Track a flight*, *Point*;
-- the phone's **compass** for Point, and its **location** for "📍 Use where I am now".
+- the phone's **compass** for Point, and its **location** for "Use where I am now".
 
 It asks for your planespotter's address once. Everything else comes from your planespotter, so its
 nightly updates reach the app without a new app.

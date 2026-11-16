@@ -30,15 +30,15 @@ def kit_email(cfg, k: dict) -> Email:
             "Install the free Scriptable app.",
             "Open the attached file planespotter-widget.js, or copy the script at the bottom of this email "
             "(press and hold, Select All, Copy).",
-            "In Scriptable tap +, paste, rename it planespotter, tap ▶ to try it, then Done. "
+            "In Scriptable tap +, paste, rename it planespotter, tap the play button to try it, then Done. "
             "When it asks for your location, tap Allow While Using App.",
             "In the iPhone's Settings → Scriptable → Location, choose While Using the App or Widgets, and turn "
             "Precise Location on. (It finds the planes over wherever you are, even with your Mac off, and tells "
             "your Mac where you are so your alerts follow you.)",
             "Home screen: press and hold an empty spot → Edit → Add Widget → Scriptable → Add Widget. "
             "Press and hold the widget → Edit Widget → Script: planespotter.",
-            "Tap the widget any time for a live map of the planes around you. On the map: ✈︎ Track a flight "
-            "(search by flight number, airline or airport) and 🔭 Point (opens Safari: tap Start, allow motion & "
+            "Tap the widget any time for a live map of the planes around you. On the map: Track a flight "
+            "(search by flight number, airline or airport) and Point (opens Safari: tap Start, allow motion & "
             "orientation, and point your phone at a plane; the one in the blue beam is the one it tells you about).",
         ]),
         ("2. Siri (works anywhere; set up the widget script first)", [
