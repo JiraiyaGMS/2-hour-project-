@@ -428,7 +428,9 @@ class SearchAndPointTests(unittest.TestCase):
         lax = [a for a in big_airports() if a[0] == "LAX"][0]
         self.assertEqual((lax[1], lax[3]), ("KLAX", "Los Angeles"))
         self.assertIn(AIRPORTS_URL, script)  # every other airport, when a search needs it
-        self.assertLess(len(script.encode()), 200_000)
+        # Small enough to paste: the big airports are built in, the other 11,000 are not. (It grew a little when
+        # the phone learnt to check a route against two lists and the plane's height and climb, like the computer.)
+        self.assertLess(len(script.encode()), 215_000)
 
     def test_siri_says_where_to_look(self):
         from planespotter.relay import spoken_now
@@ -493,7 +495,7 @@ class InstallInScriptableTests(unittest.TestCase):
         self.assertEqual((sorted(done["updated"]), done["added"]), (["planespotter", "planespotter 2"], None))
         main = (self.icloud / "planespotter.js").read_text()
         self.assertTrue(main.startswith(header + "// planespotter for the free Scriptable app"))
-        self.assertIn("🔭 Point ↗", main)
+        self.assertIn('id="pointBtn"', main)
         self.assertNotIn("noCompass", main)
         self.assertEqual((self.icloud / "planespotter 2.js").read_text(), self.new)
         self.assertEqual((self.icloud / "Hello World.js").read_text(), "log('hi')\n")

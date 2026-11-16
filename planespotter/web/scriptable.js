@@ -232,48 +232,108 @@ async function placeName(where, cache) {
   return "where you are";
 }
 
-function pathFits(o, d, p) {
-  // Does a route from o to d ([lat, lon]) fit a plane at p? It has to be roughly between them and, out in the
-  // middle of the trip, pointing roughly at where it's going (a route database often has an old route).
-  const direct = miles(o[0], o[1], d[0], d[1]);
-  const via = miles(o[0], o[1], p.lat, p.lon) + miles(p.lat, p.lon, d[0], d[1]);
-  if (!isFinite(direct) || !isFinite(via) || via > direct * 1.15 + 60) return false;
-  if (typeof p.track === "number" && miles(o[0], o[1], p.lat, p.lon) > 60 && miles(p.lat, p.lon, d[0], d[1]) > 100) {
-    const off = Math.abs(((bearing(p.lat, p.lon, d[0], d[1]) - p.track + 540) % 360) - 180);
-    if (off > 75) return false;
-  }
-  return true;
-}
-
 async function fitsPath(fromCode, toCode, p) {
   const o = await airportByCode(fromCode), d = await airportByCode(toCode);
-  return !!(o && d) && pathFits([o[4], o[5]], [d[4], d[5]], p);
+  return !!(o && d) && legFit(p, { lat: o[4], lon: o[5] }, { lat: d[4], lon: d[5] }) !== null;
+}
+
+function legFit(p, o, d) {
+  // How well a plane fits one leg, from o to d ({lat, lon, el}): null if it can't be flying it, otherwise lower
+  // is better. The same check as planespotter on the computer (routes.py): where the plane is, which way it
+  // points, how high it is and whether it's climbing or coming down. A flight number isn't a route (the same
+  // number flies there and back, and other legs on other days), so every leg on offer is tried against it.
+  const num = (x) => typeof x === "number" && isFinite(x);
+  if (![o.lat, o.lon, d.lat, d.lon].every(num)) return null;
+  const direct = miles(o.lat, o.lon, d.lat, d.lon);
+  if (direct < 15) return null;
+  const gone = miles(o.lat, o.lon, p.lat, p.lon), left = miles(p.lat, p.lon, d.lat, d.lon);
+  if (gone + left - direct > direct * 0.15 + 60) return null;  // a long way round
+  const room = 35 + direct * 0.09, R = 3958.8;
+  const aside = Math.abs(Math.asin(Math.max(-1, Math.min(1, Math.sin(gone / R) *
+    Math.sin(rad(bearing(o.lat, o.lon, p.lat, p.lon) - bearing(o.lat, o.lon, d.lat, d.lon)))))) * R);
+  if (aside > room) return null;  // hundreds of miles off the line between them
+  let score = aside / room;
+  const alt = num(p.alt) ? p.alt : null, vr = num(p.vr) ? p.vr : null;
+  const aboveO = alt === null ? null : alt - (o.el || 0), aboveD = alt === null ? null : alt - (d.el || 0);
+  if (num(p.track) && left > 12) {
+    const off = Math.abs(((bearing(p.lat, p.lon, d.lat, d.lon) - p.track + 540) % 360) - 180);
+    if (gone > 60 && left > 100 && off > 75) return null;  // mid-trip, it points at where it's going
+    if (aboveD !== null && aboveD > 12000 && off > 90) return null;  // high up and flying away from it
+    score += (off / 180) * 0.6;
+  }
+  if (alt !== null) {
+    const reach = (ft) => 30 + (Math.max(0, ft) / 1000) * 9;
+    if (aboveD > 6000 + left * 700 || aboveO > 9000 + gone * 800) return null;  // cruising right over an end
+    const climbing = vr !== null && vr > 400, descending = vr !== null && vr < -400;
+    if (climbing && aboveO < 10000 && gone > reach(aboveO)) return null;
+    if (descending && aboveD < 10000 && left > reach(aboveD)) return null;
+    if (climbing && aboveD < 10000 && left < reach(aboveD) && reach(aboveD) < gone) return null;
+    if (descending && aboveO < 10000 && gone < reach(aboveO) && reach(aboveO) < left) return null;
+  }
+  return score;
+}
+
+async function routeLegs(callsign) {
+  // Every leg the route lists give for a callsign: adsb.lol's standing data (rebuilt every day; a route with
+  // stops is one leg per hop) and adsbdb.com. { legs, airline }, or null if neither could be asked.
+  const spellings = [callsign], m = /^([A-Z]{3})0+(\d[0-9A-Z]*)$/.exec(callsign);
+  if (m) spellings.push(m[1] + m[2]);  // CAL011 is listed as CAL11
+  const wait = forSiri ? 3 : 5, base = SETTINGS.routes || "https://vrs-standing-data.adsb.lol";
+  const legs = [];
+  let airline = "", asked = false;
+  const end = (code, icao, city, lat, lon, el) => ({ code: code || icao || "", city: city || "", lat, lon, el: Number(el) || 0 });
+  for (const cs of spellings) {
+    const res = await fetchJSON(base + "/routes/" + cs.slice(0, 2) + "/" + encodeURIComponent(cs) + ".json", wait);
+    if (res.status === 404) { asked = true; continue; }  // not listed under this spelling
+    if (res.body && Array.isArray(res.body._airports)) {
+      asked = true;
+      const stops = res.body._airports.map((a) => end(a.iata, a.icao, a.location, a.lat, a.lon, a.alt_feet));
+      for (let i = 1; i < stops.length; i++) if (stops[i - 1].code !== stops[i].code) legs.push({ o: stops[i - 1], d: stops[i], src: 0 });
+      if (stops.length > 1) break;
+    }
+  }
+  for (const cs of spellings) {
+    const res = await fetchJSON(SETTINGS.adsbdb + "/v0/callsign/" + encodeURIComponent(cs), wait);
+    if (res.status === 404) { asked = true; continue; }
+    const fr = res.body && res.body.response && res.body.response.flightroute;
+    if (res.body) asked = true;
+    if (fr && fr.origin && fr.destination) {
+      airline = (fr.airline && fr.airline.name) || "";
+      const ap = (a) => end(a.iata_code, a.icao_code, a.municipality, a.latitude, a.longitude, a.elevation);
+      legs.push({ o: ap(fr.origin), d: ap(fr.destination), src: 1 });
+      break;
+    }
+  }
+  return asked ? { legs, airline } : null;
 }
 
 async function routeFor(p, cache) {
-  // The airline and where it's from (adsbdb.com, remembered for half a day), if it fits the plane's path. A
-  // schedule we already have for it (from a gate lookup) wins: route databases are often out of date.
+  // The airline and where it's from and going: the leg, from two route lists, that the plane's position,
+  // heading, height and climb fit best (remembered for a few hours; the leg is chosen afresh each time, as
+  // the plane moves). A schedule we already have for it (from a gate lookup) wins.
   if (!p.callsign) return {};
   cache.routes = cache.routes || {};
-  let r = null;
+  let known = null;
   const hit = cache.routes[p.callsign];
-  if (hit && now - hit.at < (hit.r ? 12 : 1) * 3600) r = hit.r;
+  if (hit && hit.legs && now - hit.at < (hit.legs.length ? 6 : 1) * 3600) known = hit;
   else {
-    const body = await getJSON(SETTINGS.adsbdb + "/v0/callsign/" + encodeURIComponent(p.callsign), forSiri ? 3 : 5);
-    if (body === null) return {};  // couldn't ask: try again next time
-    const fr = (body.response && body.response.flightroute) || null;
-    if (fr) {
-      r = { airline: (fr.airline && fr.airline.name) || "" };
-      const o = fr.origin || {}, d = fr.destination || {};
-      if (pathFits([o.latitude, o.longitude], [d.latitude, d.longitude], p)) {
-        r.origin = o.iata_code || o.icao_code || "";
-        r.city = o.municipality || "";
-        r.destination = d.iata_code || d.icao_code || "";
-      }
-    }
-    cache.routes[p.callsign] = { at: now, r };
+    const got = await routeLegs(p.callsign);
+    if (got === null) return {};  // couldn't ask: try again next time
+    known = cache.routes[p.callsign] = { at: now, legs: got.legs, airline: got.airline };
     for (const [k, v] of Object.entries(cache.routes)) if (now - v.at > 86400) delete cache.routes[k];
   }
+  const code = /^([A-Z]{3})\d/.exec(p.callsign);
+  const named = code ? (AIRLINES.find((a) => a[0] === code[1]) || [])[2] : "";
+  let r = { airline: known.airline || named || "" }, best = null;
+  const same = (a, b) => a.code === b.code || miles(a.lat, a.lon, b.lat, b.lon) <= 25;
+  for (const leg of known.legs) {
+    let score = legFit(p, leg.o, leg.d);
+    if (score === null) continue;
+    const agreed = known.legs.some((x) => x.src !== leg.src && same(x.o, leg.o) && same(x.d, leg.d));
+    score += leg.src * 0.15 - (agreed ? 0.4 : 0);  // the standing data is right more often; two lists agreeing, more still
+    if (!best || score < best.score) best = { score, leg };
+  }
+  if (best) r = { ...r, origin: best.leg.o.code, city: best.leg.o.city, destination: best.leg.d.code };
   const sched = cache.gates && cache.gates[p.callsign] && now - cache.gates[p.callsign].at < 6 * 3600
     ? pickInfo(recsOf(cache.gates[p.callsign]), { air: true }) : null;
   if (sched && sched.dep.code && sched.arr.code && !["landed", "diverted", "cancelled"].includes(sched.phase) &&
@@ -514,6 +574,18 @@ function siriSentence(data, now) {
 
 // --- the widget ---
 
+function symbol(stack, name, size, color) {
+  // One of Apple's own icons (SF Symbols), tinted, for the widget.
+  try {
+    const img = stack.addImage(SFSymbol.named(name).image);
+    img.imageSize = new Size(size, size);
+    img.tintColor = color || Color.white();
+    return img;
+  } catch (e) {
+    return null;  // an older iOS without that symbol: just the words
+  }
+}
+
 function text(stack, value, font, color) {
   const t = stack.addText(value);
   t.font = font;
@@ -540,7 +612,9 @@ function buildWidget(data, now) {
   w.setPadding(12, 14, 12, 14);
 
   const head = w.addStack();
-  text(head, "✈ " + (data ? data.home : "planespotter"), Font.boldSystemFont(12), AMBER);
+  head.centerAlignContent();
+  if (symbol(head, "airplane", 12, AMBER)) head.addSpacer(5);
+  text(head, data ? data.home : "planespotter", Font.boldSystemFont(12), AMBER);
   w.addSpacer(small ? 4 : 6);
 
   if (!data) {
@@ -603,7 +677,7 @@ function buildWidget(data, now) {
   } else if (typeof data.nearby === "number") {
     text(w, data.nearby + " plane" + (data.nearby === 1 ? "" : "s") + " within 10 mi", Font.systemFont(11), MUTED);
   }
-  if (!small && !next.length && data.space) text(w, "🛰️ " + data.space, Font.systemFont(10), MUTED);
+  if (!small && !next.length && data.space) text(w, data.space, Font.systemFont(10), MUTED);
   if (data.updated && now - data.updated > 20 * 60) {
     text(w, "updated " + Math.round((now - data.updated) / 60) + " min ago", Font.systemFont(9), MUTED);
   }
@@ -852,7 +926,7 @@ async function sendCommand(text) {
 }
 
 // --- gate numbers (optional): your own key for FlightAware AeroAPI or Aviationstack ---
-// Looked up only when you ask (🚪 Gate, "Where's my plane?", a flight you track), kept a while, and never more
+// Looked up only when you ask (Gate, "Where's my plane?", a flight you track), kept a while, and never more
 // than SETTINGS.gates.monthly a month (just under the service's free allowance). Every trip the service lists
 // for the flight number is kept, and the one that fits right now (and where the receivers see the plane) is
 // used: a flight number often flies several legs a day, and every day.
@@ -1532,7 +1606,12 @@ const MAP_PAGE = `<!doctype html>
   .chip b { color: #e8eef5; font-weight: 600; }
   #tools { position: absolute; top: calc(48px + env(safe-area-inset-top)); left: 10px; display: flex; gap: 8px; }
   .tool { background: rgba(20, 27, 36, .92); border-radius: 999px; padding: 8px 14px; font-size: 14px; font-weight: 600;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, .35); }
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .35); display: inline-flex; align-items: center; gap: 7px; }
+  .tool .ic { color: #ffb020; }
+  .ic { width: 1.15em; height: 1.15em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+    stroke-linejoin: round; vertical-align: -.2em; margin-right: 5px; }
+  .tool .ic, .small .ic { margin-right: 0; }
+  .small { display: inline-flex; align-items: center; gap: 6px; }
   #card { position: absolute; top: calc(92px + env(safe-area-inset-top)); left: 10px; right: 10px; background: rgba(11, 15, 20, .94);
     border: 1px solid rgba(61, 220, 132, .45); border-radius: 14px; padding: 10px 12px; }
   #card b { font-size: 16px; } #card .sub { color: #9aa7b6; font-size: 13px; margin-top: 2px; }
@@ -1577,8 +1656,8 @@ const MAP_PAGE = `<!doctype html>
 </style>
 </head><body>
 <div id="map"></div>
-<div id="top"><div class="chip" id="where">✈ planespotter</div><div class="chip" id="status">Finding planes…</div></div>
-<div id="tools"><button class="tool" id="trackBtn">✈︎ Track a flight</button><button class="tool" id="pointBtn">🔭 Point ↗</button></div>
+<div id="top"><div class="chip" id="where">planespotter</div><div class="chip" id="status">Finding planes…</div></div>
+<div id="tools"><button class="tool" id="trackBtn"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>Track a flight</button><button class="tool" id="pointBtn"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m10.065 12.493-6.18 1.318a.934.934 0 0 1-1.108-.702l-.537-2.15a1.07 1.07 0 0 1 .691-1.265l13.504-4.44"/><path d="m13.56 11.747 4.332-.924"/><path d="m16 21-3.105-6.21"/><path d="M16.485 5.94a2 2 0 0 1 1.455-2.425l1.09-.272a1 1 0 0 1 1.212.727l1.515 6.06a1 1 0 0 1-.727 1.213l-1.09.272a2 2 0 0 1-2.425-1.455z"/><path d="m6.158 8.633 1.114 4.456"/><path d="m8 21 3.105-6.21"/><circle cx="12" cy="13" r="2"/></svg>Point</button></div>
 <div id="card" class="hidden"></div>
 <div id="panel"><h2>Next over you</h2><div id="list"><div class="empty">Looking…</div></div></div>
 <div id="sheet" class="hidden">
@@ -1598,6 +1677,17 @@ var search = { results: [], shown: 0, notFlying: [], busy: false }, trail = [], 
 var R = 3958.8, EMPTY = { type: "FeatureCollection", features: [] }, NL = String.fromCharCode(10);
 var WORDS = { N: "north", NE: "north-east", E: "east", SE: "south-east", S: "south", SW: "south-west", W: "west", NW: "north-west" };
 function $(id) { return document.getElementById(id); }
+// Icons (Lucide, ISC licence), drawn in the page so it needs nothing else.
+var IC = {
+ "plane": "<path d='M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z'/>",
+ "gate": "<path d='M13 4h3a2 2 0 0 1 2 2v14'/><path d='M2 20h3'/><path d='M13 20h9'/><path d='M10 12v.01'/><path d='M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z'/>",
+ "alert": "<path d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/><path d='M12 9v4'/><path d='M12 17h.01'/>",
+ "timer": "<line x1='10' x2='14' y1='2' y2='2'/><line x1='12' x2='15' y1='14' y2='11'/><circle cx='12' cy='14' r='8'/>",
+ "bell": "<path d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/><path d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/>",
+ "pin": "<path d='M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0'/><circle cx='12' cy='10' r='3'/>",
+ "route": "<circle cx='6' cy='19' r='3'/><path d='M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15'/><circle cx='18' cy='5' r='3'/>"
+};
+function ic(n) { return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">' + IC[n] + "</svg>"; }
 function rad(d) { return d * Math.PI / 180; }
 function deg(r) { return r * 180 / Math.PI; }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
@@ -1639,23 +1729,23 @@ function gateHtml(cs) {
   // Gate numbers cost a lookup from your monthly allowance, so only when you tap.
   if (!state.gatesOn || !cs) return "";
   var g = gates[cs];
-  if (!g) return '<button class="small" onclick="askGate(' + "'" + esc(cs) + "'" + ')">🚪 Gate</button>';
+  if (!g) return '<button class="small" onclick="askGate(' + "'" + esc(cs) + "'" + ')">' + ic("gate") + "Gate</button>";
   if (g === "asking") return "<div>Looking up the gate…</div>";
   if (g.error) return "<div>" + (g.error === "limit" ? "Gate lookups for this month are used up" : g.error === "key"
     ? "The gate service didn't accept your key" : "Couldn't look up the gate") + "</div>";
   if (g.none) return "<div>No known gate: the service doesn't list this trip</div>";
   var from = "<div style='font-size:11px'>From " + esc(g.source || "the gate service") +
     (g.asOf ? ", " + Math.max(0, Math.round((Date.now() / 1000 - g.asOf) / 60)) + " min ago" : "") + "</div>";
-  if (g.note) return "<div>⚠︎ " + esc(g.note) + " The gates listed are for its scheduled airports.</div>" + from;
+  if (g.note) return "<div>" + ic("alert") + esc(g.note) + " The gates listed are for its scheduled airports.</div>" + from;
   var side = function (s, verb) {
     return s && s.gate ? verb + " gate " + esc(s.gate) + (s.terminal ? " (terminal " + esc(s.terminal) + ")" : "") : "";
   };
-  if (g.other) from = "<div>⚠︎ " + esc(g.source || "The service") + " doesn't show it flying: this may be another of its trips" +
+  if (g.other) from = "<div>" + ic("alert") + esc(g.source || "The service") + " doesn't show it flying: this may be another of its trips" +
     (g.dep.code && g.arr.code ? " (" + esc(g.dep.code) + " → " + esc(g.arr.code) + ")" : "") + "</div>" + from;
   var bits = [side(g.dep, (g.dep.code ? esc(g.dep.code) + ": leaves from" : "Leaves from")),
               side(g.arr, (g.arr.code ? esc(g.arr.code) + ": arrives at" : "Arrives at"))].filter(Boolean);
   if (g.arr && g.arr.baggage) bits.push("Bags: carousel " + esc(g.arr.baggage));
-  return (bits.length ? bits.map(function (b) { return "<div>🚪 " + b + "</div>"; }).join("") : "<div>No gate listed yet</div>") + from;
+  return (bits.length ? bits.map(function (b) { return "<div>" + ic("gate") + b + "</div>"; }).join("") : "<div>No gate listed yet</div>") + from;
 }
 function sayOf(p) {  // "Southwest flight 1672 from Las Vegas"
   if (String(p.label || "").charAt(0) === "~") return "an unidentified plane";
@@ -1686,7 +1776,7 @@ function popupHtml(p) {
   var tracking = state.tracked && state.tracked.hex === p.hex;
   return '<div class="pop"><b>' + esc(p.label) + "</b>" + bits.map(function (b) { return "<div>" + b + "</div>"; }).join("") +
     (what ? "<div>" + esc(what) + "</div>" : "") + gateHtml(p.cs) +
-    (tracking ? "" : '<button class="small go" onclick="trackIt(' + "'" + esc(p.hex) + "'" + ')">✈︎ Track this flight</button>') + "</div>";
+    (tracking ? "" : '<button class="small go" onclick="trackIt(' + "'" + esc(p.hex) + "'" + ')">' + ic("route") + "Track this flight</button>") + "</div>";
 }
 function openPopup(hex) {
   var p = planeByHex(hex);
@@ -1740,32 +1830,32 @@ function waitingCard(t) {
   var phase = { taxi: "Left the gate", air: "In the air (" + esc(i.source || "") + ") · the free receivers can't see it",
                 landed: "Landed", cancelled: "Cancelled" }[i.phase];
   lines.push(phase || "Not in the air yet");
-  if (i.note) lines.push("⚠︎ " + esc(i.note));
+  if (i.note) lines.push(ic("alert") + esc(i.note));
   if (i.phase === "air") {
     if (i.from) lines.push("Took off from " + esc(i.from) + (i.left ? " at " + clockAt(i.left) : ""));
     if (i.pos) lines.push("Last reported " + esc(i.pos.town || "") + (i.pos.at ? " (" + clockAt(i.pos.at) + ")" : ""));
     if (i.to) lines.push("Due in " + esc(i.to) + (i.due ? " at about " + clockAt(i.due) + (i.due > now ? " · <span class='cd'>" + hms(i.due - now) + "</span>" : "") : ""));
-    if (i.arrGate) lines.push("🚪 Arrives at gate " + esc(i.arrGate));
+    if (i.arrGate) lines.push(ic("gate") + "Arrives at gate " + esc(i.arrGate));
   } else if (i.phase === "landed") {
-    lines.push("In " + esc(i.to || "?") + (i.arrGate ? " · 🚪 gate " + esc(i.arrGate) : ""));
+    lines.push("In " + esc(i.to || "?") + (i.arrGate ? " · gate " + esc(i.arrGate) : ""));
   } else lines.push(where);
   if (i.phase !== "air") {
-    if (i.gate) lines.push("🚪 Gate " + esc(i.gate) + (i.terminal ? ", terminal " + esc(i.terminal) : ""));
+    if (i.gate) lines.push(ic("gate") + "Gate " + esc(i.gate) + (i.terminal ? ", terminal " + esc(i.terminal) : ""));
     else if (t.info && !i.note) lines.push(i.takeoff && i.takeoff - now > 2 * 3600 ? "No gate listed yet (usually an hour or two before)" : "No gate listed");
   }
   if (i.takeoff && i.phase !== "air" && i.phase !== "landed" && i.phase !== "cancelled") {
     lines.push(i.takeoff > now + 30 ? "<span class='cd'>Takes off in " + hms(i.takeoff - now) + "</span> (about " + clockAt(i.takeoff) + ")"
                                     : "Should be taking off about now");
   }
-  if (typeof i.delay === "number") lines.push(i.delay >= 5 ? "⏱ Delayed " + i.delay + " min" : i.delay <= -5 ? "⏱ " + (-i.delay) + " min early" : "⏱ On time");
+  if (typeof i.delay === "number") lines.push(ic("timer") + (i.delay >= 5 ? "Delayed " + i.delay + " min" : i.delay <= -5 ? (-i.delay) + " min early" : "On time"));
   if (i.asOf) lines.push("<span style='font-size:11px'>Times from " + esc(i.source || "") + ", updated " + Math.max(0, Math.round((now - i.asOf) / 60)) + " min ago</span>");
   if (!t.gatesOn) lines.push("Where it leaves from, its gate, take-off time and delays: set up gate numbers (see the README)");
   else if (t.infoError === "limit") lines.push("Gate lookups for this month are used up");
   var f = followed[t.cs];
-  var follow = !state.canFollow ? "" : f === "yes" ? "<span class='sub'>🔔 You'll hear when it takes off</span>"
-    : '<button class="small" onclick="followIt(' + "'" + esc(t.cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Tell me when it flies") + "</button>";
+  var follow = !state.canFollow ? "" : f === "yes" ? "<span class='sub'>" + ic("bell") + "You'll hear when it takes off</span>"
+    : '<button class="small" onclick="followIt(' + "'" + esc(t.cs) + "'" + ')">' + (f === "asking" ? "Asking…" : ic("bell") + "Tell me when it flies") + "</button>";
   var times = t.gatesOn ? '<button class="small" onclick="refreshTimes(' + "'" + esc(t.cs) + "'" + ')">' + (gates[t.cs] === "asking" ? "Updating…" : "↻ Times") + "</button>" : "";
-  return "<b>✈︎ " + esc(t.label) + "</b>" + lines.map(function (l) { return "<div class='sub'>" + l + "</div>"; }).join("") +
+  return "<b>" + esc(t.label) + "</b>" + lines.map(function (l) { return "<div class='sub'>" + l + "</div>"; }).join("") +
     "<div class='btns'>" + follow + times + "<button class='small' onclick='stopTracking()'>Stop</button></div>";
 }
 function followIt(flight) { followed[flight] = "asking"; ask({ kind: "follow", flight: flight }); draw(); renderResults(); }
@@ -1787,16 +1877,16 @@ function renderCard() {
   if (state.me && t.lat !== undefined) meta.push(Math.round(miles(state.me.lat, state.me.lon, at[0], at[1])) + " mi " +
     compass(bearing(state.me.lat, state.me.lon, at[0], at[1])) + " of you");
   var f = t.cs ? followed[t.cs] : null;
-  var follow = !state.canFollow || !t.cs ? "" : f === "yes" ? "<span class='sub'>🔔 Your Mac will tell you when it lands</span>"
+  var follow = !state.canFollow || !t.cs ? "" : f === "yes" ? "<span class='sub'>" + ic("bell") + "planespotter will tell you when it lands</span>"
     : f === "no" ? "<span class='sub'>Couldn't reach your Mac</span>"
-    : '<button class="small" onclick="followIt(' + "'" + esc(t.cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Notify me when it lands") + "</button>";
+    : '<button class="small" onclick="followIt(' + "'" + esc(t.cs) + "'" + ')">' + (f === "asking" ? "Asking…" : ic("bell") + "Notify me when it lands") + "</button>";
   if (t.gone && t.lat === undefined) {
-    card.innerHTML = "<b>✈︎ " + esc(t.label) + "</b><div class='sub'>" + (t.unseen > 120 ? "Not seen for " + Math.round(t.unseen / 60) +
+    card.innerHTML = "<b>" + esc(t.label) + "</b><div class='sub'>" + (t.unseen > 120 ? "Not seen for " + Math.round(t.unseen / 60) +
       " min: out of range of receivers (over the ocean, say), or it has landed. Still looking…" : "Looking for it…") + "</div>" +
       "<div class='btns'><button class='small' onclick='stopTracking()'>Stop</button></div>";
     return;
   }
-  card.innerHTML = "<b>✈︎ " + esc(t.label) + "</b>" + (t.gone ? " <span class='sub'>(not seen for a moment)</span>" : "") +
+  card.innerHTML = "<b>" + esc(t.label) + "</b>" + (t.gone ? " <span class='sub'>(not seen for a moment)</span>" : "") +
     "<div class='sub'>" + esc(bits.join(" · ")) + "</div><div class='sub'>" + esc(meta.filter(Boolean).join(" · ")) + "</div>" +
     "<div class='sub'>" + gateHtml(t.cs) + "</div>" +
     "<div class='btns'>" + follow + "<button class='small' onclick='stopTracking()'>Stop</button></div>";
@@ -1828,9 +1918,9 @@ function renderResults() {
   var html = search.notFlying.map(function (cs) {
     var f = followed[cs];
     return '<div class="row"><div class="who"><b>' + esc(cs) + "</b><span>Not in the air right now</span></div>" +
-      '<button class="small go" onclick="trackWaiting(' + "'" + esc(cs) + "'" + ')">📍 Track</button> ' +
-      (!state.canFollow ? "" : f === "yes" ? '<span class="why">🔔 You’ll hear when it takes off</span>'
-        : '<button class="small" onclick="followIt(' + "'" + esc(cs) + "'" + ')">' + (f === "asking" ? "Asking…" : "🔔 Tell me when it flies") + "</button>") + "</div>";
+      '<button class="small go" onclick="trackWaiting(' + "'" + esc(cs) + "'" + ')">' + ic("pin") + "Track</button> " +
+      (!state.canFollow ? "" : f === "yes" ? '<span class="why">You’ll hear when it takes off</span>'
+        : '<button class="small" onclick="followIt(' + "'" + esc(cs) + "'" + ')">' + (f === "asking" ? "Asking…" : ic("bell") + "Tell me when it flies") + "</button>") + "</div>";
   }).join("");
   html += search.results.slice(0, search.shown).map(function (r, i) {
     wantRoute(r);
@@ -1853,7 +1943,7 @@ function draw() {
     return '<div class="row"><div class="who"><b>' + esc(p.label) + "</b><span>" + esc(sub) + "</span></div>" +
       '<div class="cd">' + (p.at <= t + 5 ? "overhead" : clockText(p.at - t)) + "</div></div>";
   }).join("") : '<div class="empty">Nothing due over you in the next 15 minutes.</div>';
-  $("where").innerHTML = "✈ <b>" + esc(state.where || "planespotter") + "</b>";
+  $("where").innerHTML = "<b>" + esc(state.where || "planespotter") + "</b>";
   $("status").textContent = state.status || (state.at ? state.planes.length + " planes · " + agoText(t - state.at) : "Finding planes…");
   renderCard();
   if (!ready) return;
@@ -2093,7 +2183,7 @@ async function showMap() {
         const got = await fetchPlanes(where, cache);
         if (got && got.planes) {
           const next = await comingOver(got.planes, where, cache, 6);
-          seenNow = { planes: got.planes, next, where: { ...where }, name };  // for 🔭 Point
+          seenNow = { planes: got.planes, next, where: { ...where }, name };  // for Point
           update.at = got.at;
           update.planes = got.planes.map((p) => ({ hex: p.hex, label: p.label, cs: p.callsign, type: p.type,
             lat: p.lat, lon: p.lon, alt: p.alt, gs: p.gs, track: p.track }));
@@ -2174,7 +2264,7 @@ async function showMap() {
       } else if (a.kind === "untrack") {
         cache.tracking = null;
         last = -1e12;
-      } else if (a.kind === "point") {  // 🔭 Point: in Safari, with the planes we just got
+      } else if (a.kind === "point") {  // Point: in Safari, with the planes we just got
         if (seenNow) Safari.open(pointLink(seenNow.planes, seenNow.next, seenNow.where, seenNow.name));
         else await pointNow();
       } else if (a.kind === "gaterefresh") {  // ↻ Times: ask the gate service again (one lookup)

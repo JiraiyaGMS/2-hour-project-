@@ -318,7 +318,7 @@ class WhatPlanesBroadcastTests(unittest.TestCase):
         repo = Path(__file__).resolve().parent.parent
         script = (repo / "planespotter" / "web" / "scriptable.js").read_text()
         self.assertIn('replace(/[^A-Za-z0-9-]/g, "")', script)
-        self.assertIn('"🚪 Gate " + esc(i.gate)', script)
+        self.assertIn('"Gate " + esc(i.gate)', script)
         point = (repo / "planespotter" / "web" / "point.html").read_text()
         self.assertIn("/^(scriptable:\\/\\/\\/|https?:\\/\\/)/i.test(data.back)", point)
 

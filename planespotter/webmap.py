@@ -228,7 +228,7 @@ class MapApp:
         self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget)
         self.logos = logo_cache or LogoCache(Path(cfg.db_path).parent / "logo-cache")
         self.account = None   # {"name", "owner"} when accounts are on: whose planespotter this is
-        # ✈︎ Track a flight and 🚪 Gate, the same as on the phone.
+        # Track a flight and Gate, the same as on the phone.
         self.search_sky = Sky(cfg.adsb_api, key, budget, clock)
         self.gatebook = GateBook(cfg, clock) if cfg.gates_api in GATE_APIS and cfg.gates_key else None
         self._local = threading.local()
@@ -288,7 +288,7 @@ class MapApp:
             "point_url": POINT_URL,
         }
 
-    # --- ✈︎ Track a flight and 🚪 Gate (the phone's features, on the Mac's map) ---
+    # --- Track a flight and Gate (the phone's features, on the Mac's map) ---
 
     def routes_for(self, results: list[dict]) -> dict[str, dict]:
         """The airline and a checked route for search results (from adsbdb, kept in the database), by hex.
@@ -341,7 +341,7 @@ class MapApp:
         return {}
 
     def point_json(self) -> dict[str, Any]:
-        """For 🔭 Point: every plane the Mac knows within 45 miles (wider than the map's view), moved on to now."""
+        """For Point: every plane the Mac knows within 45 miles (wider than the map's view), moved on to now."""
         planes, fetched_at = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
         now = self.clock()
         out = []
@@ -873,7 +873,7 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False, token: str
         "radius": cfg.radius_miles, "maxAlt": cfg.max_altitude_ft,
         "mac": map_url, "macName": mac_name_url(cfg) if map_url and not token else "",
         "relay": relay_url(cfg), "cmd": command_url(cfg), "follow": cfg.follow_phone,
-        "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"),
+        "adsb": cfg.adsb_api.rstrip("/"), "adsbdb": cfg.adsbdb_api.rstrip("/"), "routes": cfg.routes_api.rstrip("/"),
     }
     if token:  # accounts are on: this account's own pass to its planespotter (only in the copy for its phone)
         settings["token"] = token
@@ -893,7 +893,7 @@ def widget_script(cfg: Config, map_url: str, with_keys: bool = False, token: str
 AIRPORTS_URL = ("https://raw.githubusercontent.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
                 "planespotter/data/airports.csv")
 AIRLINES_FOR_PHONE = [list(a) for a in AIRLINES]
-# 🔭 Point runs in Safari (which gives pages the compass), from planespotter's own files, served as a web page.
+# Point runs in Safari (which gives pages the compass), from planespotter's own files, served as a web page.
 POINT_URL = ("https://raw.githack.com/JiraiyaGMS/2-hour-project-/claude/exciting-cray-6oq525/"
              "planespotter/web/point.html")
 

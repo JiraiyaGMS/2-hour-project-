@@ -247,9 +247,9 @@ class FrontDoorTests(unittest.TestCase):
                            headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 7) Chrome/130"})[2]
         iphone = self.req("/account", cookie=henry, accept="text/html",
                           headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"})[2]
-        self.assertLess(android.index("🤖 Android"), android.index("📱 iPhone"))
+        self.assertLess(android.index("Android: the planespotter app"), android.index("iPhone: widget and Siri"))
         self.assertIn('href="/planespotter.apk"', android)
-        self.assertLess(iphone.index("📱 iPhone"), iphone.index("🤖 Android"))
+        self.assertLess(iphone.index("iPhone: widget and Siri"), iphone.index("Android: the planespotter app"))
 
     def test_forms_from_other_sites_and_unsafe_next(self):
         henry = self.sign_in("henry", "correct horse")
