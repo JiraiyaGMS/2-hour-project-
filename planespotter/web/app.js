@@ -81,7 +81,7 @@ if (window.PlanespotterAndroid) {
     infoQueue: [],
     infoBusy: 0,
     infoPending: new Set(),     // being looked up right now
-    traceRoutes: new Map(),     // hex -> the route its own track confirmed (from api/trace)
+    traceRoutes: new Map(),     // hex|callsign -> the route its own track confirmed (from api/trace), and when
     listLimit: LIST_PAGE,
     heat: saved.get('heat', false),
     heatDays: saved.get('heatDays', 7),
@@ -199,7 +199,7 @@ if (window.PlanespotterAndroid) {
         const sinceCheck = Math.max(0, (data.time || 0) - (data.updated || data.time || 0));
         state.live = data.aircraft.map((p) => ({ ...p, fixAt: now - (sinceCheck + (p.seen_pos || 0)) * 1000 }));
         state.liveMeta = { interval: data.budget ? data.budget.interval_s : 0, paused: data.paused_s || 0,
-                           waiting: !!data.waiting, receiver: data.source === 'receiver' };
+                           waiting: !!data.waiting, receiver: data.source === 'receiver', backup: data.source === 'adsb.fi' };
         state.liveError = null;
         state.quietNow = !!data.quiet_now;
         state.transits = data.transits || [];
@@ -251,8 +251,11 @@ if (window.PlanespotterAndroid) {
 
   /** What we know about a live plane: its details, with the route its own track confirmed when there is one. */
   function planeInfo(p) {
-    const info = { ...(infoFor(p) || {}), ...(state.traceRoutes.get(p.hex) || {}) };
-    if (!hasRoute(info)) Object.assign(info, checkedRoute(p.hex) || {});
+    // (The same aircraft is back in the air on its next flight within the hour: what its track showed only
+    // holds for the same callsign, and not for long.)
+    const seen = state.traceRoutes.get(infoKey(p));
+    const info = { ...(infoFor(p) || {}), ...(seen && Date.now() - seen.at < 2 * 3600000 ? seen.route : {}) };
+    if (!hasRoute(info)) Object.assign(info, checkedRoute(p) || {});
     return info;
   }
 
@@ -442,9 +445,10 @@ if (window.PlanespotterAndroid) {
   }
 
   // ---------- the list ----------
-  /** The route we checked against the plane's real flight, if it went over us in the last few hours. */
-  function checkedRoute(hex) {
-    const f = state.flights.find((x) => x.hex === hex && x.route_checked && Date.now() / 1000 - x.first_seen < 6 * 3600);
+  /** The route we checked against this same flight's real track, if it went over us in the last couple of hours. */
+  function checkedRoute(p) {
+    const f = state.flights.find((x) => x.hex === p.hex && x.callsign === (p.callsign || '') && x.route_checked
+      && Date.now() / 1000 - x.first_seen < 2 * 3600);
     return f ? { origin: f.origin, destination: f.destination, origin_city: f.origin_city, destination_city: f.destination_city,
       route_checked: true, route_basis: 'track' } : null;
   }
@@ -667,7 +671,11 @@ if (window.PlanespotterAndroid) {
         const data = await getJSON(`api/trace?hex=${encodeURIComponent(sel.key)}`);
         whole = { status: 'so-far', path: data.path || [], origin: data.origin || null };
         // Its recorded track says where it took off from: that's its route's origin, whatever a database says.
-        if (data.route) { state.traceRoutes.set(sel.key, data.route); if (state.tab === 'live') renderListSoon(); }
+        const plane = state.live.find((p) => p.hex === sel.key);
+        if (data.route && plane) {
+          state.traceRoutes.set(infoKey(plane), { route: data.route, at: Date.now() });
+          if (state.tab === 'live') renderListSoon();
+        }
       }
     } catch {
       whole = { status: 'error', path: [] };
@@ -967,7 +975,9 @@ if (window.PlanespotterAndroid) {
     else {
       const n = state.live.length;
       const over = state.live.filter((p) => p.in_zone).length;
-      text = `${state.liveMeta && state.liveMeta.receiver ? 'Live from your receiver' : 'Live'} · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
+      const from = !state.liveMeta ? 'Live' : state.liveMeta.receiver ? 'Live from your receiver'
+        : state.liveMeta.backup ? 'Live from adsb.fi (adsb.lol isn’t answering)' : 'Live';
+      text = `${from} · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
       const every = state.liveMeta ? state.liveMeta.interval : 0;
       if (every > 45) text += ` · updates every ${every >= 90 ? `${Math.round(every / 60)} min` : `${every} s`}`;
       if (state.quietNow) { text += ' · quiet hours'; cls = 'quiet'; }
@@ -1496,7 +1506,7 @@ if (window.PlanespotterAndroid) {
     g.fillStyle = bg; g.fillRect(0, 0, W, H);
 
     const f = thing.flight, p = thing.plane;
-    const info = p ? { ...(infoFor(p) || {}), ...(checkedRoute(p.hex) || {}) } : f;
+    const info = p ? planeInfo(p) : f;
     const callsign = label(f || p);
     const mine = photosOf(thing)[0];
     const photo = mine ? await loadImage(`photo/${mine.id}.jpg`) : null;
@@ -3397,7 +3407,8 @@ if (window.PlanespotterAndroid) {
       antialias: true, attributionControl: false,
     });
     map.addControl(new maplibregl.AttributionControl({
-      compact: true, customAttribution: 'Flights: <a href="https://adsb.lol" target="_blank">adsb.lol</a> (ODbL)',
+      compact: true, customAttribution: 'Flights: <a href="https://adsb.lol" target="_blank">adsb.lol</a> (ODbL), '
+        + 'and <a href="https://adsb.fi" target="_blank">adsb.fi</a> when it can’t be reached',
     }), 'bottom-right');
     overlay = new deck.MapboxOverlay({ interleaved: true, layers: [] });
     map.addControl(overlay);

@@ -1,7 +1,8 @@
 """Talking to the free flight-data APIs.
 
-* Live positions: adsb.lol (community ADS-B network, no key needed).
-* Flight routes and aircraft details: adsbdb.com (no key needed).
+* Live positions: adsb.lol (community ADS-B network, no key needed), and adsb.fi when adsb.lol can't be reached.
+* Flight routes: adsb.lol's standing data and adsbdb.com, checked against the plane (see routes.py).
+* Aircraft details: adsbdb.com (no key needed).
 """
 
 from __future__ import annotations
@@ -129,20 +130,67 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
 
 
 class LiveFeed:
-    """Aircraft currently near a point, from adsb.lol."""
+    """Aircraft currently near a point, from adsb.lol.
 
-    def __init__(self, base_url: str = "https://api.adsb.lol", timeout: float = 15, api_key: str = "", budget=None):
+    ``backup_url`` (adsb.fi's open data API, which answers in the same format): asked instead when adsb.lol
+    can't be reached, is having trouble, or says we've asked too often. Then adsb.lol is left alone for a
+    couple of minutes (or as long as it asked) before it's tried again. Without one, its errors are raised.
+    """
+
+    def __init__(self, base_url: str = "https://api.adsb.lol", timeout: float = 15, api_key: str = "", budget=None,
+                 backup_url: str = "", clock=time.time):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.api_key = api_key
         self.budget = budget
+        self.backup_url = (backup_url or "").rstrip("/")
+        self.clock = clock
+        self.using_backup = False
+        self.main_down_until = 0.0
 
     def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
         radius = max(1, min(250, math.ceil(radius_nm)))
+        if self.backup_url and self.clock() < self.main_down_until:
+            try:
+                return self._from_backup(lat, lon, radius)
+            except (OSError, ValueError):
+                pass  # the backup's gone too: see if the main one is back
         url = f"{self.base_url}/v2/point/{lat:.5f}/{lon:.5f}/{radius}"
-        data = counted(self.budget, "poll", lambda: get_json(url, self.timeout, key_header(self.api_key)))
+        try:
+            data = counted(self.budget, "poll", lambda: get_json(url, self.timeout, key_header(self.api_key)))
+            if not isinstance(data, dict):
+                raise ValueError("not adsb.lol's answer")
+        except urllib.error.HTTPError as exc:
+            if not self.backup_url or (exc.code != 429 and exc.code < 500):
+                raise
+            return self._fall_back(lat, lon, radius, exc, max(120.0, retry_after_seconds(exc)))
+        except (OSError, ValueError) as exc:  # no connection, timed out, or not its answer
+            if not self.backup_url:
+                raise
+            return self._fall_back(lat, lon, radius, exc, 120.0)
+        if self.using_backup:
+            log.info("adsb.lol is answering again")
+        self.using_backup = False
         found = (parse_aircraft(raw) for raw in data.get("ac") or [])
         return [ac for ac in found if ac and ac.hex]
+
+    def _from_backup(self, lat: float, lon: float, radius: int) -> list[Aircraft]:
+        data = get_json(f"{self.backup_url}/v3/lat/{lat:.5f}/lon/{lon:.5f}/dist/{radius}", self.timeout)
+        if not isinstance(data, dict) or not isinstance(data.get("ac") or data.get("aircraft") or [], list):
+            raise ValueError("not the backup feed's answer")
+        found = (parse_aircraft(raw) for raw in (data.get("ac") or data.get("aircraft") or []) if isinstance(raw, dict))
+        return [ac for ac in found if ac and ac.hex]
+
+    def _fall_back(self, lat: float, lon: float, radius: int, exc: Exception, wait: float) -> list[Aircraft]:
+        try:
+            planes = self._from_backup(lat, lon, radius)
+        except (OSError, ValueError):
+            raise exc from None  # neither answered: it's adsb.lol's trouble that gets reported
+        if not self.using_backup:
+            log.warning("adsb.lol isn't answering (%s); using adsb.fi until it's back", exc)
+        self.using_backup = True
+        self.main_down_until = self.clock() + wait
+        return planes
 
 
 def retry_after_seconds(exc: urllib.error.HTTPError) -> float:
@@ -384,28 +432,54 @@ class Lookup:
     def for_config(cls, store, cfg) -> "Lookup":
         return cls(store, cfg.adsbdb_api, routes_url=cfg.routes_api)
 
-    def _cached_fetch(self, key: str, url: str, ttl: float, now: float, unwrap: str | None = "response") -> dict | None:
-        cached = self.store.cache_get(key, now)
-        if cached is not None:
-            return cached or None  # {} means "known miss"
+    def _ask(self, key: str, url: str, unwrap: str | None):
+        """One request: ("found", body), ("missing", None) when the service has nothing for it, or
+        ("failed", None) when it couldn't be asked (so it's worth asking again soon). Touches no database:
+        safe to run on another thread."""
         try:
             body = get_json(url, self.timeout)
             if unwrap:
                 body = body.get(unwrap) if isinstance(body, dict) else None
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                self.store.cache_put(key, {}, now, self.MISS_TTL)
-            else:
-                log.info("lookup %s failed: HTTP %s", key, exc.code)
-            return None
+                return "missing", None
+            log.info("lookup %s failed: HTTP %s", key, exc.code)
+            return "failed", None
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
             log.info("lookup %s failed: %s", key, exc)
-            return None
-        if not isinstance(body, dict):
-            self.store.cache_put(key, {}, now, self.MISS_TTL)
-            return None
-        self.store.cache_put(key, body, now, ttl)
-        return body
+            return "failed", None
+        return ("found", body) if isinstance(body, dict) else ("missing", None)
+
+    def _remember(self, key: str, answer, ttl: float, now: float) -> dict | None:
+        state, body = answer
+        if state == "found":
+            self.store.cache_put(key, body, now, ttl)
+            return body
+        if state == "missing":
+            self.store.cache_put(key, {}, now, self.MISS_TTL)  # {} means "known miss"
+        return None
+
+    def _cached_fetch(self, key: str, url: str, ttl: float, now: float, unwrap: str | None = "response") -> dict | None:
+        cached = self.store.cache_get(key, now)
+        if cached is not None:
+            return cached or None
+        return self._remember(key, self._ask(key, url, unwrap), ttl, now)
+
+    def _cached_fetch_both(self, jobs: list[tuple], ttl: float, now: float) -> list:
+        """Several (key, url, unwrap) lookups, asked at the same time when more than one isn't remembered:
+        a new plane's alert shouldn't wait for two slow services one after the other."""
+        out = [self.store.cache_get(key, now) for key, _, _ in jobs]
+        todo = [i for i, cached in enumerate(out) if cached is None]
+        if len(todo) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+                answers = list(pool.map(lambda i: self._ask(*jobs[i]), todo))
+        else:
+            answers = [self._ask(*jobs[i]) for i in todo]
+        for i, answer in zip(todo, answers):
+            out[i] = self._remember(jobs[i][0], answer, ttl, now)
+        return [body or None for body in out]
 
     def legs(self, callsign: str, now: float) -> list:
         """Every leg the route sources list for a callsign (both sources, each as it spells the callsign)."""
@@ -413,23 +487,27 @@ class Lookup:
 
         standing, adsbdb = [], []
         for cs in callsign_spellings(callsign):
+            jobs = []
             if not standing and self.routes_url:
-                standing = legs_from_standing(self._cached_fetch(
-                    f"standing:{cs}", f"{self.routes_url}/routes/{cs[:2]}/{cs}.json", self.ROUTE_TTL, now, unwrap=None))
+                jobs.append((f"standing:{cs}", f"{self.routes_url}/routes/{cs[:2]}/{cs}.json", None))
             if not adsbdb and self.base_url:
-                adsbdb = legs_from_adsbdb(self._cached_fetch(
-                    f"route:{cs}", f"{self.base_url}/v0/callsign/{cs}", self.ROUTE_TTL, now))
+                jobs.append((f"route:{cs}", f"{self.base_url}/v0/callsign/{cs}", "response"))
+            for (key, _, _), body in zip(jobs, self._cached_fetch_both(jobs, self.ROUTE_TTL, now)):
+                if key.startswith("standing:"):
+                    standing = legs_from_standing(body)
+                else:
+                    adsbdb = legs_from_adsbdb(body)
         return standing + adsbdb
 
     def route(self, aircraft: Aircraft, now: float, took_off_from=None):
         """The route this plane is flying (routes.Route). ``took_off_from``: the airport (airports.Airport or
         routes.Place) its recorded track left the ground at, when that's known."""
-        from .routes import Place, Route, airline_of, choose, place_from_airport
+        from .routes import Place, Route, airline_of, choose, is_airline_callsign, place_from_airport
 
         if took_off_from is not None and not isinstance(took_off_from, Place):
             took_off_from = place_from_airport(took_off_from)
         legs = self.legs(aircraft.callsign, now) if aircraft.callsign else []
-        found = choose(aircraft, legs, took_off_from)
+        found = choose(aircraft, legs, took_off_from, airliner=is_airline_callsign(aircraft.callsign))
         if not found.airline:
             found = Route(found.origin, found.destination, airline_of(aircraft.callsign), found.basis, found.source)
         return found

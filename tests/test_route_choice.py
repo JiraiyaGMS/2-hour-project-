@@ -151,6 +151,26 @@ class ChooseTests(unittest.TestCase):
         self.assertEqual((arriving_at(over), departing_from(over)), (None, None))
 
 
+    def test_an_earlier_flights_origin_is_dropped_once_it_is_plainly_leaving_somewhere_else(self):
+        # The same aircraft came in from Hannover an hour ago; now it's climbing out of Heathrow.
+        lhr = airports().get("LHR")
+        leaving = plane(lhr.lat, lhr.lon - 0.05, alt=1500, track=270, vr=2500)
+        got = choose(leaving, legs_from_standing(standing("LHR", "DUB")), took_off_from=ap("HAJ"))
+        self.assertEqual((got.origin.code, got.destination.code, got.basis), ("LHR", "DUB", "shows"))
+
+    def test_nothing_is_read_into_a_private_plane_near_a_big_airport(self):
+        # A light aircraft low and coming down, pointing at Heathrow: it may be bound for a field just short of it.
+        lhr = airports().get("LHR")
+        small = plane(lhr.lat, lhr.lon + 0.14, alt=2000, track=270, vr=-750, callsign="GABCD")
+        self.assertEqual(choose(small, [], airliner=False).destination, None)
+        lookup = Lookup(Store(":memory:"), "", routes_url="")  # no sources: only what the plane shows
+        self.assertEqual(lookup.info(small, now=1000.0).destination, "")
+        airline = plane(lhr.lat, lhr.lon + 0.14, alt=2000, track=270, vr=-750, callsign="BAW923")
+        info = lookup.info(airline, now=1000.0)
+        self.assertEqual((info.destination, info.destination_city, info.route_basis, info.airline),
+                         ("LHR", "London", "shows", "British Airways"))
+
+
 class LookupTests(unittest.TestCase):
     def lookup(self, answers: dict) -> tuple[Lookup, list]:
         asked = []
@@ -179,6 +199,7 @@ class LookupTests(unittest.TestCase):
                          ("SEA", "Seattle", "OAK", "fits"))
         self.assertEqual((info.airline, info.aircraft_desc), ("Delta Air Lines", "Boeing 737-800"))
         self.assertEqual(len(asked), 3)
+        self.assertEqual(sorted(u.split("/")[2] for u in asked[:2]), ["adsbdb.test", "routes.test"])  # both lists
         lookup.info(plane(**MID_SEA_OAK, track=180), now=1100.0)
         self.assertEqual(len(asked), 3)  # kept in the database: not asked again
         # The same answers, a plane heading the other way: nothing fits, so no route (but still the airline).

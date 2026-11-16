@@ -229,17 +229,23 @@ def fit(ac, leg: Leg) -> float | None:
     return score
 
 
-def choose(ac, legs: Iterable[Leg], took_off_from: Place | None = None) -> Route:
+def choose(ac, legs: Iterable[Leg], took_off_from: Place | None = None, airliner: bool = True) -> Route:
     """The route this plane is flying, from the legs the sources list for its callsign.
 
     What the plane itself shows comes first: ``took_off_from`` (the airport its recorded track left the
     ground at, when known), or the airport it's plainly climbing out of, and the one it's plainly about to
     land at. Only legs that agree with those count; if none does, the ends the plane shows are still known.
+
+    ``airliner``: it flies between big airports, so one right ahead of it is where it's landing. A private
+    plane or helicopter may be bound for a small field just short of it, so nothing is read into theirs.
     """
     legs = list(legs)
     airline = next((l.airline for l in legs if l.airline), "")
-    left_from = took_off_from if took_off_from is not None else departing_from(ac)
-    landing_at = arriving_at(ac, not_at=left_from)
+    seen_leaving = departing_from(ac) if airliner else None
+    if took_off_from is not None and seen_leaving is not None and not same_place(seen_leaving, took_off_from):
+        took_off_from = None  # that was an earlier flight: it's climbing out of somewhere else now
+    left_from = took_off_from if took_off_from is not None else seen_leaving
+    landing_at = arriving_at(ac, not_at=left_from) if airliner else None
     ranked = []
     for leg in legs:
         score = fit(ac, leg)
@@ -255,11 +261,10 @@ def choose(ac, legs: Iterable[Leg], took_off_from: Place | None = None) -> Route
     shown = "track" if took_off_from is not None else "shows" if (left_from or landing_at) else ""
     if ranked:
         _, agreed, leg = min(ranked, key=lambda x: x[0])
-        origin = left_from if left_from is not None else leg.origin
-        destination = landing_at if landing_at is not None else leg.destination
-        if not origin.city:
-            origin = leg.origin
-        return Route(origin, destination, leg.airline or airline, shown or ("agree" if agreed else "fits"), leg.source)
+        # Which of a city's airports: its recorded track knows best, then the list (which matched what the
+        # plane shows, to within the same city), and only then what it looks like from where it is.
+        origin = took_off_from if took_off_from is not None and took_off_from.city else leg.origin
+        return Route(origin, leg.destination, leg.airline or airline, shown or ("agree" if agreed else "fits"), leg.source)
     if left_from is not None or landing_at is not None:
         # The databases describe some other flight; what the plane shows is still true.
         return Route(left_from, landing_at, airline, shown, "")
@@ -303,12 +308,21 @@ def arriving_at(ac, not_at: Place | None = None) -> Place | None:
         if off > 25:
             continue
         fits.append((dist, a))
+    best = _the_one(fits)
+    place = place_from_airport(best) if best else None
+    return None if place is None or same_place(place, not_at) else place
+
+
+def _the_one(fits: list[tuple[float, Airport]]) -> Airport | None:
+    """The airport out of those that fit, if it's plain which: a big one before a smaller one next door
+    (airliners use the big one), and none at all when two of a kind are about as near."""
     if not fits:
         return None
-    place = place_from_airport(fits[0][1])
-    if len(fits) > 1 and fits[1][0] < fits[0][0] * 2.5:
-        return None  # two airports ahead of it: can't say which
-    return None if same_place(place, not_at) else place
+    large = [f for f in fits if f[1].kind == "L"]
+    pool = large or fits
+    if len(pool) > 1 and pool[1][0] < pool[0][0] * 2.5:
+        return None
+    return pool[0][1]
 
 
 def departing_from(ac) -> Place | None:
@@ -319,20 +333,24 @@ def departing_from(ac) -> Place | None:
     fits = []
     for dist, a in _big_airports_near(ac.lat, ac.lon, 20):
         above = alt - a.elevation_ft
-        if not 200 < above < 6000 or dist > 2.5 + above / 1000 * 3.0:
+        # A smaller airport only counts while the plane is still right by it: climbing out of a big one,
+        # planes pass over its smaller neighbours.
+        if not 200 < above < (6000 if a.kind == "L" else 2500) or dist > 2.5 + above / 1000 * 3.0:
             continue
         away = abs((bearing_deg(a.lat, a.lon, ac.lat, ac.lon) - track + 540) % 360 - 180)
         if dist > 2 and away > 60:
             continue
         fits.append((dist, a))
-    if not fits:
-        return None
-    if len(fits) > 1 and fits[1][0] < fits[0][0] * 2.5:
-        return None
-    return place_from_airport(fits[0][1])
+    return place_from_airport(_the_one(fits))
 
 
 _CALLSIGN = re.compile(r"^([A-Z]{3})0*(\d[0-9A-Z]*)$")
+_AIRLINE_CALLSIGN = re.compile(r"^[A-Z]{3}\d")
+
+
+def is_airline_callsign(callsign: str) -> bool:
+    """DAL123, BAW9CX: an airline's three letters, then a flight number (not a registration like N123AB)."""
+    return bool(_AIRLINE_CALLSIGN.match((callsign or "").upper()))
 
 
 def callsign_spellings(callsign: str) -> list[str]:
@@ -347,5 +365,5 @@ def callsign_spellings(callsign: str) -> list[str]:
 
 def airline_of(callsign: str) -> str:
     """The airline a callsign belongs to, from its first three letters (DAL123 -> Delta Air Lines)."""
-    m = re.match(r"^([A-Z]{3})\d", (callsign or "").upper())
-    return BY_ICAO.get(m[1], "") if m else ""
+    cs = (callsign or "").upper()
+    return BY_ICAO.get(cs[:3], "") if is_airline_callsign(cs) else ""

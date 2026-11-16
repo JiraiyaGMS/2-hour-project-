@@ -149,7 +149,8 @@ def shared_feed(cfg: Config, budget: ApiBudget | None = None):
 
     With your own receiver, that comes first, and adsb.lol is only the backup."""
     view = miles_to_nm(cfg.view_radius_miles) if cfg.map_enabled else 0
-    adsb_lol = SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), min_radius_nm=view)
+    adsb_lol = SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, backup_url=cfg.backup_feed),
+                          min_radius_nm=view)
     if cfg.receiver_url:
         return FeedWithReceiver(ReceiverFeed(cfg.receiver_url), adsb_lol)
     return adsb_lol
@@ -245,8 +246,12 @@ class MapApp:
         budget = self.budget.status() if self.budget else None
         if receiver and budget:
             budget["interval_s"] = self.cfg.poll_seconds
+        # (The shared feed wraps adsb.lol's; behind a receiver it's the fallback.)
+        shared = getattr(self.feed, "fallback", self.feed)
+        backup = not receiver and getattr(getattr(shared, "feed", None), "using_backup", False)
         return {**data, "paused_s": round(paused), "budget": budget,
-                "source": "receiver" if receiver else "adsb.lol", "transits": self.transits_json()}
+                "source": "receiver" if receiver else "adsb.fi" if backup else "adsb.lol",
+                "transits": self.transits_json()}
 
     def transits_json(self) -> list[dict]:
         """Planes about to cross in front of the Moon (or Sun), for the Look up! card. Worked out every 20 s."""
@@ -785,10 +790,11 @@ class MapApp:
         if origin is not None:
             # Its track settles where it took off from: the route is the leg of its flight number that starts there.
             now = self.clock()
-            self._origins[hex_code] = (now, origin)
-            for old in [h for h, (t, _) in self._origins.items() if now - t > 6 * 3600]:
-                del self._origins[old]
             ac = self.live_plane(hex_code)
+            if ac is not None:
+                self._origins[hex_code] = (now, origin, ac.callsign)
+            for old in [h for h, hit in self._origins.items() if now - hit[0] > 2 * 3600]:
+                del self._origins[old]
             if ac is not None:
                 info = Lookup.for_config(self.store(), self.cfg).info(ac, now, took_off_from=origin)
                 out["route"] = {"airline": info.airline, "origin": info.origin, "origin_city": info.origin_city,
@@ -801,14 +807,15 @@ class MapApp:
         planes, _ = self.feed.latest() if hasattr(self.feed, "latest") else ([], 0)
         return next((ac for ac in planes or [] if ac.hex == hex_code), None)
 
-    def took_off_from(self, hex_code: str, now: float):
-        """The airport this plane's recorded track left the ground at, if we've looked that up in the last
-        few hours (when it crossed your zone, or when someone clicked it)."""
+    def took_off_from(self, hex_code: str, callsign: str, now: float):
+        """The airport this plane's recorded track left the ground at, if we looked that up for this same
+        flight (when it crossed your zone, or when someone clicked it). The same aircraft is back in the air
+        on its next flight within the hour, so it has to be the same callsign, and recent."""
         hit = self._origins.get(hex_code)
-        if hit and now - hit[0] < 6 * 3600:
+        if hit and now - hit[0] < 2 * 3600 and hit[2] == callsign:
             return hit[1]
-        row = self.store().latest_pass_for(hex_code, now - 6 * 3600)
-        if row is not None and row["route_checked"] and row["origin"]:
+        row = self.store().latest_pass_for(hex_code, now - 2 * 3600)
+        if row is not None and row["route_checked"] and row["origin"] and row["callsign"] == callsign:
             return airports().get(row["origin"])
         return None
 
@@ -824,7 +831,7 @@ class MapApp:
             ac = Aircraft(hex=hex_code, callsign=callsign, registration="", type_code="", lat=lat, lon=lon,
                           alt_ft=None, speed_kt=None, track=None)
         now = self.clock()
-        info = Lookup.for_config(self.store(), self.cfg).info(ac, now, self.took_off_from(hex_code, now))
+        info = Lookup.for_config(self.store(), self.cfg).info(ac, now, self.took_off_from(hex_code, ac.callsign, now))
         return {**asdict(info), "route_checked": info.route_checked}
 
 

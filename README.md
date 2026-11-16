@@ -1574,6 +1574,11 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
   to draw planes in 3D. It's served only from your computer. It never
   serves your settings file or anything else from disk.
+  When adsb.lol can't be reached, is having trouble or says you've asked
+  too often, the planes come from [adsb.fi](https://adsb.fi)'s open data
+  instead (another community network, free for personal use, same format)
+  until adsb.lol answers again; the status line on the map says so.
+  `BACKUP_FEED=off` in your settings turns that off.
   **Routes** come from [adsb.lol's standing data](https://github.com/adsblol/vrs-standing-data)
   (rebuilt every day) and [adsbdb.com](https://www.adsbdb.com), and are
   checked against the plane itself (below). **Aircraft details** and photos

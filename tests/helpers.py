@@ -22,6 +22,7 @@ def make_config(**overrides) -> Config:
         radius_miles=3.0, poll_seconds=20, timezone=UTC, digest_time=time(7, 0),
         db_path=":memory:",
         routes_api="http://127.0.0.1:9",  # no route lookups over the internet from the tests
+        backup_feed="",                   # ...and no backup feed
     )
     values.update(overrides)
     return Config(**values)
