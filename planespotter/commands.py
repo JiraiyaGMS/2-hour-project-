@@ -41,30 +41,30 @@ def handle(text: str, cfg, store, travel, now: float) -> str:
         else:
             where = parse_where(rest)
             if where is None:
-                return "📍 Send it like: travel 33.8090,-117.9265 (and a name if you like)"
+                return "Send it like: travel 33.8090,-117.9265 (and a name if you like)"
             if travel is None:
                 return "Travel mode isn't available here."
             s = travel.start(*where)
-            return f"🧳 Travel mode: watching {s['name']} until {s['until_text']}. Send \"home\" to stop."
+            return f"Travel mode: watching {s['name']} until {s['until_text']}. Send \"home\" to stop."
     if verb in ("home", "stop"):
         if travel is not None:
             travel.stop()
-        return "🏠 Travel mode is off. Just watching home."
+        return "Travel mode is off. Just watching home."
     if verb in ("flight", "track", "follow"):
         if rest.lower() in ("off", "stop", "none", "clear"):
             for f in my_flights(store):
                 remove_flight(store, f["callsign"])
-            return "✈ Not following any flights now."
+            return "Not following any flights now."
         parts = rest.split()
         if not parts:
-            return "✈ Send it like: flight UA1234 (or flight UA1234 tomorrow)"
+            return "Send it like: flight UA1234 (or flight UA1234 tomorrow)"
         day_word = parts[-1] if len(parts) > 1 and (parts[-1].lower() in ("today", "tomorrow") or parts[-1][:2] == "20") else ""
         number = " ".join(parts[:-1] if day_word else parts)
         try:
             f = add_flight(store, number, parse_day(day_word, cfg.local(now).date()), now)
         except ValueError as exc:
-            return f"✈ {exc}"
-        return (f"✈ Following {f['label']} ({f['callsign']}) on {f['day']}. You'll hear when it takes off, "
+            return f"{exc}"
+        return (f"Following {f['label']} ({f['callsign']}) on {f['day']}. You'll hear when it takes off, "
                 "if it flies over home, and when it lands.")
     if verb in ("flights", "status"):
         if verb == "flights" and rest.lower() in ("off", "stop", "clear"):
@@ -72,13 +72,13 @@ def handle(text: str, cfg, store, travel, now: float) -> str:
         lines = []
         t = travel.status() if travel is not None else {"on": False}
         if t["on"]:
-            lines.append(f"📍 Following your phone: watching {t['name']}" if t["auto"]
-                         else f"🧳 Travel mode: {t['name']} until {t['until_text']}")
+            lines.append(f"Following your phone: watching {t['name']}" if t["auto"]
+                         else f"Travel mode: {t['name']} until {t['until_text']}")
         else:
-            lines.append("🏠 Watching home")
+            lines.append("Watching home")
         for f in my_flights(store):
             if f["state"] != "done":
-                lines.append(f"✈ {f['label']}: {f['state']}")
+                lines.append(f"{f['label']}: {f['state']}")
         return "\n".join(lines)
     return 'Commands: "travel <lat>,<lon>", "home", "flight UA1234", "flights off", "status"'
 

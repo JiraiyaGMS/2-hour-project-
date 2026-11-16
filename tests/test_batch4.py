@@ -92,7 +92,7 @@ class OutlookTests(unittest.TestCase):
         hours = [{"t": ts(2026, 11, 13, h), "temperature_250hPa": -48,
                   "relative_humidity_250hPa": 70 if h < 12 else 10} for h in range(24)]
         self.assertEqual(contrail_text(hours, cfg, now),
-                         "✈️ Long-lasting contrails likely this morning; only short contrails (gone in seconds) this afternoon")
+                         "Long-lasting contrails likely this morning; only short contrails (gone in seconds) this afternoon")
 
     def test_best_time(self):
         cfg = make_config()
@@ -131,7 +131,7 @@ class NtfyTests(unittest.TestCase):
         self.assertTrue(n.topic("relay").startswith("planespotter-relay-"))
         self.assertNotEqual(n.topic("relay"), n.topic("family"))
         self.assertEqual(n.topic("family"), derived_topic("planespotter-test", "family"))
-        n.family("✨ A380", "Over home")
+        n.family("A380", "Over home")
         self.assertEqual(post.sent[-1]["topic"], n.topic("family"))
         self.assertFalse(PushNotifier(make_config(ntfy_topic="x", family_alerts=False), post=post).family("a", "b"))
 
@@ -318,10 +318,10 @@ class FlightTests(unittest.TestCase):
         for _ in range(4):
             events += watch.check()
             clock[0] += 600
-        self.assertEqual(events, ["🛫 BA 123 has taken off from London (LHR)",
-                                  "✈ BA 123 is flying over Test House right now",
-                                  "🛬 BA 123 has landed in New York (JFK)"])
-        self.assertIn("family: 🛬 BA 123 has landed in New York (JFK)", told)
+        self.assertEqual(events, ["BA 123 has taken off from London (LHR)",
+                                  "BA 123 is flying over Test House right now",
+                                  "BA 123 has landed in New York (JFK)"])
+        self.assertIn("family: BA 123 has landed in New York (JFK)", told)
         self.assertEqual(my_flights(store)[0]["state"], "landed")
 
 
@@ -413,7 +413,7 @@ class FriendsTests(unittest.TestCase):
         n.poll = lambda code, since="latest", raw=False: json.dumps(cards[-1])
         self.assertEqual(f.read(), [])  # the first read just catches up
         cards.append({**cards[0], "rare": [{"at": now[0] + 50, "what": "a military aircraft", "label": "RCH123"}]})
-        self.assertEqual(f.read(), ["🎉 Sam just spotted a military aircraft (RCH123)"])
+        self.assertEqual(f.read(), ["Sam just spotted a military aircraft (RCH123)"])
         board = f.board()
         self.assertEqual([r["friend"] for r in board["rows"]], ["Sam", "You"])  # most planes this week first
 

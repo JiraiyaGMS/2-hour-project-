@@ -40,7 +40,7 @@ class WeeklyTests(unittest.TestCase):
         email = weekly_email(week, watcher.cfg)
         self.assertIn("4 planes (+100%)", email.subject)
         self.assertIn("first one you&#x27;ve ever seen", email.html)
-        self.assertIn("✨ First Delta flight", email.html)
+        self.assertIn("First Delta flight", email.html)
         self.assertIn("Rare big planes: <strong>1</strong>", email.html)
         self.assertIn("SYD → LAX", email.html)
 

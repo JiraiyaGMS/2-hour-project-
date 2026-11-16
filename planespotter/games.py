@@ -330,7 +330,7 @@ def profile(store, cfg, hex_code: str) -> dict:
         "aircraft": next((r["aircraft_desc"] for r in rows if r["aircraft_desc"]), latest["type_code"]),
         "family": family(latest["type_code"]), "owner": next((r["owner"] for r in rows if r["owner"]), ""),
         "airline": airlines.most_common(1)[0][0] if airlines else "",
-        "callsign": latest["callsign"], "country": {"name": country[1], "flag": flag(country[0])} if country else None,
+        "callsign": latest["callsign"], "country": {"name": country[1], "code": country[0], "flag": flag(country[0])} if country else None,
         "photo_url": next((r["photo_url"] for r in rows if r["photo_url"]), ""),
         "times": len(rows), "first_seen": rows[-1]["first_seen"], "last_seen": latest["first_seen"],
         "usual_hour": hours.most_common(1)[0][0],

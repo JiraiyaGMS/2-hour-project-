@@ -53,7 +53,7 @@ class WatcherSpecialTests(unittest.TestCase):
             watcher.send_specials(specials, t + i * 30)
         self.assertEqual(len(mailer.sent), 1)
         self.assertIn("Airbus A380", mailer.sent[0].subject)
-        self.assertIn("✨ Airbus A380", mailer.sent[0].html)
+        self.assertIn("Airbus A380", mailer.sent[0].html)
         self.assertEqual([m["topic"] for m in post.sent], ["planespotter-test", derived_topic("planespotter-test", "family")])
         self.assertEqual(post.sent[0]["priority"], 4)  # and once to your family's feed
 
@@ -65,7 +65,7 @@ class WatcherSpecialTests(unittest.TestCase):
         t = ts(2026, 11, 1, 12)
         watcher.poll(t)
         watcher.send_specials(watcher.new_specials, t)
-        self.assertTrue(mailer.sent[0].subject.startswith("🚨 Emergency (7700): UAL123"))
+        self.assertTrue(mailer.sent[0].subject.startswith("Emergency (7700): UAL123"))
         self.assertEqual(post.sent[0]["priority"], 5)
 
     def test_quiet_hours_are_respected(self):
@@ -89,8 +89,8 @@ class FirstsTests(unittest.TestCase):
         new = watcher.poll(t)
         watcher.send_alerts(new, t)
         html = mailer.sent[-1].html
-        self.assertIn("✨ First Test Air flight you&#x27;ve spotted", html)
-        self.assertIn("✨ First A388 you&#x27;ve spotted", html)
+        self.assertIn("First Test Air flight you&#x27;ve spotted", html)
+        self.assertIn("First A388 you&#x27;ve spotted", html)
         feed.planes = [plane("ccc003", callsign="DAL2", type_code="A320")]
         new = watcher.poll(t + 7200)
         self.assertEqual(watcher.store.get_pass(new[0])["firsts"], "[]")  # seen both before

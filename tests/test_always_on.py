@@ -43,10 +43,10 @@ class EmailsOffTests(unittest.TestCase):
         watcher.clock = lambda: ts(2026, 11, 9, 8)
         self.assertTrue(watcher.send_digest(date(2026, 11, 9)))
         title = post.sent[-1]["title"]
-        self.assertTrue(title.startswith("☀ The last day over Test House: 4 planes"), title)
+        self.assertTrue(title.startswith("The last day over Test House: 4 planes"), title)
         self.assertIn("Busiest hour: 5 pm (2 planes)", post.sent[-1]["message"])
         self.assertTrue(watcher.send_weekly(date(2026, 11, 9)))
-        self.assertTrue(post.sent[-1]["title"].startswith("📅 Your week over Test House:"), post.sent[-1]["title"])
+        self.assertTrue(post.sent[-1]["title"].startswith("Your week over Test House:"), post.sent[-1]["title"])
         self.assertEqual(mailer.sent, [])
         self.assertEqual(watcher.store.get_meta("last_weekly"), "2026-11-09")
 
@@ -268,7 +268,7 @@ class ServerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "(3, 12)\n", "")
             if remote_cmd.startswith("test -e"):
                 return subprocess.CompletedProcess(cmd, 1, "", "")       # no history there yet
-            return subprocess.CompletedProcess(cmd, 0, "✔ planespotter now runs by itself\n", "")
+            return subprocess.CompletedProcess(cmd, 0, "planespotter now runs by itself\n", "")
         with TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env"
             env.write_text(f"HOME_LAT={HOME[0]}\nHOME_LON={HOME[1]}\nNTFY_TOPIC=planespotter-x\n")
@@ -341,14 +341,14 @@ class NightTests(unittest.TestCase):
     def test_nothing_reaches_the_phone_at_night(self):
         clock = [ts(2026, 11, 14, 3)]
         n, post = self.notifier(clock)
-        self.assertFalse(n.send("🛬 BA123 has landed", "in London"))              # my flight: waits
-        self.assertFalse(n.send("📴 found 3 planes", "while you were off"))       # offline log: waits
-        self.assertFalse(n.send("planespotter", "📍 You're near Fullerton", kind="follow"))
-        self.assertTrue(n.send("planespotter", "🏠 Watching home", kind="reply"))  # you asked: answered
+        self.assertFalse(n.send("BA123 has landed", "in London"))              # my flight: waits
+        self.assertFalse(n.send("found 3 planes", "while you were off"))       # offline log: waits
+        self.assertFalse(n.send("planespotter", "You're near Fullerton", kind="follow"))
+        self.assertTrue(n.send("planespotter", "Watching home", kind="reply"))  # you asked: answered
         self.assertTrue(n.send("Test", "it works", kind="test"))
-        self.assertEqual([p["message"] for p in post.sent], ["🏠 Watching home", "it works"])
+        self.assertEqual([p["message"] for p in post.sent], ["Watching home", "it works"])
         clock[0] = ts(2026, 11, 14, 7)
-        self.assertTrue(n.send("✈ DAL1 over Test House", "…"))                    # quiet hours are over
+        self.assertTrue(n.send("DAL1 over Test House", "…"))                    # quiet hours are over
 
     def test_alerts_start_again_with_the_next_plane(self):
         from datetime import time as t
@@ -363,7 +363,7 @@ class NightTests(unittest.TestCase):
         clock[0] = ts(2026, 11, 14, 7, 5)
         feed.planes = [plane("bbb001", callsign="MORNING1")]
         watcher.send_alerts(watcher.poll(clock[0]), clock[0])
-        self.assertEqual([p["title"] for p in post.sent], ["✈ MORNING1 over Test House"])  # no pile of night ones
+        self.assertEqual([p["title"] for p in post.sent], ["MORNING1 over Test House"])  # no pile of night ones
 
     def test_the_morning_report_waits_for_quiet_hours_to_end(self):
         from datetime import time as t
@@ -379,7 +379,7 @@ class NightTests(unittest.TestCase):
         clock[0] = ts(2026, 11, 14, 7, 1)
         self.assertEqual(watcher.digest_due(clock[0]), date(2026, 11, 14))
         self.assertTrue(watcher.send_digest(date(2026, 11, 14)))
-        self.assertTrue(post.sent[-1]["title"].startswith("☀"))
+        self.assertTrue(post.sent[-1]["title"].startswith("The last day over"))
 
     def test_location_news_waits_but_your_commands_are_answered(self):
         from datetime import time as t
@@ -393,7 +393,7 @@ class NightTests(unittest.TestCase):
 
         class Travel:
             def follow(self, lat, lon):
-                return "📍 You're near Fullerton"
+                return "You're near Fullerton"
 
             def status(self):
                 return {"on": True, "auto": True, "name": "Fullerton", "until_text": "Sat 2 PM"}

@@ -130,7 +130,7 @@ def contrail_text(hours: list[dict], cfg, now: float) -> str:
     if later:
         k2 = found[later[0]].most_common(1)[0][0]
         text += f"; {words[k2][0].lower() + words[k2][1:]} {'tonight' if later[0] == 'evening' else 'this ' + later[0]}"
-    return "✈️ " + text
+    return text
 
 
 def hourly_rates(store, cfg, now: float) -> dict[int, float]:
@@ -194,7 +194,7 @@ def best_time_text(best: dict | None, cfg, now: float) -> str:
     span = f"{fmt(best['start'])}–{fmt(best['end'])}"
     if best["start"] <= now:
         span = f"now until {fmt(best['end'])}"
-    return f"👀 Best time to look up today: {span} (usually about {best['planes']} plane{'s' if best['planes'] != 1 else ''}, {best['sky']})"
+    return f"Best time to look up today: {span} (usually about {best['planes']} plane{'s' if best['planes'] != 1 else ''}, {best['sky']})"
 
 
 def daily_best(store, cfg, now: float, hours: list[dict], days: int = 3) -> list[dict]:

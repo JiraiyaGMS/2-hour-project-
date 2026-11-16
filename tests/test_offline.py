@@ -176,7 +176,7 @@ class CatchUpTests(unittest.TestCase):
         watcher.store = self.store
         self.catchup.run(OFF_AT, NOW)
         watcher.send_digest(date(2026, 11, 12))
-        self.assertIn("📴", mailer.sent[-1].text)
+        self.assertIn("(found later)", mailer.sent[-1].text)
         self.assertIn("1 plane was found afterwards", mailer.sent[-1].text)
 
 

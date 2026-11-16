@@ -34,7 +34,6 @@ def transit_job(watcher):
             told[key] = now
             at = cfg.local(t.at).strftime("%I:%M:%S %p").lstrip("0").lower()
             mins = round((t.at - now) / 60)
-            icon = "🌕" if t.body == "Moon" else "☀️"
             what = "right across" if t.miss <= 0.26 else "just past"
             message = (f"At {at} ({'in about ' + str(mins) + ' min' if mins else 'in under a minute'}), look "
                        f"{compass(t.az)}, {round(t.el)}° up. It's over in a split second: start filming a few seconds "
@@ -42,7 +41,7 @@ def transit_job(watcher):
             if t.body == "Sun":
                 message += " Only ever look at or photograph the Sun through a proper solar filter."
             log.info("transit: %s %s the %s at %s", t.ac.label, what, t.body, at)
-            notifier.send(f"{icon} {t.ac.label} may fly {what} the {t.body}", message,
+            notifier.send(f"{t.ac.label} may fly {what} the {t.body}", message,
                           click=notifier.link(plane=t.ac.hex), tags=("camera",))
 
     return job

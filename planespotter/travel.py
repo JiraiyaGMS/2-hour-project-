@@ -92,7 +92,7 @@ class TravelMode:
                 if trip and trip.get("auto"):
                     self._stop()
                     self._save("")
-                    return f"🏠 Welcome back: just watching {self.cfg.home_name} (and your other places) again."
+                    return f"Welcome back: just watching {self.cfg.home_name} (and your other places) again."
                 return ""
             if trip and distance_miles(lat, lon, trip["lat"], trip["lon"]) <= FOLLOW_MOVE_MILES:
                 if trip.get("auto"):  # still here: keep watching
@@ -108,7 +108,7 @@ class TravelMode:
             log.info("following your phone: watching %s", new["name"])
             if moving_on:
                 return ""  # moving along with you: no need to say so every time
-            return (f"📍 You're near {new['name']}: planespotter is watching there too, so plane alerts follow you. "
+            return (f"You're near {new['name']}: planespotter is watching there too, so plane alerts follow you. "
                     "It switches back by itself when you're home.")
 
     def _share(self, change: int) -> None:

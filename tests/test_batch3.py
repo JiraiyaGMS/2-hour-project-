@@ -46,7 +46,7 @@ class PredictTests(unittest.TestCase):
 
         class Info:
             airline, origin_city = "Delta Air Lines", "Atlanta"
-        text = describe(got[1], Info(), "🌙 After dark: look for its flashing lights")
+        text = describe(got[1], Info(), "After dark: look for its flashing lights")
         self.assertTrue(text.startswith("Delta flight 573 from Atlanta is coming over in about 2 minutes."), text)
         self.assertIn("Look south,", text)
         self.assertIn("After dark, look for its flashing lights.", text)
@@ -184,7 +184,7 @@ class FollowTests(unittest.TestCase):
         self.assertEqual(check_follows(store, positions, notifier, ts(2026, 11, 9, 11)), [])
         positions.answer = ([], {"abc123"})
         sent = check_follows(store, positions, notifier, ts(2026, 11, 9, 11, 5))
-        self.assertEqual(sent, ["🛬 DAL573 has landed in Atlanta (ATL)"])
+        self.assertEqual(sent, ["DAL573 has landed in Atlanta (ATL)"])
         self.assertEqual(following(store), [])
 
 
@@ -250,7 +250,7 @@ class RushTests(unittest.TestCase):
         now = ts(2026, 11, 9, 12)
         feed.planes = [plane(f"aaa00{i}", lat=HOME[0] - 0.1 * (i + 1), track=0.0, speed_kt=300.0) for i in range(4)]
         watcher.poll(now)
-        self.assertEqual(watcher.notifier.sent, ["🛫 Rush: 4 planes coming over in the next 15 minutes"])
+        self.assertEqual(watcher.notifier.sent, ["Rush: 4 planes coming over in the next 15 minutes"])
         watcher.poll(now + 120)
         self.assertEqual(len(watcher.notifier.sent), 1)  # at most one an hour
 

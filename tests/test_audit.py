@@ -111,8 +111,8 @@ class SignInPageTests(unittest.TestCase):
         urllib.request.urlopen = lambda req, timeout=0: Answer(answers.pop(0))
         self.addCleanup(lambda: setattr(urllib.request, "urlopen", old))
         n = PushNotifier(make_config(ntfy_topic="planespotter-test", quiet_hours=None))
-        self.assertFalse(n.send("✈ Test", "one plane", kind="test"))   # the page answered: not sent
-        self.assertTrue(n.send("✈ Test", "one plane", kind="test"))    # ntfy answered: sent
+        self.assertFalse(n.send("Test", "one plane", kind="test"))   # the page answered: not sent
+        self.assertTrue(n.send("Test", "one plane", kind="test"))    # ntfy answered: sent
 
     def test_a_gate_lookup_that_never_reached_the_service_isnt_counted(self):
         import urllib.error

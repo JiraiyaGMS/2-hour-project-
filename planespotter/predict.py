@@ -93,7 +93,7 @@ def describe(c: Crossing, info=None, sky: str = "") -> str:
     alt = f" It's at {round((c.ac.alt_ft or 0) / 100) * 100:,} feet." if c.ac.alt_ft else ""
     note = ""
     if sky:
-        note = " " + sky.split(" ", 1)[-1].replace(": ", ", ") + "."
+        note = " " + sky.replace(": ", ", ") + "."
     return f"{name}{when}. {where}{alt}{note}"
 
 

@@ -66,7 +66,7 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(recap.quiet_count, 2)
         email = digest_email(recap, build_forecast(self.store, cfg, date(2026, 11, 6)), cfg)
         self.assertIn("2 planes came over during quiet hours (22:00–07:00)", email.text)
-        self.assertIn("23:30 🌙", email.text)
+        self.assertIn("23:30 (quiet)", email.text)
         self.assertIn("Fri 6 Nov", email.html)  # divider row at midnight
 
     def test_emails_render(self):
