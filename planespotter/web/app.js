@@ -976,7 +976,7 @@ if (window.PlanespotterAndroid) {
       const n = state.live.length;
       const over = state.live.filter((p) => p.in_zone).length;
       const from = !state.liveMeta ? 'Live' : state.liveMeta.receiver ? 'Live from your receiver'
-        : state.liveMeta.backup ? 'Live from adsb.fi (adsb.lol isn’t answering)' : 'Live';
+        : state.liveMeta.backup ? 'Live from adsb.fi' : 'Live';
       text = `${from} · ${n} plane${n === 1 ? '' : 's'} nearby${over ? ` · ${over} over your zone` : ''}`;
       const every = state.liveMeta ? state.liveMeta.interval : 0;
       if (every > 45) text += ` · updates every ${every >= 90 ? `${Math.round(every / 60)} min` : `${every} s`}`;
@@ -984,6 +984,8 @@ if (window.PlanespotterAndroid) {
       if (meter.on) text += ' · listening';
     }
     el.className = `status ${cls}`;
+    el.title = state.liveMeta && state.liveMeta.backup && !state.liveError
+      ? 'adsb.lol isn’t answering right now, so the planes are coming from adsb.fi until it’s back' : '';
     $('#status-text').textContent = text;
   }
 
