@@ -21,6 +21,7 @@ def make_config(**overrides) -> Config:
         home_lat=HOME[0], home_lon=HOME[1], home_name="Test House",
         radius_miles=3.0, poll_seconds=20, timezone=UTC, digest_time=time(7, 0),
         db_path=":memory:",
+        routes_api="http://127.0.0.1:9",  # no route lookups over the internet from the tests
     )
     values.update(overrides)
     return Config(**values)
@@ -50,7 +51,7 @@ class FakeFeed:
 
 
 class FakeLookup:
-    def info(self, aircraft, now):
+    def info(self, aircraft, now, took_off_from=None):
         return FlightInfo(airline="Test Air", origin="LHR", origin_city="London",
                           destination="JFK", destination_city="New York")
 

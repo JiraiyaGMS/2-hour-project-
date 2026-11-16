@@ -246,6 +246,9 @@ class Store:
 
     def set_info(self, pass_id: int, info: FlightInfo) -> None:
         fields = asdict(info)
+        # How the route was worked out isn't kept, only whether the plane itself bore it out.
+        if fields.pop("route_basis", "") in ("track", "shows"):
+            fields["route_checked"] = 1
         assignments = ", ".join(f"{name} = ?" for name in fields)
         self.db.execute(f"UPDATE passes SET {assignments} WHERE id = ?", (*fields.values(), pass_id))
         self.db.commit()
@@ -348,6 +351,12 @@ class Store:
             fields.update(destination="", destination_city="")
         self.db.execute(f"UPDATE passes SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                         (*fields.values(), pass_id))
+        self.db.commit()
+
+    def set_destination(self, pass_id: int, code: str, city: str) -> None:
+        """Where a flight is going, for the leg that starts at the airport it really took off from."""
+        self.db.execute("UPDATE passes SET destination = ?, destination_city = ? WHERE id = ? AND destination = ''",
+                        (code, city, pass_id))
         self.db.commit()
 
     # --- special planes ---------------------------------------------------------

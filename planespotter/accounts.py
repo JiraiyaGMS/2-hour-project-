@@ -343,7 +343,7 @@ def account_config(owner: Config, accounts: Accounts, user: dict, port: int, pub
             cfg = Config.from_mapping(load_dotenv(folder / ".env"), base_dir=folder, env_path=folder / ".env")
         except ConfigError as exc:
             raise AccountError(f"{user['username']}'s settings can't be read: {exc}") from None
-        cfg = replace(cfg, adsb_api=owner.adsb_api, adsb_api_key=owner.adsb_api_key, adsbdb_api=owner.adsbdb_api,
+        cfg = replace(cfg, adsb_api=owner.adsb_api, adsb_api_key=owner.adsb_api_key, adsbdb_api=owner.adsbdb_api, routes_api=owner.routes_api,
                       adsb_daily_limit=owner.adsb_daily_limit, ntfy_server=owner.ntfy_server, receiver_url="",
                       emails=False, server="", places="", db_path=folder / "planespotter.db",
                       outbox_dir=folder / "outbox")

@@ -311,7 +311,7 @@ def start_catchup(cfg, budget, gap: tuple[float, float], notifier=None) -> threa
     def run():
         store = Store(cfg.db_path)
         try:
-            summary = CatchUp(cfg, store, Lookup(store, cfg.adsbdb_api), budget=budget).run(*gap)
+            summary = CatchUp(cfg, store, Lookup.for_config(store, cfg), budget=budget).run(*gap)
             ids = summary["found"]
             log.info("offline log: found %d plane(s) that came over while planespotter was off", len(ids))
             if ids and notifier is not None and notifier.enabled:

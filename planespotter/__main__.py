@@ -41,7 +41,7 @@ def build(cfg: Config, budget=None, share: int = 1, quota=None, feed=None) -> Wa
     budget = budget or make_budget(cfg)
     flights = (FlightLookup(api_base=cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
                if cfg.whole_flights else None)
-    watcher = Watcher(cfg, store, feed or shared_feed(cfg, budget), Lookup(store, cfg.adsbdb_api), Mailer(cfg),
+    watcher = Watcher(cfg, store, feed or shared_feed(cfg, budget), Lookup.for_config(store, cfg), Mailer(cfg),
                       budget=budget, flights=flights, notifier=PushNotifier(cfg, quota=quota),
                       sky=SkyWatch(cfg) if cfg.weather else None,
                       ground_ft=home_elevation_ft(cfg),

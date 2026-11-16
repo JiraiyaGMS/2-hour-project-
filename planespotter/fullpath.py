@@ -239,8 +239,9 @@ class FlightLookup:
 
 
 def save_flight(store, cfg, pass_id: int, first_seen: float, points: list[Point], finished: bool,
-                tries: int, now: float) -> None:
-    """Store a flight's path (so far), and its real departure/arrival airports."""
+                tries: int, now: float):
+    """Store a flight's path (so far), and its real departure/arrival airports. Returns (origin,
+    destination): the airports its path showed, each None when the path doesn't say."""
     # Where it started, plus its last five minutes (enough to tell if it's coming in to land).
     tail = [p for p in points[1:] if points[-1].t - p.t <= 300]
     origin, destination = route_from_path(as_path(points[:1] + tail), landed=finished)
@@ -253,6 +254,7 @@ def save_flight(store, cfg, pass_id: int, first_seen: float, points: list[Point]
     else:
         # Still flying: keep what we have so far, and look again later.
         store.update_full_path(pass_id, path=path, tries=tries, next_try=now + retry_delay(tries))
+    return origin, destination
 
 
 class FullPathFetcher:

@@ -297,7 +297,7 @@ class EndpointTests(unittest.TestCase):
         self.assertIsInstance(nxt["regulars"], list)
         self.assertTrue(0 < nxt["next"][0]["eta_s"] < 60)  # 3.5 mi south of a 3 mi zone, flying north
         text = self.get("/api/now.txt")[2].decode()
-        self.assertIn("EZY12", text)
+        self.assertIn("easyJet flight 12", text)  # the airline is known from the callsign, even offline
         status, headers, body = self.get("/scriptable.js")
         self.assertIn(b'"mac": "http://localhost:', body)  # the address the phone used
         self.assertEqual(self.get("/kiosk")[0], 200)

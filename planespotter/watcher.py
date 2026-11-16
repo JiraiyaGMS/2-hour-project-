@@ -310,7 +310,20 @@ class Watcher:
             log.info("couldn't look up %s's flight: %s", ac.label, exc)
             return
         if points:
-            save_flight(self.store, self.cfg, pass_id, now, points, finished, tries=1, now=now)
+            origin, destination = save_flight(self.store, self.cfg, pass_id, now, points, finished, tries=1, now=now)
+            if origin is not None and destination is None:
+                self.route_from(pass_id, ac, origin, now)
+
+    def route_from(self, pass_id: int, ac: Aircraft, origin, now: float) -> None:
+        """Where it's going, now that we know where it really took off from: the leg of its flight number
+        that starts there (a flight with several legs a day has several to choose from)."""
+        try:
+            info = self.lookup.info(ac, now, took_off_from=origin)
+        except FETCH_ERRORS as exc:
+            log.info("couldn't look up %s's route: %s", ac.label, exc)
+            return
+        if info.destination:
+            self.store.set_destination(pass_id, info.destination, info.destination_city)
 
     # --- alerts -------------------------------------------------------------
 

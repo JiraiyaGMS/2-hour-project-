@@ -338,6 +338,13 @@ class FlightInfo:
     aircraft_desc: str = ""
     owner: str = ""
     photo_url: str = ""
+    # How the route was arrived at (see routes.Route): "track" and "shows" are checked against the plane
+    # itself, "agree" is two sources saying the same, "fits" is one source the plane's position fits.
+    route_basis: str = ""
+
+    @property
+    def route_checked(self) -> bool:
+        return self.route_basis in ("track", "shows")
 
 
 def route_is_plausible(aircraft: Aircraft, origin: dict, dest: dict) -> bool:
@@ -345,45 +352,46 @@ def route_is_plausible(aircraft: Aircraft, origin: dict, dest: dict) -> bool:
 
     Route databases map a flight number to a single leg, so flight numbers
     that fly several legs a day often come back with the wrong route.
-    Reject any route that would put the plane way off its path.
+    Reject any route that would put the plane way off its path. (routes.fit is the full check.)
     """
+    from .routes import Leg, Place, fit
+
     try:
-        olat, olon = float(origin["latitude"]), float(origin["longitude"])
-        dlat, dlon = float(dest["latitude"]), float(dest["longitude"])
+        o = Place("", "", "", float(origin["latitude"]), float(origin["longitude"]), float(origin.get("elevation") or 0))
+        d = Place("", "", "", float(dest["latitude"]), float(dest["longitude"]), float(dest.get("elevation") or 0))
     except (KeyError, TypeError, ValueError):
         return False
-    direct = distance_miles(olat, olon, dlat, dlon)
-    via_plane = (distance_miles(olat, olon, aircraft.lat, aircraft.lon)
-                 + distance_miles(aircraft.lat, aircraft.lon, dlat, dlon))
-    if via_plane > direct * 1.15 + 60:
-        return False
-    # Out in the middle of the trip it should be pointing roughly at where it's going (the phone's check too).
-    if (aircraft.track is not None and distance_miles(olat, olon, aircraft.lat, aircraft.lon) > 60
-            and distance_miles(aircraft.lat, aircraft.lon, dlat, dlon) > 100):
-        off = abs((bearing_deg(aircraft.lat, aircraft.lon, dlat, dlon) - aircraft.track + 540) % 360 - 180)
-        if off > 75:
-            return False
-    return True
+    return fit(aircraft, Leg(o, d, "")) is not None
 
 
 class Lookup:
-    """Route and airframe lookups from adsbdb.com, cached in the database."""
+    """Routes (from adsb.lol's standing data and adsbdb.com, checked against what the plane is doing) and
+    airframe details (adsbdb.com), cached in the database."""
 
-    ROUTE_TTL = 3 * 86400
+    ROUTE_TTL = 86400            # the standing data is rebuilt every day
     AIRCRAFT_TTL = 30 * 86400
-    MISS_TTL = 86400
+    MISS_TTL = 12 * 3600
+    ROUTES_URL = "https://vrs-standing-data.adsb.lol"
 
-    def __init__(self, store, base_url: str = "https://api.adsbdb.com", timeout: float = 8):
+    def __init__(self, store, base_url: str = "https://api.adsbdb.com", timeout: float = 8,
+                 routes_url: str | None = None):
         self.store = store
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.routes_url = (self.ROUTES_URL if routes_url is None else routes_url).rstrip("/")
 
-    def _cached_fetch(self, key: str, url: str, ttl: float, now: float) -> dict | None:
+    @classmethod
+    def for_config(cls, store, cfg) -> "Lookup":
+        return cls(store, cfg.adsbdb_api, routes_url=cfg.routes_api)
+
+    def _cached_fetch(self, key: str, url: str, ttl: float, now: float, unwrap: str | None = "response") -> dict | None:
         cached = self.store.cache_get(key, now)
         if cached is not None:
             return cached or None  # {} means "known miss"
         try:
-            body = get_json(url, self.timeout).get("response")
+            body = get_json(url, self.timeout)
+            if unwrap:
+                body = body.get(unwrap) if isinstance(body, dict) else None
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 self.store.cache_put(key, {}, now, self.MISS_TTL)
@@ -399,28 +407,46 @@ class Lookup:
         self.store.cache_put(key, body, now, ttl)
         return body
 
-    def info(self, aircraft: Aircraft, now: float) -> FlightInfo:
+    def legs(self, callsign: str, now: float) -> list:
+        """Every leg the route sources list for a callsign (both sources, each as it spells the callsign)."""
+        from .routes import callsign_spellings, legs_from_adsbdb, legs_from_standing
+
+        standing, adsbdb = [], []
+        for cs in callsign_spellings(callsign):
+            if not standing and self.routes_url:
+                standing = legs_from_standing(self._cached_fetch(
+                    f"standing:{cs}", f"{self.routes_url}/routes/{cs[:2]}/{cs}.json", self.ROUTE_TTL, now, unwrap=None))
+            if not adsbdb and self.base_url:
+                adsbdb = legs_from_adsbdb(self._cached_fetch(
+                    f"route:{cs}", f"{self.base_url}/v0/callsign/{cs}", self.ROUTE_TTL, now))
+        return standing + adsbdb
+
+    def route(self, aircraft: Aircraft, now: float, took_off_from=None):
+        """The route this plane is flying (routes.Route). ``took_off_from``: the airport (airports.Airport or
+        routes.Place) its recorded track left the ground at, when that's known."""
+        from .routes import Place, Route, airline_of, choose, place_from_airport
+
+        if took_off_from is not None and not isinstance(took_off_from, Place):
+            took_off_from = place_from_airport(took_off_from)
+        legs = self.legs(aircraft.callsign, now) if aircraft.callsign else []
+        found = choose(aircraft, legs, took_off_from)
+        if not found.airline:
+            found = Route(found.origin, found.destination, airline_of(aircraft.callsign), found.basis, found.source)
+        return found
+
+    def info(self, aircraft: Aircraft, now: float, took_off_from=None) -> FlightInfo:
         fields: dict[str, str] = {}
 
-        if aircraft.callsign:
-            body = self._cached_fetch(
-                f"route:{aircraft.callsign}",
-                f"{self.base_url}/v0/callsign/{aircraft.callsign}",
-                self.ROUTE_TTL, now,
-            )
-            route = (body or {}).get("flightroute") or {}
-            origin = route.get("origin") or {}
-            dest = route.get("destination") or {}
-            fields["airline"] = (route.get("airline") or {}).get("name") or ""
-            if route_is_plausible(aircraft, origin, dest):
-                fields.update(
-                    origin=origin.get("iata_code") or origin.get("icao_code") or "",
-                    origin_city=origin.get("municipality") or "",
-                    destination=dest.get("iata_code") or dest.get("icao_code") or "",
-                    destination_city=dest.get("municipality") or "",
-                )
+        route = self.route(aircraft, now, took_off_from)
+        fields["airline"] = route.airline
+        if route.origin is not None:
+            fields.update(origin=route.origin.code, origin_city=route.origin.city)
+        if route.destination is not None:
+            fields.update(destination=route.destination.code, destination_city=route.destination.city)
+        if route.origin is not None or route.destination is not None:
+            fields["route_basis"] = route.basis
 
-        if aircraft.hex and not aircraft.hex.startswith("~"):
+        if aircraft.hex and not aircraft.hex.startswith("~") and self.base_url:
             body = self._cached_fetch(
                 f"aircraft:{aircraft.hex}",
                 f"{self.base_url}/v0/aircraft/{aircraft.hex}",

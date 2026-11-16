@@ -137,6 +137,7 @@ class Config:
     outbox_dir: Path = PROJECT_DIR / "outbox"
     adsb_api: str = "https://api.adsb.lol"
     adsbdb_api: str = "https://api.adsbdb.com"
+    routes_api: str = "https://vrs-standing-data.adsb.lol"  # adsb.lol's route list, rebuilt every day
     map_enabled: bool = True  # `watch` also serves the live map
     map_port: int = 8765
     map_lan: bool = True  # let phones on the same Wi-Fi open the map
@@ -328,6 +329,7 @@ class Config:
             outbox_dir=path("OUTBOX_DIR", "outbox"),
             adsb_api=get("ADSB_API", "https://api.adsb.lol").rstrip("/"),
             adsbdb_api=get("ADSBDB_API", "https://api.adsbdb.com").rstrip("/"),
+            routes_api=get("ROUTES_API", "https://vrs-standing-data.adsb.lol").rstrip("/"),
             map_enabled=flag("MAP_ENABLED", True),
             map_port=number("MAP_PORT", "8765", int),
             map_lan=flag("MAP_LAN", True),
@@ -373,7 +375,7 @@ KNOWN_KEYS = {
     "POLL_SECONDS", "PASS_GAP_MINUTES", "MAX_ALERTS_PER_HOUR", "ALERTS_ENABLED",
     "QUIET_HOURS", "DIGEST_ENABLED", "DIGEST_TIME", "TIMEZONE", "EMAIL_TO",
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
-    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
+    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "ROUTES_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
     "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES", "PUBLIC_URL",
     "FAMILY_ALERTS", "FRIENDS", "SHARE_NAME", "TRANSIT_ALERTS", "TRANSIT_SUN", "RELAY",

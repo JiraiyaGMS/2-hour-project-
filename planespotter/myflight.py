@@ -78,7 +78,7 @@ class FlightWatch:
     def __init__(self, cfg, store, notifier, budget=None, fetch=None, lookup=None, clock=time.time):
         self.cfg, self.store, self.notifier, self.budget, self.clock = cfg, store, notifier, budget, clock
         self.fetch = fetch or (lambda cs: get_json(f"{cfg.adsb_api}/v2/callsign/{cs}", 15, key_header(cfg.adsb_api_key)))
-        self.lookup = lookup or Lookup(store, cfg.adsbdb_api)
+        self.lookup = lookup or Lookup.for_config(store, cfg)
 
     def tell(self, title: str, message: str, hex_code: str = "", tags=("airplane",)) -> None:
         if self.notifier is None or not self.notifier.enabled:
