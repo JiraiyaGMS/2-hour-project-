@@ -2,7 +2,7 @@ import unittest
 
 from planespotter.adsb import FlightInfo
 from planespotter.collection import build_collection
-from planespotter.countries import country_of, flag
+from planespotter.countries import country_of
 from planespotter.store import Store
 
 from helpers import make_config, plane, ts
@@ -18,7 +18,6 @@ class CountryTests(unittest.TestCase):
                 self.assertEqual(country_of(reg)[0], iso)
         self.assertIsNone(country_of(""))
         self.assertIsNone(country_of("NOREG"))  # N followed by a letter isn't a US registration
-        self.assertEqual(flag("US"), "🇺🇸")
 
 
 class CollectionTests(unittest.TestCase):

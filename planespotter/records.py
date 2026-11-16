@@ -36,20 +36,20 @@ def build_records(rows) -> list[dict]:
     """Your all-time records, from every pass."""
     out = []
 
-    def best(key, emoji, name, candidates, pick, value):
+    def best(key, name, candidates, pick, value):
         if candidates:
             p = pick(candidates)
-            out.append({"key": key, "emoji": emoji, "name": name, **_summary(p, value(p))})
+            out.append({"key": key, "name": name, **_summary(p, value(p))})
 
     flying = [p for p in rows if p["closest_alt_ft"] is not None and 0 < p["closest_alt_ft"] < 60000]
-    best("lowest", "🔊", "Lowest", flying, lambda c: min(c, key=lambda p: p["closest_alt_ft"]),
+    best("lowest", "Lowest", flying, lambda c: min(c, key=lambda p: p["closest_alt_ft"]),
          lambda p: fmt_alt(p["closest_alt_ft"]))
-    best("closest", "🎯", "Closest", rows, lambda c: min(c, key=lambda p: p["closest_miles"]),
+    best("closest", "Closest", rows, lambda c: min(c, key=lambda p: p["closest_miles"]),
          lambda p: fmt_dist(p["closest_miles"]))
     fast = [p for p in rows if p["speed_kt"] is not None and p["speed_kt"] < 800]
-    best("fastest", "💨", "Fastest", fast, lambda c: max(c, key=lambda p: p["speed_kt"]),
+    best("fastest", "Fastest", fast, lambda c: max(c, key=lambda p: p["speed_kt"]),
          lambda p: f"{round(p['speed_kt']):,} kt ({round(p['speed_kt'] * 1.15078):,} mph)")
-    best("highest", "⛰️", "Highest", flying, lambda c: max(c, key=lambda p: p["closest_alt_ft"]),
+    best("highest", "Highest", flying, lambda c: max(c, key=lambda p: p["closest_alt_ft"]),
          lambda p: fmt_alt(p["closest_alt_ft"]))
 
     trips = []
@@ -59,7 +59,7 @@ def build_records(rows) -> list[dict]:
             trips.append((miles, p))
     if trips:
         miles, p = max(trips, key=lambda t: t[0])
-        out.append({"key": "longest", "emoji": "🌍", "name": "Longest flight",
+        out.append({"key": "longest", "name": "Longest flight",
                     **_summary(p, f"{round(miles):,} mi")})
 
     regulars = Counter(p["hex"] for p in rows if not p["hex"].startswith("~"))
@@ -68,7 +68,7 @@ def build_records(rows) -> list[dict]:
         if n >= 3:
             p = max((r for r in rows if r["hex"] == hex_code), key=lambda r: r["first_seen"])
             name = p["registration"] or label(p)
-            out.append({"key": "regular", "emoji": "🤝", "name": "Old friend",
+            out.append({"key": "regular", "name": "Old friend",
                         **_summary(p, f"{name} · {n} times")})
     return out
 

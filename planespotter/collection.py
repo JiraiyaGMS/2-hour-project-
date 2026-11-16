@@ -4,31 +4,31 @@ from __future__ import annotations
 
 from collections import Counter
 
-from .countries import country_of, flag
+from .countries import country_of
 from .logos import airline_code
 
-# key, emoji, name, how to earn it
+# key, name, how to earn it (the map page draws an icon for each key)
 BADGES = [
-    ("first", "🛫", "First plane", "Spot your first plane"),
-    ("century", "💯", "Century", "Spot 100 planes"),
-    ("thousand", "🏆", "Thousand club", "Spot 1,000 planes"),
-    ("airlines10", "🎫", "Frequent flyer", "Spot 10 different airlines"),
-    ("airlines25", "🌐", "Airline collector", "Spot 25 different airlines"),
-    ("types25", "🛩️", "Type spotter", "Spot 25 different aircraft types"),
-    ("countries10", "🗺️", "Globetrotter", "Planes registered in 10 countries"),
-    ("a380", "🐋", "Superjumbo", "An Airbus A380 over your zone"),
-    ("b747", "👑", "Queen of the skies", "A Boeing 747 over your zone"),
-    ("low", "🔊", "Low and loud", "A plane under 1,000 ft"),
-    ("overhead", "🎯", "Right overhead", "A plane within a quarter mile"),
-    ("night", "🦉", "Night owl", "A plane between midnight and 4 am"),
-    ("early", "🌅", "Early bird", "A plane between 5 and 6 am"),
-    ("rush", "⏱️", "Rush hour", "20 planes in a single hour"),
-    ("military", "🎖️", "Top brass", "A military aircraft nearby"),
-    ("helicopter", "🚁", "Chopper", "A helicopter over your zone"),
-    ("emergency", "🚨", "Mayday", "A plane squawking an emergency nearby"),
-    ("eyes1", "👀", "Eyes on the sky", "Tap “I saw it” on a plane you spotted"),
-    ("streak7", "🔥", "On a roll", "Spot a plane with your own eyes 7 days running"),
-    ("photo1", "📸", "Shutterbug", "Add your own photo of a plane"),
+    ("first", "First plane", "Spot your first plane"),
+    ("century", "Century", "Spot 100 planes"),
+    ("thousand", "Thousand club", "Spot 1,000 planes"),
+    ("airlines10", "Frequent flyer", "Spot 10 different airlines"),
+    ("airlines25", "Airline collector", "Spot 25 different airlines"),
+    ("types25", "Type spotter", "Spot 25 different aircraft types"),
+    ("countries10", "Globetrotter", "Planes registered in 10 countries"),
+    ("a380", "Superjumbo", "An Airbus A380 over your zone"),
+    ("b747", "Queen of the skies", "A Boeing 747 over your zone"),
+    ("low", "Low and loud", "A plane under 1,000 ft"),
+    ("overhead", "Right overhead", "A plane within a quarter mile"),
+    ("night", "Night owl", "A plane between midnight and 4 am"),
+    ("early", "Early bird", "A plane between 5 and 6 am"),
+    ("rush", "Rush hour", "20 planes in a single hour"),
+    ("military", "Top brass", "A military aircraft nearby"),
+    ("helicopter", "Chopper", "A helicopter over your zone"),
+    ("emergency", "Mayday", "A plane squawking an emergency nearby"),
+    ("eyes1", "Eyes on the sky", "Tap “I saw it” on a plane you spotted"),
+    ("streak7", "On a roll", "Spot a plane with your own eyes 7 days running"),
+    ("photo1", "Shutterbug", "Add your own photo of a plane"),
 ]
 
 
@@ -67,7 +67,7 @@ def build_collection(store, cfg) -> dict:
                 ty["name"] = r["aircraft_desc"]
         c = country_of(r["registration"])
         if c:
-            entry = countries.setdefault(c[0], {"code": c[0], "name": c[1], "flag": flag(c[0]), "count": 0, "first_seen": t})
+            entry = countries.setdefault(c[0], {"code": c[0], "name": c[1], "count": 0, "first_seen": t})
             entry["count"] += 1
 
         # Badges (the first moment each was earned).
@@ -130,8 +130,8 @@ def build_collection(store, cfg) -> dict:
     progress = {"century": (total, 100), "thousand": (total, 1000), "airlines10": (len(airlines), 10),
                 "airlines25": (len(airlines), 25), "types25": (len(types), 25), "countries10": (len(countries), 10)}
     badges = []
-    for key, emoji, name, how in BADGES:
-        b = {"key": key, "emoji": emoji, "name": name, "how": how, "earned_at": kept.get(key)}
+    for key, name, how in BADGES:
+        b = {"key": key, "name": name, "how": how, "earned_at": kept.get(key)}
         if key in progress and not b["earned_at"]:
             have, need = progress[key]
             b["progress"] = f"{have:,} / {need:,}"

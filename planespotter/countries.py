@@ -55,7 +55,3 @@ def country_of(registration: str) -> tuple[str, str] | None:
             return PREFIXES[prefix]
     return None
 
-
-def flag(iso: str) -> str:
-    """'US' -> 🇺🇸."""
-    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in iso.upper()) if len(iso) == 2 else ""
