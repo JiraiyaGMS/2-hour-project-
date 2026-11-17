@@ -6,8 +6,9 @@ key, 7,200 for people who feed data to adsb.lol from their own receiver. Going
 over means "429 Too Many Requests" until the window resets, which would also
 stop the email alerts, so everything that talks to adsb.lol shares one budget:
 
-* checking for planes over home gets most of it, spread evenly over the day,
-  and faster while someone is looking at the live map;
+* checking for planes over home gets most of it, spread evenly over the day
+  (and faster while someone is looking at the live map, if there's no fast
+  feed: with one, adsb.fi is asked in between instead, which costs none of it);
 * whole-flight lookups get a quarter;
 * where planes are now (for the map) gets a little;
 * following a flight on the map gets up to a fifth, and searching for flights a tenth;
@@ -47,6 +48,7 @@ class ApiBudget:
             "n INTEGER NOT NULL, PRIMARY KEY (minute, kind))")
         self.db.commit()
         self.viewing_until = 0.0
+        self.fast_until = 0.0  # the fast feed answered lately: no need to spend adsb.lol's allowance on speed
 
     # --- counting -----------------------------------------------------------------
 
@@ -77,6 +79,13 @@ class ApiBudget:
         """Someone has the live map open."""
         self.viewing_until = self.clock() + seconds
 
+    def mark_fast(self, seconds: float = 90) -> None:
+        """The fast feed (adsb.fi) just answered: the planes are being kept fresh without adsb.lol."""
+        self.fast_until = self.clock() + seconds
+
+    def fast_working(self) -> bool:
+        return self.clock() < self.fast_until
+
     @property
     def base_interval(self) -> float:
         """Seconds between checks that spread the polling share evenly over 24 hours."""
@@ -86,9 +95,14 @@ class ApiBudget:
         used = self.used()
         if used >= self.limit * NEARLY_OUT:
             return max(self.base_interval, 900)  # nearly out: once every 15 minutes
-        if self.viewing() and used < self.limit * VIEWING_UNTIL:
-            return max(self.min_poll, VIEWING_FAST)
+        if self.viewing() and used < self.limit * VIEWING_UNTIL and not self.fast_working():
+            return max(self.min_poll, VIEWING_FAST)  # (with the fast feed, the allowance is kept for flights' tracks)
         return self.base_interval
+
+    def fast_interval(self) -> float:
+        """Seconds between checks of the fast feed (adsb.fi, which has no daily allowance): every 10 while
+        someone has the map open, every 30 otherwise (plenty for the alerts, and easy on a free service)."""
+        return max(10.0, self.min_poll / 2) if self.viewing() else max(30.0, float(self.min_poll))
 
     def allow(self, kind: str) -> bool:
         """May we make one more request of this kind now?"""

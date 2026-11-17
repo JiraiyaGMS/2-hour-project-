@@ -5,7 +5,7 @@ import urllib.error
 from unittest import mock
 
 from planespotter import adsb
-from planespotter.adsb import LiveFeed, SharedFeed
+from planespotter.adsb import FastFeed, LiveFeed, SharedFeed
 
 PLANE = {"hex": "abc123", "flight": "BAW923 ", "lat": 51.5, "lon": -0.1, "alt_baro": 3000, "gs": 200, "track": 270}
 
@@ -24,9 +24,11 @@ class BackupFeedTests(unittest.TestCase):
                 raise answer
             return answer
 
-        patch = mock.patch.object(adsb, "get_json", get_json)
-        patch.start()
-        self.addCleanup(patch.stop)
+        FastFeed.forget()  # (no waiting between requests here, and nothing left over from another test)
+        for patch in (mock.patch.object(adsb, "get_json", get_json), mock.patch.object(FastFeed, "MIN_GAP", 0.0)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(FastFeed.forget)
 
     def feed(self, backup="http://backup.test/api") -> LiveFeed:
         return LiveFeed("http://main.test", backup_url=backup, clock=lambda: self.now[0])

@@ -21,11 +21,11 @@ JOIN_MILES = 150      # a home this close to a group's middle joins it
 
 
 class Group:
-    def __init__(self, live: LiveFeed, clock):
+    def __init__(self, live: LiveFeed, clock, fast=None):
         self.homes: list[tuple[float, float, float]] = []  # lat, lon, radius (nm) each needs
         self.lat = self.lon = 0.0
         self.radius_nm = 0.0
-        self.shared = SharedFeed(live, ttl=10.0, clock=clock)
+        self.shared = SharedFeed(live, ttl=10.0, clock=clock, fast=fast)
 
     def add(self, lat: float, lon: float, radius_nm: float) -> None:
         self.homes.append((lat, lon, radius_nm))
@@ -42,15 +42,16 @@ class Group:
 class ClusterFeed:
     """Give it every home at the start; ask it for each home's view."""
 
-    def __init__(self, live: LiveFeed, homes: list[tuple[float, float, float]], budget=None, clock=time.time):
-        self.live, self.budget, self.clock = live, budget, clock
+    def __init__(self, live: LiveFeed, homes: list[tuple[float, float, float]], budget=None, clock=time.time,
+                 fast=None):
+        self.live, self.budget, self.clock, self.fast = live, budget, clock, fast
         self.lock = threading.Lock()
         self.groups: list[Group] = []
         self.of: dict[tuple[float, float], Group] = {}
         for lat, lon, radius_nm in homes:
             group = next((g for g in self.groups if g.fits(lat, lon, radius_nm)), None)
             if group is None:
-                group = Group(live, clock)
+                group = Group(live, clock, fast)
                 self.groups.append(group)
             group.add(lat, lon, radius_nm)
             self.of[(round(lat, 5), round(lon, 5))] = group
@@ -69,7 +70,7 @@ class ClusterFeed:
         group = self.of.get((round(lat, 5), round(lon, 5)))
         if group is None:  # a home added later (travel mode): a group of its own
             with self.lock:
-                group = Group(self.live, self.clock)
+                group = Group(self.live, self.clock, self.fast)
                 group.add(lat, lon, radius_nm)
                 self.groups.append(group)
                 self.of[(round(lat, 5), round(lon, 5))] = group
@@ -90,6 +91,12 @@ class HomeView:
         g = self.group
         g.shared.ttl = self.cluster.gap()  # someone in the group asked lately: use that answer
         return self._mine(g.shared.aircraft_near(g.lat, g.lon, g.radius_nm), radius_nm)
+
+    def aircraft_fast(self, lat: float, lon: float, radius_nm: float, every: float = 10.0):
+        """The group's planes again from the fast feed (one request for everyone in it), or None."""
+        g = self.group
+        planes = g.shared.aircraft_fast(g.lat, g.lon, g.radius_nm, every)
+        return None if planes is None else self._mine(planes, radius_nm)
 
     def latest(self):
         planes, at = self.group.shared.latest()

@@ -132,11 +132,32 @@ class Sky:
     and tracking each have their own small share (see ApiBudget.allow), so they can never starve the plane
     alerts, and only requests that reached adsb.lol count."""
 
-    def __init__(self, base_url: str, api_key: str = "", budget=None, clock=time.time, ttl: float = 30):
+    FAST_TTL = 10.0  # a plane being followed is asked about this often when there's a fast feed
+
+    def __init__(self, base_url: str, api_key: str = "", budget=None, clock=time.time, ttl: float = 30, fast=None):
         self.base_url, self.api_key, self.budget, self.clock, self.ttl = base_url.rstrip("/"), api_key, budget, clock, ttl
+        self.fast = fast  # adsb.FastFeed (adsb.fi): where one aircraft is, with no daily allowance
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[float, list]] = {}
         self.blocked_until = 0.0
+
+    def _fast_hex(self, path: str, now: float) -> tuple[list[dict], float] | None:
+        """Where one aircraft is, from the fast feed. None when it can't say (not asked, no answer, or it
+        doesn't see that aircraft): then adsb.lol is asked as usual, within the day's allowance."""
+        key = "fast:" + path
+        with self.lock:
+            hit = self.cache.get(key)
+        if hit and now - hit[0] < self.FAST_TTL:
+            return hit[1], hit[0]
+        try:
+            raw = self.fast.by_hex([path.rsplit("/", 1)[1]])
+        except (OSError, ValueError):
+            return (hit[1], hit[0]) if hit and now - hit[0] < 45 else None
+        if not raw:
+            return None
+        with self.lock:
+            self.cache[key] = (now, raw)
+        return raw, now
 
     def get_at(self, path: str, ttl: float | None = None, kind: str = "search") -> tuple[list[dict] | None, float]:
         """(the raw aircraft at this path, when they were fetched). Kept ``ttl`` seconds. (None, 0) when we
@@ -144,6 +165,10 @@ class Sky:
         there's nothing recent enough to show instead."""
         now = self.clock()
         ttl = self.ttl if ttl is None else ttl
+        if self.fast is not None and path.startswith("/v2/hex/"):
+            quick = self._fast_hex(path, now)
+            if quick is not None:
+                return quick
         with self.lock:
             hit = self.cache.get(path)
         if hit and now - hit[0] < ttl:

@@ -5,9 +5,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from planespotter.adsb import PositionLookup
-from planespotter.fullpath import DONE, WAITING
+from planespotter.fullpath import DONE, WAITING, FlightLookup, TraceNotFound
 from planespotter.heat import ROUTE_DLAT, cell_of, heat_json
 from planespotter.logos import PNG, LogoCache, airline_code
 from planespotter.store import Store
@@ -156,6 +157,52 @@ class WholeFlightTests(unittest.TestCase):
         self.assertTrue(flying["flying"])
         self.assertEqual((flying["now"]["lat"], flying["now"]["alt_ft"]), (54.0, 33000))
         self.assertIn(["bbb222"], self.positions.calls)  # only the plane still in the air was looked up
+
+    def test_the_line_follows_a_far_away_plane_between_looks_at_its_track(self):
+        """Its track is only looked up a few times a flight; the positions that come in while the map is open
+        carry the line on from there, instead of cutting straight to where the plane is now."""
+        app = self.server.app
+
+        def moved_to(lat, lon):
+            self.positions.planes = [plane("bbb222", lat=lat, lon=lon, alt=33000)]
+            self.positions.known.clear()  # (as if its 12 seconds were up)
+            flights = {f["id"]: f for f in app.whole_json(1)["flights"]}
+            return flights[self.ids["flying"]]
+
+        try:
+            app._tails.clear()
+            first = moved_to(54.0, -3.0)
+            self.assertEqual([p[:3] for p in first["tail"]], [[-3.0, 54.0, 33000]])
+            with mock.patch.object(app, "clock", lambda: time.time() + 15):
+                second = moved_to(54.5, -3.5)
+            self.assertEqual([p[:2] for p in second["tail"]], [[-3.0, 54.0], [-3.5, 54.5]])
+            self.assertGreater(second["tail"][1][3], second["tail"][0][3])  # each with when it was there
+            self.assertEqual(second["now"]["lat"], 54.5)
+            self.assertNotIn("tail", {f["id"]: f for f in app.whole_json(1)["flights"]}[self.ids["landed"]])
+            # It lands (or flies out of range): its tail is forgotten.
+            self.positions.planes = []
+            self.positions.known.clear()
+            app.whole_json(1)
+            self.assertEqual(app._tails, {})
+        finally:
+            self.positions.planes = [plane("bbb222", lat=54.0, lon=-3.0, alt=33000)]
+            self.positions.known.clear()
+
+    def test_a_flying_flights_track_is_brought_up_to_date_when_you_look_at_it(self):
+        app, now = self.server.app, time.time()
+        # adsb.lol's record of it today: took off from home half an hour ago, heard from a minute ago.
+        trace = {"timestamp": now - 1900, "trace": [[0, 51.5, -0.1, "ground", 0, 0, 2], [600, 52.0, -1.0, 20000, 400, 300, 0],
+                                                    [1600, 53.0, -2.0, 30000, 450, 300, 0], [1840, 53.4, -2.5, 33000, 450, 300, 0]]}
+        with mock.patch.object(app, "flights", FlightLookup(fetch=lambda url: trace)):
+            flying = app.flight_json(self.ids["flying"])
+            landed = app.flight_json(self.ids["landed"])
+        self.assertEqual(flying["whole_path"][-1][:3], [53.4, -2.5, 33000])   # as far as a minute ago, not five
+        self.assertEqual(landed["whole_path"][-1][:3], [51.5, -0.1, 0])       # a finished flight: what's kept
+        # adsb.lol can't be asked (or has nothing): what's kept, as before.
+        def nothing(url):
+            raise TraceNotFound(url)
+        with mock.patch.object(app, "flights", FlightLookup(fetch=nothing)):
+            self.assertEqual(app.flight_json(self.ids["flying"])["whole_path"][-1][:3], [53.0, -2.0, 30000])
 
     def test_replay_gives_timed_paths_for_the_day(self):
         from datetime import datetime, timezone

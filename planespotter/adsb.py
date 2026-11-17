@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .geo import bearing_deg, distance_miles
@@ -129,6 +129,97 @@ def parse_aircraft(raw: dict[str, Any]) -> Aircraft | None:
     )
 
 
+class FeedBusy(OSError):
+    """The fast feed can't be asked just now: it was asked a moment ago, or it's being left alone for a while."""
+
+
+class _Pace:
+    """One pace for everything in this program that asks the same service (accounts, other places, the map and
+    flights being tracked all count together towards its limit)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.next_at = 0.0     # when the next request may go
+        self.down_until = 0.0  # left alone until then, after a failure or "too many requests"
+        self.strikes = 0
+
+
+class FastFeed:
+    """adsb.fi's open data: the same planes, in the same format as adsb.lol, with no key and no daily
+    allowance (at most one request a second). adsb.lol's allowance works out at a check every 2 to 4 minutes,
+    so planespotter asks adsb.fi in between: where planes are is then seconds old instead of minutes. It's
+    also what's used when adsb.lol can't be reached at all.
+
+    Kept well inside its limit: ``MIN_GAP`` seconds between any two requests from this program, and when it
+    says "too many requests", or doesn't answer, it's left alone for a while (longer each time).
+    """
+
+    MIN_GAP = 1.5    # seconds between any two requests (adsb.fi allows one a second)
+    MAX_WAIT = 2.5   # rather than queue for longer than this, skip the request: the next will do
+    _paces: dict[str, _Pace] = {}
+
+    def __init__(self, base_url: str, timeout: float = 8.0, monotonic=time.monotonic, sleep=time.sleep):
+        self.base_url = (base_url or "").rstrip("/")
+        self.timeout = timeout
+        self.monotonic, self.sleep = monotonic, sleep
+        self.pace = FastFeed._paces.setdefault(self.base_url, _Pace())
+
+    @classmethod
+    def forget(cls) -> None:
+        """Start every pace afresh (for the tests)."""
+        cls._paces.clear()
+
+    def resting(self) -> bool:
+        """Being left alone just now (after a failure, or because it asked us to slow down)."""
+        return self.monotonic() < self.pace.down_until
+
+    def get(self, path: str) -> dict:
+        """One request. Raises FeedBusy (not asked), or what went wrong (an OSError or ValueError)."""
+        pace = self.pace
+        with pace.lock:
+            now = self.monotonic()
+            if now < pace.down_until:
+                raise FeedBusy("the fast feed is being left alone for a while")
+            wait = pace.next_at - now
+            if wait > self.MAX_WAIT:
+                raise FeedBusy("the fast feed was asked a moment ago")
+            pace.next_at = max(now, pace.next_at) + self.MIN_GAP
+        if wait > 0:
+            self.sleep(wait)
+        try:
+            data = get_json(self.base_url + path, self.timeout)
+            if not isinstance(data, dict) or not isinstance(data.get("ac") or data.get("aircraft") or [], list):
+                raise ValueError("not the fast feed's answer")  # a sign-in page, say
+        except urllib.error.HTTPError as exc:
+            self._failed(max(60.0 if exc.code == 429 else 30.0, retry_after_seconds(exc)))
+            raise
+        except (OSError, ValueError):
+            self._failed(20.0)
+            raise
+        with pace.lock:
+            pace.strikes = 0
+        return data
+
+    def _failed(self, wait: float) -> None:
+        pace = self.pace
+        with pace.lock:
+            pace.strikes += 1
+            pace.down_until = self.monotonic() + min(900.0, wait * 2 ** min(pace.strikes - 1, 4))
+
+    @staticmethod
+    def rows(data: dict) -> list[dict]:
+        return [r for r in (data.get("ac") or data.get("aircraft") or []) if isinstance(r, dict)]
+
+    def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
+        radius = max(1, min(250, math.ceil(radius_nm)))
+        found = (parse_aircraft(raw) for raw in self.rows(self.get(f"/v3/lat/{lat:.5f}/lon/{lon:.5f}/dist/{radius}")))
+        return [ac for ac in found if ac and ac.hex]
+
+    def by_hex(self, hexes: list[str]) -> list[dict]:
+        """Where these aircraft are, as the feed sends them (up to 60 addresses in one request)."""
+        return self.rows(self.get("/v2/hex/" + ",".join(hexes[:60])))
+
+
 class LiveFeed:
     """Aircraft currently near a point, from adsb.lol.
 
@@ -144,6 +235,7 @@ class LiveFeed:
         self.api_key = api_key
         self.budget = budget
         self.backup_url = (backup_url or "").rstrip("/")
+        self.backup = FastFeed(self.backup_url) if self.backup_url else None
         self.clock = clock
         self.using_backup = False
         self.main_down_until = 0.0
@@ -175,11 +267,7 @@ class LiveFeed:
         return [ac for ac in found if ac and ac.hex]
 
     def _from_backup(self, lat: float, lon: float, radius: int) -> list[Aircraft]:
-        data = get_json(f"{self.backup_url}/v3/lat/{lat:.5f}/lon/{lon:.5f}/dist/{radius}", self.timeout)
-        if not isinstance(data, dict) or not isinstance(data.get("ac") or data.get("aircraft") or [], list):
-            raise ValueError("not the backup feed's answer")
-        found = (parse_aircraft(raw) for raw in (data.get("ac") or data.get("aircraft") or []) if isinstance(raw, dict))
-        return [ac for ac in found if ac and ac.hex]
+        return self.backup.aircraft_near(lat, lon, radius)
 
     def _fall_back(self, lat: float, lon: float, radius: int, exc: Exception, wait: float) -> list[Aircraft]:
         try:
@@ -208,9 +296,16 @@ class SharedFeed:
     the map just reads the latest answer with ``latest()``. Results are reused for
     ``ttl`` seconds, and if adsb.lol says we're asking too often (HTTP 429), we back
     off for as long as it asks and keep showing the last answer for a bit.
+
+    With a ``fast`` feed (adsb.fi), ``aircraft_fast`` asks that in between, and what comes back from
+    either is one picture: each plane where it was most recently seen, by whichever saw it last.
     """
 
-    def __init__(self, feed: LiveFeed, min_radius_nm: float = 0, ttl: float = 10.0, clock=None):
+    FAST_KEEP = 90.0   # the fast feed's answer counts for this long (it's asked every few seconds)
+    MAIN_KEEP = 330.0  # ...and adsb.lol's for this long (its next turn can be 4 minutes away)
+
+    def __init__(self, feed: LiveFeed, min_radius_nm: float = 0, ttl: float = 10.0, clock=None,
+                 fast: FastFeed | None = None):
         self.feed = feed
         self.min_radius_nm = min_radius_nm
         self.ttl = ttl
@@ -221,16 +316,80 @@ class SharedFeed:
         self.fetched_at = 0.0
         self.blocked_until = 0.0
         self.backoff = 0.0
+        self.fast = fast
+        self.fast_data: list[Aircraft] | None = None
+        self.fast_at = 0.0
+        self.fast_radius = 0.0
+        self.fast_saw: dict[str, float] = {}  # hex -> when the fast feed last had it
+
+    def aircraft_fast(self, lat: float, lon: float, radius_nm: float, every: float = 10.0) -> list[Aircraft] | None:
+        """The planes again, a few seconds on: from the fast feed (unless it was asked within ``every``
+        seconds: several accounts share one answer), blended with adsb.lol's last answer. None when there's no
+        fast feed or it can't be asked just now: carry on with what you have."""
+        if self.fast is None:
+            return None
+        with self.lock:
+            now = self.clock()
+            if self.fast_data is not None and now - self.fast_at < every and radius_nm <= self.fast_radius:
+                return self._now()
+            radius = max(radius_nm, self.min_radius_nm)
+            try:
+                planes = self.fast.aircraft_near(lat, lon, radius)
+            except FeedBusy:
+                return None
+            except (OSError, ValueError) as exc:
+                log.debug("the fast feed didn't answer: %s", exc)
+                return None
+            self.fast_data, self.fast_at, self.fast_radius = planes, now, radius
+            budget = getattr(self.feed, "budget", None)
+            if budget is not None and hasattr(budget, "mark_fast"):
+                budget.mark_fast()  # no need to spend adsb.lol's allowance on speed while this is answering
+            for ac in planes:
+                self.fast_saw[ac.hex] = now
+            for hex_code in [h for h, t in self.fast_saw.items() if now - t > 900]:
+                del self.fast_saw[hex_code]
+            return self._now()
+
+    def _blend(self) -> tuple[list[Aircraft] | None, float]:
+        """(the planes, as of when): adsb.lol's last answer and the fast feed's as one. Each plane is where
+        whichever feed saw it most recently put it, and ``seen_pos`` says how long before "as of" that was.
+        A plane the fast feed has been following that's no longer in its answer has left: adsb.lol's older
+        answer doesn't bring it back."""
+        now = self.clock()
+        if self.fast_data is None or now - self.fast_at > self.FAST_KEEP:
+            return self.data, self.fetched_at
+        if self.data is None or self.fast_at - self.fetched_at > self.MAIN_KEEP:
+            return self.fast_data, self.fast_at
+        at = max(self.fetched_at, self.fast_at)
+        best: dict[str, tuple[float, Aircraft]] = {}
+        for ac in self.data:
+            seen_at = self.fetched_at - ac.seen_pos
+            if self.fast_saw.get(ac.hex, 0.0) <= seen_at:  # (else: followed since by the fast feed, and gone)
+                best[ac.hex] = (seen_at, ac)
+        for ac in self.fast_data:
+            seen_at = self.fast_at - ac.seen_pos
+            if ac.hex not in best or seen_at >= best[ac.hex][0]:
+                best[ac.hex] = (seen_at, ac)
+        return [replace(ac, seen_pos=round(max(0.0, at - seen_at), 1)) for seen_at, ac in best.values()], at
+
+    def _now(self) -> list[Aircraft] | None:
+        """The same picture for whoever just asked: ``seen_pos`` counted back from this moment (an answer
+        kept for a while, for several accounts to share, is that much older than when it arrived)."""
+        planes, at = self._blend()
+        late = self.clock() - at
+        if planes is None or late < 1:
+            return planes
+        return [replace(ac, seen_pos=round(ac.seen_pos + late, 1)) for ac in planes]
 
     def aircraft_near(self, lat: float, lon: float, radius_nm: float) -> list[Aircraft]:
         with self.lock:
             now = self.clock()
             fresh = self.data is not None and now - self.fetched_at < self.ttl and radius_nm <= self.radius
             if fresh:
-                return self.data
+                return self._now()
             if now < self.blocked_until:
                 if self.data is not None and now - self.fetched_at < 180:
-                    return self.data
+                    return self._now()
                 minutes = math.ceil((self.blocked_until - now) / 60)
                 raise urllib.error.URLError(f"adsb.lol's request limit was reached; trying again in {minutes} min")
             radius = max(radius_nm, self.min_radius_nm)
@@ -247,12 +406,12 @@ class SharedFeed:
             self.backoff = 0.0
             self.radius = radius
             self.fetched_at = now
-            return self.data
+            return self._now()
 
     def latest(self) -> tuple[list[Aircraft] | None, float]:
-        """The most recent answer and when it arrived, without asking adsb.lol again."""
+        """The most recent picture and when it's from, without asking anyone again."""
         with self.lock:
-            return self.data, self.fetched_at
+            return self._blend()
 
     def paused_for(self) -> float:
         """Seconds until we may ask again after a 429, or 0."""
@@ -322,16 +481,37 @@ class PositionLookup:
     live position. One request covers many planes; answers are reused for ``ttl`` s.
     """
 
+    FAST_TTL = 12.0  # with a fast feed, asked this often instead (it has no daily allowance)
+
     def __init__(self, base_url: str = "https://api.adsb.lol", ttl: float = 60.0, clock=time.time,
-                 api_key: str = "", budget=None):
+                 api_key: str = "", budget=None, fast: FastFeed | None = None):
         self.base_url = base_url.rstrip("/")
         self.ttl = ttl
         self.clock = clock
         self.api_key = api_key
         self.budget = budget
+        self.fast = fast
         self.lock = threading.Lock()
         self.known: dict[str, tuple[float, Aircraft | None]] = {}
         self.blocked_until = 0.0
+
+    def _ask_fast(self, hexes: list[str], now: float) -> None:
+        """Bring the planes the fast feed can see up to date. The ones it can't are left as they were, for
+        adsb.lol to answer on its own (slower) schedule."""
+        due = [h for h in hexes if h not in self.known or now - self.known[h][0] >= self.FAST_TTL]
+        try:
+            for i in range(0, len(due), 60):
+                raw = self.fast.by_hex(due[i:i + 60])
+                for r in raw:
+                    hex_code = str(r.get("hex", "")).lower()
+                    ac = parse_aircraft(r)
+                    if ac:
+                        self.known[hex_code] = (now, ac)
+                    elif r.get("alt_baro") == "ground":
+                        self.known[hex_code] = (now, "ground")
+        except (OSError, ValueError) as exc:
+            if not isinstance(exc, FeedBusy):
+                log.debug("the fast feed didn't answer about positions: %s", exc)
 
     def fetch(self, hexes: list[str]) -> tuple[list[Aircraft], set[str]]:
         """(planes in the air, addresses of planes on the ground) among ``hexes``."""
@@ -346,6 +526,8 @@ class PositionLookup:
         hexes = sorted({h for h in hexes if len(h) == 6 and all(c in "0123456789abcdef" for c in h)})
         with self.lock:
             now = self.clock()
+            if self.fast is not None and hexes:
+                self._ask_fast(hexes, now)
             stale = [h for h in hexes if h not in self.known or now - self.known[h][0] >= self.ttl]
             allowed = self.budget is None or self.budget.allow("positions")
             if stale and now >= self.blocked_until and allowed:
@@ -365,8 +547,10 @@ class PositionLookup:
                     log.info("position lookup failed: %s", exc)
             for h in [h for h, (t, _) in self.known.items() if now - t > 600]:
                 del self.known[h]
-            return {h: self.known[h][1] for h in hexes
-                    if h in self.known and isinstance(self.known[h][1], Aircraft)}
+            # (An answer kept for a while is that much older than when it arrived: seen_pos says so, and the
+            # map moves the plane on by it.)
+            return {h: replace(self.known[h][1], seen_pos=round(self.known[h][1].seen_pos + now - self.known[h][0], 1))
+                    for h in hexes if h in self.known and isinstance(self.known[h][1], Aircraft)}
 
     def on_ground(self, hexes: list[str]) -> set[str]:
         """Which of these planes adsb.lol last saw on the ground (they've landed)."""

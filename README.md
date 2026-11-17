@@ -1222,18 +1222,31 @@ network, which allows **500 requests a day** per home internet connection
 without a key. planespotter shares those out across the day so the
 alerts never run dry:
 
-- **Checking for planes** gets most of them, so it checks about **every 4
-  minutes**. A plane can cross your zone between checks; planespotter
-  still catches it by joining up each plane's positions, but the alert
-  can arrive a few minutes after it went over.
-- **While the live map is open**, it checks **every 30 seconds** instead,
-  until 60% of the day's allowance is used.
+- **Checking for planes** gets most of them, so adsb.lol is asked about
+  **every 4 minutes**.
+- **In between, the planes come from [adsb.fi](https://adsb.fi)**, another
+  community network with the same data in the same format, no key and no
+  daily limit (one request a second at most; planespotter asks far less).
+  It's asked **every 30 seconds, and every 10 while the map is open**, so
+  where a plane is on your map is seconds old, not minutes, and an alert
+  goes out while the plane is still overhead. What the two say is put
+  together: each plane is where whichever saw it last put it, and a plane
+  only one of them can see is still shown. The same goes for planes that
+  went over and are still flying somewhere, and a flight you're tracking:
+  their positions are renewed every 10 to 12 seconds.
+- **Without it** (`FAST_FEED=off`, or when adsb.fi isn't answering), a plane
+  can cross your zone between adsb.lol's checks; planespotter still catches
+  it by joining up each plane's positions, but the alert can arrive a few
+  minutes after it went over. While the live map is open adsb.lol is then
+  asked every 30 seconds instead, until 60% of the day's allowance is used.
 - **Whole flights** get a quarter of the allowance, and live positions
   for the map get a little.
 - **Track a flight** on the Mac's app gets at most a fifth for following a
-  flight and a tenth for searches. A flying plane is asked about every
-  minute at first, then every three (the map moves it along in between). A
-  waiting one is asked about every ten minutes, more often around take-off.
+  flight and a tenth for searches. A flying plane's position comes from
+  adsb.fi every 10 seconds, which costs none of it; adsb.lol is only asked
+  (about every minute at first, then every three) when adsb.fi can't see
+  that plane. A waiting one is asked about every ten minutes, more often
+  around take-off.
   If that share is used up, tracking pauses and the alerts carry on.
 - **Only requests that reach adsb.lol count.** An hour offline, or on a
   Wi-Fi that wants you to sign in, uses none of the allowance. Your phone
@@ -1574,11 +1587,13 @@ unzip it, and open PowerShell in that folder. Use `python` instead of
   [OpenFreeMap](https://openfreemap.org) tiles, and [deck.gl](https://deck.gl)
   to draw planes in 3D. It's served only from your computer. It never
   serves your settings file or anything else from disk.
-  When adsb.lol can't be reached, is having trouble or says you've asked
-  too often, the planes come from [adsb.fi](https://adsb.fi)'s open data
-  instead (another community network, free for personal use, same format)
-  until adsb.lol answers again; the status line on the map says so.
-  `BACKUP_FEED=off` in your settings turns that off.
+  adsb.lol's daily allowance works out at one check every 2 to 4 minutes,
+  so in between the planes come from [adsb.fi](https://adsb.fi)'s open data
+  (another community network, free for personal use, same format, no key
+  and no daily limit): every 30 seconds, every 10 while the map is open.
+  `FAST_FEED=off` in your settings turns that off. It's also what's used
+  when adsb.lol can't be reached at all, until it answers again (the status
+  line on the map says so; `BACKUP_FEED=off` turns that off).
   **Routes** come from [adsb.lol's standing data](https://github.com/adsblol/vrs-standing-data)
   (rebuilt every day) and [adsbdb.com](https://www.adsbdb.com), and are
   checked against the plane itself (below). **Aircraft details** and photos

@@ -31,7 +31,7 @@ from .travel import TravelMode
 from .sky import SkyWatch
 from .store import Store
 from .watcher import FETCH_ERRORS, SEND_ERRORS, Watcher
-from .webmap import (MapServerError, home_elevation_ft, make_budget, shared_feed, start_feed_poller,
+from .webmap import (MapServerError, fast_feed, home_elevation_ft, make_budget, shared_feed, start_feed_poller,
                      start_map_server)
 from .wizard import Cancelled, Wizard
 
@@ -83,7 +83,7 @@ def launch_account(cfg: Config, budget, shared: dict, quota, feed, account: dict
                 watcher.notifier.map_url = public_url or urls[0]
             except MapServerError as exc:
                 print(f"  (No map for {account['name']}: {exc})")
-            positions = PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget)
+            positions = PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, fast=fast_feed(cfg))
             start_follow_worker(cfg, positions, watcher.notifier)
             start_flight_worker(cfg, budget, watcher.notifier)
             watcher.after_poll += [transit_job(watcher)]
@@ -251,8 +251,9 @@ def cmd_watch(cfg: Config, args) -> int:
     shared = {"n": 1 + len(places)}  # how many places share adsb.lol's daily limit (travel mode adds one)
     budget = make_budget(cfg)
     if hub:
-        cluster = ClusterFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget),
-                              [(c.home_lat, c.home_lon, view_nm(c)) for c in hub["cfgs"].values()], budget)
+        cluster = ClusterFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, backup_url=cfg.backup_feed),
+                              [(c.home_lat, c.home_lon, view_nm(c)) for c in hub["cfgs"].values()], budget,
+                              fast=fast_feed(cfg))
         hub["cluster"] = cluster
         shared["n"] = cluster.count + len(places)
         mine = cluster.view(cfg.home_lat, cfg.home_lon, view_nm(cfg))
@@ -282,7 +283,7 @@ def cmd_watch(cfg: Config, args) -> int:
                 webbrowser.open(urls[0])
         except MapServerError as exc:
             print(f"  (No map: {exc})\n")
-    positions = PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=watcher.budget)
+    positions = PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=watcher.budget, fast=fast_feed(cfg))
     start_follow_worker(cfg, positions, watcher.notifier)
     start_flight_worker(cfg, watcher.budget, watcher.notifier)
     watcher.after_poll += [relay_job(watcher, Relay(watcher.notifier, time.time), outlook), transit_job(watcher)]
@@ -491,7 +492,7 @@ def cmd_map(cfg: Config, args) -> int:
     start_feed_poller(cfg, feed, budget)  # no watcher here, so the map keeps its own planes fresh
     if cfg.whole_flights:
         start_full_path_worker(cfg, budget)
-    start_follow_worker(cfg, PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget), PushNotifier(cfg))
+    start_follow_worker(cfg, PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, fast=fast_feed(cfg)), PushNotifier(cfg))
     print("The live map is running. Press Ctrl+C to stop.\n")
     print_map_urls(urls)
     print("\nThe Spotted list fills up while `watch` is running.")
