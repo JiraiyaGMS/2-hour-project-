@@ -36,7 +36,7 @@ from .config import Config
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm, offset
 from .heat import backfill as backfill_heat
 from .heat import heat_json
-from .fullpath import WAITING, FlightLookup, Point, as_path, simplify
+from .fullpath import LOST_AFTER, WAITING, FlightLookup, Point, as_path, same_flight, simplify
 from .logos import LogoCache
 from .astro import not_a_plane, sky_objects, transits
 from .calendar_ics import build_calendar
@@ -468,7 +468,7 @@ class MapApp:
         else:
             since = 0.0 if days <= 0 else now - days * 86400
             rows = self.store().db.execute(
-                "SELECT id, hex, full_state, full_path FROM passes WHERE first_seen >= ? AND full_path != '[]' "
+                "SELECT id, hex, callsign, full_state, full_path FROM passes WHERE first_seen >= ? AND full_path != '[]' "
                 "ORDER BY first_seen DESC LIMIT 1500", (since,)).fetchall()
             flights, newest_per_plane = [], set()
             for r in rows:
@@ -476,14 +476,14 @@ class MapApp:
                 if len(path) < 2:
                     continue
                 last = path[-1]
-                # Still in the air: not finished, last heard recently, not on the ground,
-                # and the newest pass for that aircraft (older ones are earlier flights).
+                # May still be in the air: not finished, not on the ground, and the newest pass for that
+                # aircraft (older ones are earlier flights). Whether it is, is settled below by where it is now.
                 flying = (r["full_state"] == WAITING and r["hex"] not in newest_per_plane
                           and now - last[3] < 6 * 3600 and last[2] != 0)
                 newest_per_plane.add(r["hex"])
                 points = [Point(p[3], p[0], p[1], p[2], False, False) for p in path]
                 overview = simplify(points, tolerance_m=400, max_points=120)  # plenty for drawing many at once
-                flights.append({"id": r["id"], "hex": r["hex"], "flying": flying, "path_to": last[3],
+                flights.append({"id": r["id"], "hex": r["hex"], "callsign": r["callsign"], "flying": flying, "path_to": last[3],
                                 "path": [[round(q.lon, 4), round(q.lat, 4), q.alt] for q in overview]})
             self._whole_cache = {days: (now, flights)}
         flying_hexes = [f["hex"] for f in flights if f["flying"]][:120]
@@ -499,11 +499,19 @@ class MapApp:
                     (now, f["id"], now))
                 self.store().db.commit()
             ac = positions.get(f["hex"]) if f["flying"] else None
-            if ac:
+            if ac and same_flight(f["callsign"], ac):
                 f = {**f, "now": {"lat": ac.lat, "lon": ac.lon, "alt_ft": ac.alt_ft, "heading": ac.track,
                                   "speed_kt": ac.speed_kt, "seen_pos": ac.seen_pos},
                      "tail": self.tail_of(f["hex"], ac, now, f["path_to"])}
+            elif ac:
+                # That aircraft is flying, but as another flight: this one has ended (where we couldn't see).
+                f = {**f, "flying": False, "flown_on": True}
+            elif f["flying"] and now - f["path_to"] > LOST_AFTER:
+                # Nothing heard of it for a while, and it can't be seen now. It may have landed, or be out of
+                # range of the receivers: either way, "in the air" would be a guess.
+                f = {**f, "flying": False, "lost": True}
             out.append(f)
+        out = [{k: v for k, v in f.items() if k != "callsign"} for f in out]
         with self._tails_lock:
             for hex_code in [h for h in self._tails if h not in positions]:
                 del self._tails[hex_code]  # landed, or out of range

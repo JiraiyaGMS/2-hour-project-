@@ -17,7 +17,7 @@ from .follow import start_follow_worker
 from .space import SpaceWatch
 from .config import DEFAULT_ENV, Config, ConfigError, fmt_clock_range
 from .emails import fmt_alt, test_email
-from .fullpath import FlightLookup, start_full_path_worker
+from .fullpath import FlightLookup, start_flight_follower, start_full_path_worker
 from .geo import bearing_deg, compass, distance_miles, miles_to_nm
 from .mailer import Mailer
 from .commands import start_command_worker
@@ -492,6 +492,7 @@ def cmd_map(cfg: Config, args) -> int:
     start_feed_poller(cfg, feed, budget)  # no watcher here, so the map keeps its own planes fresh
     if cfg.whole_flights:
         start_full_path_worker(cfg, budget)
+        start_flight_follower(cfg)
     start_follow_worker(cfg, PositionLookup(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, fast=fast_feed(cfg)), PushNotifier(cfg))
     print("The live map is running. Press Ctrl+C to stop.\n")
     print_map_urls(urls)

@@ -21,8 +21,8 @@ import urllib.request
 from datetime import date, datetime, timezone
 from typing import Callable, NamedTuple
 
-from .adsb import USER_AGENT, counted, key_header
-from .airports import route_from_path
+from .adsb import USER_AGENT, FastFeed, PositionLookup, counted, key_header
+from .airports import airports, route_from_path
 from .heat import route_cells
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,11 @@ RETRIES = [20 * 60, 40 * 60, 2 * 3600, 3 * 3600]  # then look again until it has
 MAX_TRIES = len(RETRIES) + 1
 MAX_POINTS = 250
 PAUSE = 10                 # seconds between lookups when there's a backlog
+
+FOLLOW_EVERY = 60        # seconds between looks at the planes that went over and are still flying
+FOLLOW_FOR = 12 * 3600   # a flight is followed for this long after it went over, at most
+LOST_AFTER = 20 * 60     # not heard from for this long: no longer taken to be in the air
+LANDED_WITHIN = 30 * 60  # seen on the ground this soon after its last position: that's where it landed
 
 # Pass states for the full_state column.
 WAITING, DONE, UNAVAILABLE = 0, 1, 2
@@ -318,6 +323,115 @@ class FullPathFetcher:
                 log.exception("whole-flight lookup failed")
                 did_work = False
             time.sleep(PAUSE if did_work else 30)
+
+
+def same_flight(callsign: str, ac) -> bool:
+    """Is this aircraft, seen now, still on the flight that went over (and not already on its next one)?
+    Airlines give each flight its own callsign; with none on either side there's nothing to tell by."""
+    theirs = getattr(ac, "callsign", "") or ""
+    return not callsign or not theirs or theirs == callsign
+
+
+class FlightFollower:
+    """Follows the planes that crossed your zone until they land: a look a minute at where each one is.
+
+    adsb.lol's allowance pays for a flight's recorded track only a few times (when the plane comes over,
+    then 20 minutes, 40 minutes and hours later), and not at all when the day's allowance is short. In
+    between, a flight's line stopped where the last look left it, and the plane was taken to be "still in the
+    air" for hours with nothing to show for it, long after it had landed.
+
+    So each flight's line is kept up to date from positions that cost none of the allowance (the fast feed,
+    one request a minute for all of them), and when a plane is seen on the ground its flight is finished
+    there and then: where it is, is where it landed.
+    """
+
+    def __init__(self, cfg, store, positions, clock: Callable[[], float] = time.time):
+        self.cfg, self.store, self.positions, self.clock = cfg, store, positions, clock
+
+    def step(self) -> int:
+        """One look. Returns how many flights it added to or finished."""
+        now = self.clock()
+        rows = self.store.unfinished_flights(now - FOLLOW_FOR)[:60]  # (one request holds 60 aircraft)
+        if not rows:
+            return 0
+        hexes = [r["hex"] for r in rows]
+        flying = self.positions.get(hexes)
+        down = self.positions.ground_at(hexes)
+        changed = 0
+        for row in rows:
+            was = row["full_path"] or "[]"
+            path = json.loads(was)
+            if len(path) < 2:
+                path = json.loads(row["path"] or "[]")  # its track hasn't been looked up yet: from where we saw it
+            if not path:
+                continue
+            last = path[-1]
+            if last[2] == 0 and len(path) > 1:
+                continue  # already down
+            ac = flying.get(row["hex"])
+            if ac is not None:
+                if not same_flight(row["callsign"], ac):
+                    continue  # already on its next flight: this one ended where we couldn't see
+                at = round(now - (ac.seen_pos or 0))
+                if at - last[3] < 45 or (ac.lat, ac.lon) == (last[0], last[1]):
+                    continue
+                path.append([round(ac.lat, 4), round(ac.lon, 4), ac.alt_ft, at])
+                changed += self.store.swap_full_path(row["id"], was, self.tidy(path))
+            elif row["hex"] in down:
+                changed += self.landed(row, was, path, down[row["hex"]], now)
+        return changed
+
+    @staticmethod
+    def tidy(path: list) -> list:
+        """A long flight, a point a minute: fewer points, the same shape."""
+        if len(path) <= 2 * MAX_POINTS:
+            return path
+        return as_path(simplify([Point(p[3], p[0], p[1], p[2], p[2] == 0, False) for p in path]))
+
+    def landed(self, row, was: str, path: list, where, now: float) -> int:
+        """It's on the ground. If we were following it until just now, that's where its flight ended."""
+        if where.lat is None or now - path[-1][3] > LANDED_WITHIN:
+            # Down, but we can't say this is where the flight ended (it's been out of sight for a while, or
+            # the feed gave no position): its recorded track will finish it.
+            self.store.ask_full_path_now(row["id"], now)
+            return 0
+        path.append([round(where.lat, 4), round(where.lon, 4), 0, round(now)])
+        # The whole flight, if its recorded track has been looked up (when the plane came over): that's the
+        # part before we saw it. If it hasn't yet, it's asked for now, and fills that part in.
+        whole = row["full_tries"] >= 1 and len(json.loads(was)) >= 2
+        path = self.tidy(path)
+        heat = (self.cfg.local(row["first_seen"]).date().isoformat(), route_cells(self.cfg, path)) if whole else None
+        if not self.store.swap_full_path(row["id"], was, path, done=whole, route_heat=heat):
+            return 0
+        self.store.set_route(row["id"], None, airports().nearest(where.lat, where.lon))
+        if not whole:
+            self.store.ask_full_path_now(row["id"], now)
+        return 1
+
+    def run_forever(self) -> None:
+        while True:
+            try:
+                self.step()
+            except Exception:  # never let one bad record stop the worker
+                log.exception("following flights failed")
+            time.sleep(FOLLOW_EVERY)
+
+
+def start_flight_follower(cfg) -> threading.Thread | None:
+    """Follow flights until they land, in a background thread. Only with the fast feed: asking adsb.lol once
+    a minute all day would use up its allowance."""
+    from .store import Store
+
+    if not cfg.fast_url:
+        return None
+
+    def run():
+        positions = PositionLookup(cfg.adsb_api, fast=FastFeed(cfg.fast_url), fast_only=True)
+        FlightFollower(cfg, Store(cfg.db_path), positions).run_forever()
+
+    thread = threading.Thread(target=run, name="follow-flights", daemon=True)
+    thread.start()
+    return thread
 
 
 def start_full_path_worker(cfg, budget=None) -> threading.Thread:

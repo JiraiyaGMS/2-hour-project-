@@ -130,7 +130,7 @@ class WholeFlightTests(unittest.TestCase):
         store.update_full_path(flying, state=WAITING, path=[[51.5, -0.1, 0, now - 1900], [53.0, -2.0, 30000, now - 300]])
         store.close()
         cls.ids = {"landed": landed, "flying": flying}
-        cls.positions = FakePositions([plane("bbb222", lat=54.0, lon=-3.0, alt=33000)])
+        cls.positions = FakePositions([plane("bbb222", lat=54.0, lon=-3.0, alt=33000, callsign="DAL2")])
         cls.positions.clock = time.time
         tmp_logos = Path(cls.tmp.name) / "logos"
         logos = LogoCache(tmp_logos, fetch=lambda url: FAKE_PNG if "/ASA.png" in url else None)
@@ -164,7 +164,7 @@ class WholeFlightTests(unittest.TestCase):
         app = self.server.app
 
         def moved_to(lat, lon):
-            self.positions.planes = [plane("bbb222", lat=lat, lon=lon, alt=33000)]
+            self.positions.planes = [plane("bbb222", lat=lat, lon=lon, alt=33000, callsign="DAL2")]
             self.positions.known.clear()  # (as if its 12 seconds were up)
             flights = {f["id"]: f for f in app.whole_json(1)["flights"]}
             return flights[self.ids["flying"]]
@@ -185,7 +185,7 @@ class WholeFlightTests(unittest.TestCase):
             app.whole_json(1)
             self.assertEqual(app._tails, {})
         finally:
-            self.positions.planes = [plane("bbb222", lat=54.0, lon=-3.0, alt=33000)]
+            self.positions.planes = [plane("bbb222", lat=54.0, lon=-3.0, alt=33000, callsign="DAL2")]
             self.positions.known.clear()
 
     def test_a_flying_flights_track_is_brought_up_to_date_when_you_look_at_it(self):

@@ -16,7 +16,7 @@ from .config import Config, fmt_clock_range
 from .digest import build_forecast, build_recap
 from .emails import alert_email, digest_email, fmt_alt, fmt_dist, special_email
 from .catchup import gap_to_check, start_catchup
-from .fullpath import OverBudget, save_flight, start_full_path_worker
+from .fullpath import OverBudget, save_flight, start_flight_follower, start_full_path_worker
 from .heat import HeatRecorder
 from .weekly import build_week, weekly_email
 from .logos import airline_code
@@ -538,6 +538,7 @@ class Watcher:
         backfill_heat(self.store, cfg)
         if cfg.whole_flights:
             start_full_path_worker(cfg, self.budget)  # looks up whole flights in the background
+            start_flight_follower(cfg)                # ...and follows each one until it lands
         log.info(
             "watching %.1f mi around %s (%.4f, %.4f)%s",
             cfg.radius_miles, cfg.home_name, cfg.home_lat, cfg.home_lon,
