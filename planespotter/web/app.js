@@ -620,6 +620,7 @@ if (window.PlanespotterAndroid) {
         f.p3 = f.path.map((q) => [q[0], q[1], (q[2] || 0) * FT]);
         f.p2 = f.path.map((q) => [q[0], q[1], 0]);
         if (f.now) f.now.fixAt = t - (f.now.seen_pos || 0) * 1000;
+        f.tail = f.tail || [];  // where it's been since its track was last looked up: [lon, lat, alt_ft, time]
       }
       state.wholeAll = {
         flights: data.flights, byId: new Map(data.flights.map((f) => [f.id, f])),
@@ -2860,10 +2861,11 @@ if (window.PlanespotterAndroid) {
         localOnly: history.filter((f) => f.path.length > 1 && !W.byId.has(f.id)),
       };
     }
+    const tailOf = (w, after = 0) => w.tail.filter((q) => q[3] > after).map((q) => [q[0], q[1], z(q[2])]);
     const flyingNowList = wholeMemo.flying.map((w) => {
       const pos = flyingNow(w, planesByHex, now);
       const base = is3d ? w.p3 : w.p2;
-      return { w, pos, path: pos ? [...base, [pos.lon, pos.lat, z(pos.alt_ft)]] : base };
+      return { w, pos, path: pos ? [...base, ...tailOf(w), [pos.lon, pos.lat, z(pos.alt_ft)]] : base };
     });
     const farAway = flyingNowList.filter((d) => d.pos && !d.pos.near); // not on the live feed: draw a plane
     const historyWithPaths = wholeMemo.localOnly;
@@ -2876,7 +2878,9 @@ if (window.PlanespotterAndroid) {
     if (wholePath && sel.kind === 'history') {
       const w = W.byId.get(Number(sel.key));
       const pos = w && w.flying ? flyingNow(w, planesByHex, now) : null;
-      if (pos) wholePath = [...wholePath, [pos.lon, pos.lat, z(pos.alt_ft)]];
+      // (Its track was fetched when you picked it; what's come in since carries the line on to the plane.)
+      const upTo = whole.path.length ? whole.path[whole.path.length - 1][3] || 0 : 0;
+      if (pos) wholePath = [...wholePath, ...tailOf(w, upTo), [pos.lon, pos.lat, z(pos.alt_ft)]];
     }
 
     if (state.replay.on) {
@@ -3433,7 +3437,11 @@ if (window.PlanespotterAndroid) {
     setTab(state.tab);
     pollLive();
     if (state.tab !== 'history') loadFlights();
-    setInterval(() => { if (!document.hidden) loadWholeAll(); }, 30000);
+    // Planes that went over and are still flying somewhere: where they are, every 10 s (else a look every 30).
+    (function wholeLoop() {
+      setTimeout(() => { if (!document.hidden) loadWholeAll(); wholeLoop(); },
+        state.wholeAll.flights.some((w) => w.flying) ? 10000 : 30000);
+    })();
     setInterval(() => { if (!document.hidden && state.tab === 'collection') loadCollection(); }, 120000);
     setInterval(() => { if (!document.hidden) loadFlights(); }, HISTORY_EVERY_MS);
     loadSky();

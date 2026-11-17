@@ -139,6 +139,7 @@ class Config:
     adsbdb_api: str = "https://api.adsbdb.com"
     routes_api: str = "https://vrs-standing-data.adsb.lol"  # adsb.lol's route list, rebuilt every day
     backup_feed: str = "https://opendata.adsb.fi/api"       # live planes when adsb.lol can't be reached ("" = none)
+    fast_feed: bool = True       # ...and between adsb.lol's checks, so positions are seconds old, not minutes
     map_enabled: bool = True  # `watch` also serves the live map
     map_port: int = 8765
     map_lan: bool = True  # let phones on the same Wi-Fi open the map
@@ -185,6 +186,11 @@ class Config:
                 db_path=Path(self.db_path).with_name(f"planespotter-{slug}.db"), map_port=self.map_port + 2 + i,
                 map_https=False, space_alerts=False, places=""))
         return out
+
+    @property
+    def fast_url(self) -> str:
+        """Where to ask for planes between adsb.lol's checks ("" = nowhere: just adsb.lol, on its allowance)."""
+        return self.backup_feed if self.fast_feed else ""
 
     @property
     def view_radius_miles(self) -> float:
@@ -333,6 +339,7 @@ class Config:
             routes_api=get("ROUTES_API", "https://vrs-standing-data.adsb.lol").rstrip("/"),
             backup_feed="" if get("BACKUP_FEED", "on").lower() in ("off", "false", "no", "none", "0")
             else get("BACKUP_FEED_API", "https://opendata.adsb.fi/api").rstrip("/"),
+            fast_feed=flag("FAST_FEED", True),
             map_enabled=flag("MAP_ENABLED", True),
             map_port=number("MAP_PORT", "8765", int),
             map_lan=flag("MAP_LAN", True),
@@ -378,7 +385,7 @@ KNOWN_KEYS = {
     "POLL_SECONDS", "PASS_GAP_MINUTES", "MAX_ALERTS_PER_HOUR", "ALERTS_ENABLED",
     "QUIET_HOURS", "DIGEST_ENABLED", "DIGEST_TIME", "TIMEZONE", "EMAIL_TO",
     "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "DB_PATH",
-    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "ROUTES_API", "BACKUP_FEED", "BACKUP_FEED_API", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
+    "OUTBOX_DIR", "ADSB_API", "ADSBDB_API", "ROUTES_API", "BACKUP_FEED", "BACKUP_FEED_API", "FAST_FEED", "MAP_ENABLED", "MAP_PORT", "MAP_LAN", "WHOLE_FLIGHTS", "ADSB_API_KEY", "ADSB_DAILY_LIMIT", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
     "SPECIAL_ALERTS", "SPECIAL_TYPES", "SPECIAL_HELICOPTERS", "WEEKLY_REPORT", "WEEKLY_DAY", "RECEIVER_URL",
     "MAP_HTTPS", "MAP_HTTPS_PORT", "WEATHER", "RUSH_ALERTS", "RUSH_COUNT", "SPACE_ALERTS", "PLACES", "PUBLIC_URL",
     "FAMILY_ALERTS", "FRIENDS", "SHARE_NAME", "TRANSIT_ALERTS", "TRANSIT_SUN", "RELAY",

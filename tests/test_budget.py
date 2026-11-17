@@ -78,5 +78,21 @@ class WatcherSearchAreaTests(unittest.TestCase):
         self.assertEqual(len(watcher.poll(t0 + 240)), 1)
 
 
+class FastFeedTests(unittest.TestCase):
+    def test_with_the_fast_feed_adsb_lols_allowance_is_not_spent_on_speed(self):
+        now = [1000.0]
+        b = ApiBudget(":memory:", 1000, min_poll=20, clock=lambda: now[0])
+        b.mark_viewing()
+        self.assertEqual(b.poll_interval(), 30)          # the map is open, no fast feed: adsb.lol every 30 s
+        self.assertEqual(b.fast_interval(), 10)          # ...and the fast feed would be asked every 10
+        b.mark_fast()                                    # the fast feed just answered
+        self.assertEqual(round(b.poll_interval()), 123)  # adsb.lol back on its even share of the day
+        now[0] += 91                                     # it stops answering: adsb.lol speeds up again
+        b.mark_viewing()
+        self.assertEqual(b.poll_interval(), 30)
+        now[0] += 120                                    # nobody looking: the fast feed every 30 s
+        self.assertEqual(b.fast_interval(), 30)
+
+
 if __name__ == "__main__":
     unittest.main()

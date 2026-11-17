@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from .adsb import (Aircraft, FeedWithReceiver, LiveFeed, Lookup, PositionLookup, ReceiverFeed,
+from .adsb import (Aircraft, FastFeed, FeedWithReceiver, LiveFeed, Lookup, PositionLookup, ReceiverFeed,
                    SharedFeed)
 from .airports import airports, route_from_path
 from .airlines import AIRLINES
@@ -144,13 +144,26 @@ def make_budget(cfg: Config) -> ApiBudget:
     return ApiBudget(cfg.db_path, cfg.adsb_daily_limit, cfg.poll_seconds)
 
 
+def shared_of(feed):
+    """The feed that holds the planes, whatever is in front of it: your own receiver (it's then the fallback),
+    or one account's view of a group of homes."""
+    feed = getattr(feed, "fallback", feed)
+    group = getattr(feed, "group", None)
+    return group.shared if group is not None else feed
+
+
+def fast_feed(cfg: Config) -> FastFeed | None:
+    """The feed asked between adsb.lol's checks (adsb.fi: no key, no daily allowance), unless it's turned off."""
+    return FastFeed(cfg.fast_url) if cfg.fast_url else None
+
+
 def shared_feed(cfg: Config, budget: ApiBudget | None = None):
     """The live feed used by both the watcher and the map (one request serves both).
 
     With your own receiver, that comes first, and adsb.lol is only the backup."""
     view = miles_to_nm(cfg.view_radius_miles) if cfg.map_enabled else 0
     adsb_lol = SharedFeed(LiveFeed(cfg.adsb_api, api_key=cfg.adsb_api_key, budget=budget, backup_url=cfg.backup_feed),
-                          min_radius_nm=view)
+                          min_radius_nm=view, fast=fast_feed(cfg))
     if cfg.receiver_url:
         return FeedWithReceiver(ReceiverFeed(cfg.receiver_url), adsb_lol)
     return adsb_lol
@@ -189,15 +202,21 @@ class LiveCache:
 def start_feed_poller(cfg: Config, feed: SharedFeed, budget: ApiBudget) -> threading.Thread:
     """For `map` on its own (no watcher): keep the live planes fresh, on the budget's schedule."""
     def run():
-        last = 0.0
+        last = last_fast = 0.0
+        radius = miles_to_nm(cfg.view_radius_miles)
         while True:
-            pace = cfg.poll_seconds if getattr(feed, "uses_receiver", False) else budget.poll_interval()
-            if time.time() - last >= pace:
-                last = time.time()
+            receiver = getattr(feed, "uses_receiver", False)
+            pace = cfg.poll_seconds if receiver else budget.poll_interval()
+            now = time.time()
+            if now - last >= pace:
+                last = now
                 try:
-                    feed.aircraft_near(cfg.home_lat, cfg.home_lon, miles_to_nm(cfg.view_radius_miles))
+                    feed.aircraft_near(cfg.home_lat, cfg.home_lon, radius)
                 except (OSError, ValueError) as exc:
                     log.info("couldn't fetch planes: %s", exc)
+            elif not receiver and hasattr(feed, "aircraft_fast") and now - max(last, last_fast) >= budget.fast_interval():
+                last_fast = now  # between adsb.lol's turns: the fast feed, which has no daily allowance
+                feed.aircraft_fast(cfg.home_lat, cfg.home_lon, radius, budget.fast_interval() * 0.9)
             time.sleep(2)
 
     thread = threading.Thread(target=run, name="map-feed", daemon=True)
@@ -226,15 +245,18 @@ class MapApp:
         self.live = LiveCache(cfg, self.feed, clock=clock)
         key = cfg.adsb_api_key
         self.flights = flight_lookup or FlightLookup(clock=clock, api_base=cfg.adsb_api, api_key=key, budget=budget)
-        self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget)
+        self.positions = position_lookup or PositionLookup(cfg.adsb_api, clock=clock, api_key=key, budget=budget,
+                                                           fast=fast_feed(cfg))
         self.logos = logo_cache or LogoCache(Path(cfg.db_path).parent / "logo-cache")
         self.account = None   # {"name", "owner"} when accounts are on: whose planespotter this is
         # Track a flight and Gate, the same as on the phone.
-        self.search_sky = Sky(cfg.adsb_api, key, budget, clock)
+        self.search_sky = Sky(cfg.adsb_api, key, budget, clock, fast=fast_feed(cfg))
         self.gatebook = GateBook(cfg, clock) if cfg.gates_api in GATE_APIS and cfg.gates_key else None
         self._local = threading.local()
         self._whole_cache: dict[float, tuple[float, list]] = {}
         self._origins: dict[str, tuple[float, Any]] = {}  # hex -> (when, the airport its track left from)
+        self._tails: dict[str, list[tuple]] = {}  # hex -> where it's been since its track was last looked up
+        self._tails_lock = threading.Lock()
 
     def live_json(self) -> dict[str, Any]:
         """Live planes, plus how fresh they are and how the day's request budget is going."""
@@ -246,10 +268,14 @@ class MapApp:
         budget = self.budget.status() if self.budget else None
         if receiver and budget:
             budget["interval_s"] = self.cfg.poll_seconds
-        # (The shared feed wraps adsb.lol's; behind a receiver it's the fallback.)
-        shared = getattr(self.feed, "fallback", self.feed)
+        shared = shared_of(self.feed)
         backup = not receiver and getattr(getattr(shared, "feed", None), "using_backup", False)
-        return {**data, "paused_s": round(paused), "budget": budget,
+        # Between adsb.lol's turns the fast feed keeps the planes moving: say how often, when it's answering.
+        fast_at = getattr(shared, "fast_at", 0.0) if getattr(shared, "fast", None) is not None else 0.0
+        fast = not receiver and bool(fast_at) and self.clock() - fast_at < 90
+        if fast and budget:
+            budget["interval_s"] = round(self.budget.fast_interval())
+        return {**data, "paused_s": 0 if fast else round(paused), "budget": budget, "fast": fast,
                 "source": "receiver" if receiver else "adsb.fi" if backup else "adsb.lol",
                 "transits": self.transits_json()}
 
@@ -419,6 +445,17 @@ class MapApp:
         if row is None:
             raise ValueError("no such flight")
         whole = json.loads(row["full_path"] or "[]")
+        now = self.clock()
+        if row["full_state"] == WAITING and now - row["last_seen"] < 12 * 3600:
+            # Still flying, as far as we know: its track up to now (one request, when you look at it), not as
+            # it was when planespotter last looked (which can be a couple of hours ago).
+            try:
+                points = self.flights.current_flight(row["hex"])
+            except (OSError, ValueError) as exc:
+                log.info("couldn't get the flight so far for %s: %s", row["hex"], exc)
+                points = []
+            if points and points[0].t <= row["last_seen"] + 300 and (not whole or points[-1].t > whole[-1][3]):
+                whole = as_path(simplify(points))
         return {**pass_json(self.cfg, row), "whole_path": whole,
                 "whole_state": {0: "waiting", 1: "done", 2: "unavailable"}[row["full_state"]]}
 
@@ -446,7 +483,7 @@ class MapApp:
                 newest_per_plane.add(r["hex"])
                 points = [Point(p[3], p[0], p[1], p[2], False, False) for p in path]
                 overview = simplify(points, tolerance_m=400, max_points=120)  # plenty for drawing many at once
-                flights.append({"id": r["id"], "hex": r["hex"], "flying": flying,
+                flights.append({"id": r["id"], "hex": r["hex"], "flying": flying, "path_to": last[3],
                                 "path": [[round(q.lon, 4), round(q.lat, 4), q.alt] for q in overview]})
             self._whole_cache = {days: (now, flights)}
         flying_hexes = [f["hex"] for f in flights if f["flying"]][:120]
@@ -464,9 +501,26 @@ class MapApp:
             ac = positions.get(f["hex"]) if f["flying"] else None
             if ac:
                 f = {**f, "now": {"lat": ac.lat, "lon": ac.lon, "alt_ft": ac.alt_ft, "heading": ac.track,
-                                  "speed_kt": ac.speed_kt, "seen_pos": ac.seen_pos}}
+                                  "speed_kt": ac.speed_kt, "seen_pos": ac.seen_pos},
+                     "tail": self.tail_of(f["hex"], ac, now, f["path_to"])}
             out.append(f)
+        with self._tails_lock:
+            for hex_code in [h for h in self._tails if h not in positions]:
+                del self._tails[hex_code]  # landed, or out of range
         return {"flights": out}
+
+    def tail_of(self, hex_code: str, ac: Aircraft, now: float, after: float) -> list[list]:
+        """Where a plane has been since its recorded track was last looked up ([lon, lat, alt_ft, time]), from
+        the positions that have come in while someone had the map open. Its track is only looked up a few times
+        a flight; without this the line would cut straight from there to where the plane is now. Each point
+        also carries its time, so the page can leave out what a fresher track already covers."""
+        seen = now - (ac.seen_pos or 0)
+        with self._tails_lock:
+            tail = self._tails.setdefault(hex_code, [])
+            if not tail or (seen - tail[-1][0] >= 8 and (tail[-1][1], tail[-1][2]) != (ac.lat, ac.lon)):
+                tail.append((seen, ac.lat, ac.lon, ac.alt_ft))
+                del tail[:-400]
+            return [[round(lon, 4), round(lat, 4), alt, round(t)] for t, lat, lon, alt in tail if t > after]
 
     def replay_json(self, day: str) -> dict[str, Any]:
         """Every spotted flight of one local day, with timed paths, for the replay."""

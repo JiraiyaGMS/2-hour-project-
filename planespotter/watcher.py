@@ -62,6 +62,7 @@ class Watcher:
         self.shared: dict | None = None  # {"n": places}, shared by all places so travel mode slows them all
         self.stopped = threading.Event()  # set to end run() (travel mode ending, say)
         self.after_poll = []  # extra jobs after each check: functions of (planes, now)
+        self._flow_noted = 0.0
         self.space = space  # satellite passes, for "the space station flies over in 10 minutes" (None = off)
         self._space_checked = 0.0
         self._flow_airport = (None, -1e12)  # (airport, when we worked it out)
@@ -115,17 +116,35 @@ class Watcher:
             return None
         return dist, bearing_deg(cfg.home_lat, cfg.home_lon, ac.lat, ac.lon)
 
-    def poll(self, now: float) -> list[int]:
-        """Fetch planes once. Returns ids of passes that just started."""
+    def fast_every(self) -> float:
+        """Seconds between checks of the fast feed (see ApiBudget.fast_interval)."""
+        return self.budget.fast_interval() if self.budget else max(10.0, float(self.cfg.poll_seconds))
+
+    def poll(self, now: float, fast: bool = False) -> list[int]:
+        """Fetch planes once. Returns ids of passes that just started.
+
+        ``fast``: between adsb.lol's turns, from the fast feed (which has no daily allowance), blended with
+        what adsb.lol last said. Does nothing when that can't be asked just now."""
         cfg = self.cfg
-        planes = self.feed.aircraft_near(cfg.home_lat, cfg.home_lon, self.query_radius_nm())
+        if fast:
+            planes = self.feed.aircraft_fast(cfg.home_lat, cfg.home_lon, self.query_radius_nm(), self.fast_every() * 0.9)
+            if planes is None:
+                return []
+        else:
+            planes = self.feed.aircraft_near(cfg.home_lat, cfg.home_lon, self.query_radius_nm())
         new_passes = []
         positions = {}
         for ac in planes:
-            hit = self.in_zone(ac, now)
             prev = self.last_positions.get(ac.hex)
-            positions[ac.hex] = (ac.lat, ac.lon, now, ac.alt_ft)
-            point = [ac.lat, ac.lon, ac.alt_ft, now]
+            seen = now - min(max(ac.seen_pos or 0.0, 0.0), 600.0)  # when it was really there
+            if prev and seen <= prev[2] + 1:
+                # Nothing newer about this one (only the slower feed sees it, and this is still its last
+                # answer): it's as it was, not a second sighting in the same place.
+                positions[ac.hex] = prev
+                continue
+            hit = self.in_zone(ac, now)
+            positions[ac.hex] = (ac.lat, ac.lon, seen, ac.alt_ft)
+            point = [ac.lat, ac.lon, ac.alt_ft, seen]
             if hit is None:
                 # Keep drawing the path of a plane that just left the zone.
                 if ac.hex in self.open_paths:
@@ -148,7 +167,9 @@ class Watcher:
                 log.info("over %s: %s %s %s, %s%s", cfg.home_name, ac.label, fmt_dist(hit[0]),
                          compass(hit[1]), fmt_alt(ac.alt_ft), route)
         self.new_specials.extend(self.find_specials(planes, now))
-        self.observe_flow(planes, now)
+        if not fast or now - self._flow_noted >= 60:  # (once a minute is plenty: it's kept for 90 days)
+            self._flow_noted = now
+            self.observe_flow(planes, now)
         self.check_rush(planes, now)
         for job in self.after_poll:
             try:
@@ -324,6 +345,16 @@ class Watcher:
             return
         if info.destination:
             self.store.set_destination(pass_id, info.destination, info.destination_city)
+
+    def check_between(self, now: float) -> None:
+        """One check of the fast feed, between adsb.lol's turns. Whatever goes wrong, the usual checks carry on."""
+        try:
+            new_passes = self.poll(now, fast=True)
+            self.send_alerts(new_passes, now)
+            specials, self.new_specials = self.new_specials, []
+            self.send_specials(specials, now)
+        except FETCH_ERRORS as exc:
+            log.debug("a check between adsb.lol's turns failed: %s", exc)
 
     # --- alerts -------------------------------------------------------------
 
@@ -519,11 +550,14 @@ class Watcher:
             log.info("checking every %s to stay within adsb.lol's limit of %d requests a day%s",
                      f"{every / 60:.1f} min" if every >= 90 else f"{every:.0f} s", self.budget.limit,
                      "" if cfg.adsb_api_key else " (a free adsb.lol key raises it; see the README)")
+            if hasattr(self.feed, "aircraft_fast") and cfg.fast_url:
+                log.info("in between, adsb.fi (no daily limit) every 30 s, every 10 s while the map is open")
         if cfg.quiet_hours:
             log.info("quiet hours %s: no alerts then, planes go in the %s report",
                      fmt_clock_range(cfg.quiet_hours), cfg.digest_time.strftime("%H:%M"))
         failures = 0
         last_check = 0.0
+        last_fast = 0.0
         last_data = self.clock()
         self.start_offline_log(self.clock())  # planes that came over while planespotter was off
         while not self.stopped.is_set():
@@ -540,6 +574,12 @@ class Watcher:
             # planes, use them now rather than at this one's own turn (so nobody's are minutes old).
             fresher = getattr(self.feed, "newer_than", None)
             if now - last_check < interval and not (fresher and fresher(last_data)):
+                # Not adsb.lol's turn yet. In between, the fast feed (no daily allowance) every few seconds:
+                # the map and the alerts go by where planes are now, not where they were minutes ago.
+                if not receiver and hasattr(self.feed, "aircraft_fast") and \
+                        now - max(last_fast, last_check) >= self.fast_every():
+                    last_fast = now
+                    self.check_between(now)
                 time.sleep(2)
                 today = self.digest_due(now)
                 if today is not None:
