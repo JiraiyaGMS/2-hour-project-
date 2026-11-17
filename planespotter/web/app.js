@@ -748,17 +748,25 @@ if (window.PlanespotterAndroid) {
       return n > 1 ? note('route', `${from}The pink line shows where it has flown so far.`) : '';
     }
     const all = state.wholeAll.byId.get(Number(sel.key));
+    const heard = all && all.path_to ? esc(fmtTime(all.path_to)) : '';
     if (all && all.flying) {
       const pos = flyingNow(all, null, performance.now());
       return pos
         ? note('plane', `Still in the air: ${esc(fmtAlt(pos.alt_ft))}, ${esc(fromHome(pos.lat, pos.lon))} of home. The pink line runs from takeoff to where it is now.`)
-        : note('plane', 'Still in the air. The pink line shows its flight so far.');
+        // (Heard from in the last few minutes, but it can't be seen this moment: no plane to draw.)
+        : note('plane', `In the air when last heard from${heard ? `, at ${heard}` : ''}. The pink line shows its flight up to then.`);
     }
-    if (w.status === 'done' && n > 1) {
-      return w.path[n - 1][2] === 0
-        ? note('landing', 'Landed. The pink line is its whole flight, takeoff to landing.')
-        : note('route', 'The pink line is its whole flight, as far as adsb.lol could follow it.');
+    // Only what's known is claimed: "in the air" needs the plane to have been seen lately.
+    if (all && all.landed) return note('landing', 'Landed. The rest of its flight is being added.');
+    if (all && all.flown_on) return note('info', 'This flight is over: the aircraft is already flying again as another flight. The rest of its path is added when its track can be looked up.');
+    if (all && all.lost) {
+      return note('info', `Last heard from${heard ? ` at ${heard}` : ' a while ago'}, and it can’t be seen now: it has landed, or it’s out of range of the receivers. The pink line shows its flight up to then; the rest is added when its track can be looked up.`);
     }
+    if (n > 1 && w.path[n - 1][2] === 0) {
+      return w.status === 'done' ? note('landing', 'Landed. The pink line is its whole flight, takeoff to landing.')
+        : note('landing', 'Landed. The pink line runs from where it came over to where it landed; the part before is added when its track can be looked up.');
+    }
+    if (w.status === 'done' && n > 1) return note('route', 'The pink line is its whole flight, as far as adsb.lol could follow it.');
     if (w.status === 'waiting' && n > 1) return note('route', 'The pink line shows its flight so far; the rest is added automatically.');
     if (w.status === 'waiting') return note('hourglass', 'Its whole flight is looked up from adsb.lol shortly after it lands.');
     if (w.status === 'unavailable') return note('info', 'adsb.lol has no record of the rest of this flight.');

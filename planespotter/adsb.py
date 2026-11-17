@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, NamedTuple
 
 from .geo import bearing_deg, distance_miles
 
@@ -474,6 +474,19 @@ class FeedWithReceiver:
         return 0.0 if self.uses_receiver else self.fallback.paused_for()
 
 
+class Grounded(NamedTuple):
+    """A plane seen on the ground, and where (when the feed said)."""
+
+    lat: float | None = None
+    lon: float | None = None
+
+
+def _grounded(raw: dict) -> Grounded:
+    lat, lon = raw.get("lat"), raw.get("lon")
+    ok = isinstance(lat, (int, float)) and isinstance(lon, (int, float))
+    return Grounded(float(lat), float(lon)) if ok else Grounded()
+
+
 class PositionLookup:
     """Where specific planes are right now, wherever they are (not just near home).
 
@@ -484,15 +497,17 @@ class PositionLookup:
     FAST_TTL = 12.0  # with a fast feed, asked this often instead (it has no daily allowance)
 
     def __init__(self, base_url: str = "https://api.adsb.lol", ttl: float = 60.0, clock=time.time,
-                 api_key: str = "", budget=None, fast: FastFeed | None = None):
+                 api_key: str = "", budget=None, fast: FastFeed | None = None, fast_only: bool = False):
         self.base_url = base_url.rstrip("/")
         self.ttl = ttl
         self.clock = clock
         self.api_key = api_key
         self.budget = budget
         self.fast = fast
+        self.fast_only = fast_only  # never adsb.lol: for work that runs all day and mustn't touch its allowance
         self.lock = threading.Lock()
-        self.known: dict[str, tuple[float, Aircraft | None]] = {}
+        # hex -> (when asked, what came back: an Aircraft in the air, Grounded, or None for "not seen")
+        self.known: dict[str, tuple[float, Aircraft | Grounded | None]] = {}
         self.blocked_until = 0.0
 
     def _ask_fast(self, hexes: list[str], now: float) -> None:
@@ -508,18 +523,18 @@ class PositionLookup:
                     if ac:
                         self.known[hex_code] = (now, ac)
                     elif r.get("alt_baro") == "ground":
-                        self.known[hex_code] = (now, "ground")
+                        self.known[hex_code] = (now, _grounded(r))
         except (OSError, ValueError) as exc:
             if not isinstance(exc, FeedBusy):
                 log.debug("the fast feed didn't answer about positions: %s", exc)
 
-    def fetch(self, hexes: list[str]) -> tuple[list[Aircraft], set[str]]:
-        """(planes in the air, addresses of planes on the ground) among ``hexes``."""
+    def fetch(self, hexes: list[str]) -> tuple[list[Aircraft], dict[str, Grounded]]:
+        """(planes in the air, planes on the ground and where) among ``hexes``."""
         url = f"{self.base_url}/v2/hex/{','.join(hexes)}"
         data = counted(self.budget, "positions", lambda: get_json(url, timeout=15, headers=key_header(self.api_key)))
         raw = data.get("ac") or []
         flying = [ac for ac in (parse_aircraft(r) for r in raw) if ac]
-        ground = {str(r.get("hex", "")).lower() for r in raw if r.get("alt_baro") == "ground"}
+        ground = {str(r.get("hex", "")).lower(): _grounded(r) for r in raw if r.get("alt_baro") == "ground"}
         return flying, ground
 
     def get(self, hexes: list[str]) -> dict[str, Aircraft]:
@@ -528,7 +543,7 @@ class PositionLookup:
             now = self.clock()
             if self.fast is not None and hexes:
                 self._ask_fast(hexes, now)
-            stale = [h for h in hexes if h not in self.known or now - self.known[h][0] >= self.ttl]
+            stale = [] if self.fast_only else [h for h in hexes if h not in self.known or now - self.known[h][0] >= self.ttl]
             allowed = self.budget is None or self.budget.allow("positions")
             if stale and now >= self.blocked_until and allowed:
                 try:
@@ -537,8 +552,9 @@ class PositionLookup:
                         flying, ground = self.fetch(chunk)
                         found = {ac.hex: ac for ac in flying}
                         for h in chunk:
-                            # An Aircraft, "ground" (it has landed), or None (out of range).
-                            self.known[h] = (now, found.get(h) or ("ground" if h in ground else None))
+                            # An Aircraft, Grounded (it has landed), or None (out of range).
+                            down = (ground[h] if isinstance(ground, dict) else Grounded()) if h in ground else None
+                            self.known[h] = (now, found.get(h) or down)
                 except urllib.error.HTTPError as exc:
                     if exc.code == 429:
                         self.blocked_until = now + max(120.0, retry_after_seconds(exc))
@@ -553,9 +569,13 @@ class PositionLookup:
                     for h in hexes if h in self.known and isinstance(self.known[h][1], Aircraft)}
 
     def on_ground(self, hexes: list[str]) -> set[str]:
-        """Which of these planes adsb.lol last saw on the ground (they've landed)."""
+        """Which of these planes were last seen on the ground (they've landed)."""
+        return set(self.ground_at(hexes))
+
+    def ground_at(self, hexes: list[str]) -> dict[str, Grounded]:
+        """The ones last seen on the ground, and where."""
         with self.lock:
-            return {h for h in hexes if h in self.known and self.known[h][1] == "ground"}
+            return {h: self.known[h][1] for h in hexes if h in self.known and isinstance(self.known[h][1], Grounded)}
 
 
 @dataclass(frozen=True)

@@ -227,9 +227,11 @@ browser on your Mac.
   logo get a badge with their code, and private planes a small plane icon.
 - **Whole flights:** every plane that crossed your zone is drawn along its
   whole flight. If it's still in the air, the line runs from takeoff to
-  where it is right now (with the plane drawn there, updated every minute
-  while the map is open). Once it lands, the line runs from takeoff to
-  landing.
+  where it is right now (with the plane drawn there, updated every 10
+  seconds while the map is open). Once it lands, the line runs from takeoff
+  to landing. A plane is only called *In the air* while it has been seen in
+  the last 20 minutes: if nothing can see it any more, its card says when
+  it was last heard from instead of guessing.
 - **In the air** lists every plane nearby right now, closest first, then
   the ones that *went over you and are still flying* elsewhere.
   **Spotted** lists every plane that came through your zone, with
@@ -374,10 +376,15 @@ the sheet while the map follows it. The four tabs are along the bottom, and
 the map's buttons run down its right-hand edge.
 
 A plane's whole flight is first looked up while it's over your zone,
-which shows where it came from. It's checked again 20 minutes, 1 hour, 3
-hours and 6 hours later until it lands, sooner if adsb.lol sees it on
-the ground. adsb.lol only keeps about the last day, so flights spotted
-more than a day before you updated can't be filled in.
+which shows where it came from. From then on planespotter follows it: once
+a minute it asks where every plane that went over is now (one request for
+all of them, to adsb.fi, so none of adsb.lol's allowance), adds that to the
+flight's line, and when a plane is seen on the ground the flight is
+finished there and then, with that airport as its destination. Its recorded
+track is still checked 20 minutes, 1 hour, 3 hours and 6 hours later for
+any flight that couldn't be followed to the ground (out over the ocean,
+say). adsb.lol only keeps about the last day, so flights spotted more than
+a day before you updated can't be filled in.
 
 **Just the map, no emails:** run `python3 -m planespotter map`. To turn the
 map off, or to keep it to this Mac only, see the *Live map* settings in

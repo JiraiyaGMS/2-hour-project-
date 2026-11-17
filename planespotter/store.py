@@ -334,6 +334,38 @@ class Store:
             self.add_heat(day, cells, commit=False, table="route_heat")
         self.db.commit()
 
+    def unfinished_flights(self, since: float) -> list[sqlite3.Row]:
+        """Passes (since then) whose flight isn't finished as far as we know, newest first. Only an aircraft's
+        newest pass counts: an older one was an earlier flight, whatever state it was left in."""
+        newest: dict[str, tuple[int, int]] = {}
+        for r in self.db.execute("SELECT id, hex, full_state FROM passes WHERE last_seen >= ? AND hex NOT LIKE '~%' "
+                                 "ORDER BY last_seen DESC", (since,)):
+            newest.setdefault(r["hex"], (r["id"], r["full_state"]))
+        ids = [pass_id for pass_id, state in newest.values() if state == 0]
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        return self.db.execute(f"SELECT id, hex, callsign, first_seen, last_seen, path, full_path, full_tries FROM passes "
+                               f"WHERE id IN ({marks}) ORDER BY last_seen DESC", ids).fetchall()
+
+    def swap_full_path(self, pass_id: int, was: str, path: list, done: bool = False, route_heat=None) -> bool:
+        """Replace a flight's path, but only if it's still as it was when read (two workers add to it: the
+        one that looks up recorded tracks, and the one that follows planes). ``done``: the flight is finished."""
+        changed = self.db.execute(
+            f"UPDATE passes SET full_path = ?{', full_state = 1' if done else ''} "
+            "WHERE id = ? AND full_path = ? AND full_state = 0", (json.dumps(path), pass_id, was)).rowcount
+        if changed and route_heat:
+            day, cells = route_heat
+            self.add_heat(day, cells, commit=False, table="route_heat")
+        self.db.commit()
+        return bool(changed)
+
+    def ask_full_path_now(self, pass_id: int, now: float) -> None:
+        """Bring a flight's next track lookup forward to now (it has just landed, say)."""
+        self.db.execute("UPDATE passes SET full_next = ? WHERE id = ? AND full_state = 0 AND full_next > ?",
+                        (now, pass_id, now))
+        self.db.commit()
+
     def set_route(self, pass_id: int, origin, destination) -> None:
         """Use the airports a flight really left from / arrived at (from its path)."""
         if origin is None and destination is None:
